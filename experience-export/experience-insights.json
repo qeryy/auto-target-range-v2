@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "kind": "spiritscout-experience-insights",
-  "generated_at": "2026-11-13T14:52:36+00:00",
+  "generated_at": "2026-11-15T13:55:03+00:00",
   "source": "SpiritScout/.spiritscout/experience.db -> table insights",
   "redaction": [
     "http/https 链接",
@@ -10,9 +10,9 @@
     "sk- / ghp_ / xox 形态密钥",
     "靶场主机名归一为 local-range"
   ],
-  "total": 529,
+  "total": 532,
   "tag_frequency": {
-    "ctf": 376,
+    "ctf": 377,
     "crypto": 94,
     "web": 63,
     "flag": 53,
@@ -36,6 +36,7 @@
     "重攻": 10,
     "php": 9,
     "度量": 9,
+    "llm": 8,
     "战报": 8,
     "附件分析": 8,
     "forensics": 7,
@@ -51,7 +52,7 @@
     "判读信号": 6,
     "证据链": 6,
     "音频": 6,
-    "llm": 5,
+    "automation": 5,
     "pwn": 5,
     "session": 5,
     "stego": 5,
@@ -69,7 +70,6 @@
     "靶场": 5,
     "analysis": 4,
     "auth": 4,
-    "automation": 4,
     "findings": 4,
     "flask": 4,
     "judgment": 4,
@@ -129,8 +129,10 @@
     "audio": 2,
     "blind": 2,
     "bruteforce": 2,
+    "context": 2,
     "environment": 2,
     "ephemeral": 2,
+    "failure": 2,
     "filter": 2,
     "flag-format": 2,
     "flag校验": 2,
@@ -279,6 +281,7 @@
     "post": 1,
     "post-mortem": 1,
     "recorded_tasks": 1,
+    "reliability": 1,
     "reproducibility": 1,
     "resources": 1,
     "resume": 1,
@@ -295,10 +298,12 @@
     "state": 1,
     "state-size": 1,
     "state-space": 1,
+    "strategy": 1,
     "stream-cipher": 1,
     "structure": 1,
     "symbolic-execution": 1,
     "symbols": 1,
+    "system": 1,
     "task-recording": 1,
     "task_completion": 1,
     "task_logging": 1,
@@ -7148,6 +7153,45 @@
       ],
       "source_model": "master",
       "captured_at": "2026-11-13T14:03:06+00:00"
+    },
+    {
+      "id": "exp-2d1171a17a3d",
+      "insight": "当模型端点连续触发 ContextWindowExceededError 且熔断机制生效时，任务将停止重试并直接失败，需警惕上下文长度限制导致的流程中断风险。",
+      "context": "CTF 解题流程中依赖大模型进行推理或解析的场景",
+      "tags": [
+        "ctf",
+        "llm",
+        "context",
+        "failure"
+      ],
+      "source_model": "master",
+      "captured_at": "2026-11-15T13:46:33+00:00"
+    },
+    {
+      "id": "exp-d1daece86f64",
+      "insight": "在长任务执行过程中，若模型服务因上下文超限而熔断，后续步骤无法恢复，应提前规划分步执行或压缩上下文策略。",
+      "context": "多轮交互或长文本处理的自动化任务",
+      "tags": [
+        "automation",
+        "llm",
+        "context",
+        "strategy"
+      ],
+      "source_model": "master",
+      "captured_at": "2026-11-15T13:46:33+00:00"
+    },
+    {
+      "id": "exp-df56c355c74e",
+      "insight": "模型端点连续不可用且熔断后不再重试，表明系统对上下文超限采取了硬性保护，而非临时性故障，需将其视为确定性中断信号。",
+      "context": "依赖外部模型服务的任务编排场景",
+      "tags": [
+        "llm",
+        "reliability",
+        "failure",
+        "system"
+      ],
+      "source_model": "master",
+      "captured_at": "2026-11-15T13:46:33+00:00"
     }
   ]
 }

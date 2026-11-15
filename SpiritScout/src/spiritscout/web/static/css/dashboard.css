@@ -19,7 +19,7 @@
 .dash-live-grid { display: grid; grid-template-columns: minmax(0,1.35fr) minmax(0,1fr); gap: 18px; }
 .dash-active, .dash-attention { max-height: 420px; overflow: auto; overscroll-behavior: contain; }
 .dash-live-session + .dash-live-session { margin-top: 18px; border-top: 1px solid var(--line); padding-top: 18px; }
-.dash-link { padding: 0; border: 0; background: none; color: var(--accent-ink); font: inherit; font-size: 12px; font-weight: 600; text-align: left; cursor: pointer; overflow-wrap: anywhere; }
+.dash-link { display: inline-flex; align-items: center; min-height: 24px; padding: 0; border: 0; background: none; color: var(--accent-ink); font: inherit; font-size: 12px; font-weight: 600; text-align: left; cursor: pointer; overflow-wrap: anywhere; }
 .dash-link:hover { text-decoration: underline; }
 .dash-live-status { font-size: 10px; color: var(--ink-2); border: 1px solid var(--line); border-radius: 4px; padding: 3px 6px; }
 .dash-live-session p { font-size: 12px; line-height: 1.8; margin: 10px 0; overflow-wrap: anywhere; color: var(--ink-2); }
