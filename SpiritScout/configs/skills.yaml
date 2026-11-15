@@ -9167,6 +9167,124 @@ skills:
     技能树的可视化浏览与最新内容见 <https://hello-ctf.com>。'
   source: helloctf-skill
   path: helloctf-skill/SKILL.md
+- skill_id: ida-reverse
+  domain: reverse
+  description: IDA Pro 逆向分析辅助技能。当用户提到逆向、反编译、分析二进制/PE/ELF/APK/DLL/SO、破解、找密码、漏洞分析、病毒分析、firmware 固件分析，或需要分析
+    exe/dll/so/elf/macho/sys 等文件时，务必使用此技能。
+  body: "# IDA Pro 逆向分析技能\n\n## 本机双通道配置（最高优先级）\n\n本机同时保留三种工作方式，按以下顺序路由。除非主通道不可用，不要执行后文的旧 HTTP `start.ps1/open.ps1`\
+    \ 流程。\n\n### 1. `idapro_*`：默认主通道，headless IDALib\n\n- Codex 自动启动 `idalib-mcp --stdio --max-workers\
+    \ 4`，不需要用户打开 IDA GUI。\n- 首次处理文件时调用 `idapro_idb_open`：\n\n```text\nidapro_idb_open(\n  input_path=\"\
+    C:\\\\path\\\\to\\\\sample.exe\",\n  mode=\"force_headless\",\n  run_auto_analysis=true,\n  build_caches=true,\n\
+    \  init_hexrays=true,\n  idle_ttl_sec=3600,\n  preferred_session_id=\"sample\"\n)\n```\n\n- 保存返回的\
+    \ `session_id`。后续每个 `idapro_*` 分析/修改调用都显式传 `database=session_id`，不要重复打开同一个文件。\n- 先调用 `idapro_survey_binary(detail_level=\"\
+    minimal\", database=session_id)`，再深入目标函数。\n- 多目标优先使用 `analyze_batch`、`lookup_funcs`、`entity_query`\
+    \ 等批量接口，减少 MCP 往返；不要逐函数串行调用能批量完成的操作。\n- 正常样本保留自动分析、cache 和 Hex-Rays 预热。超大样本才按需关闭 `build_caches` 或\
+    \ `init_hexrays`。\n- 长期分析统一使用 `idle_ttl_sec=3600`，避免 10 分钟空闲后 worker 退出并重新加载数据库。\n\n### 2. `idagui_*`：保留的\
+    \ GUI 通道\n\n- 仅在用户已经打开 IDA、加载数据库并启动 `Edit -> Plugins -> MCP` 时使用。\n- 用于同步操作当前 GUI 状态、光标、选择区或调试器。\n\
+    - IDA GUI 未启动时该 server 的工具枚举会失败，这是预期状态；直接使用 `idapro_*`，不要要求用户启动 GUI。\n\n### 3. IDA-NO-MCP：批量文本导出\n\
+    \n- 插件路径：`%APPDATA%\\Hex-Rays\\IDA Pro\\plugins\\INP.py`。\n- 适合一次性导出全部伪代码、反汇编、字符串、导入导出表和内存 hexdump，再用\
+    \ `rg`/代码索引分析。\n- 本机版本支持 `idat -A -S...` headless 批处理，可由 Codex 自动运行，不需要手工按 `Ctrl-Shift-E`。\n- 它不是实时\
+    \ RPC 通道；需要 rename、comment、type、patch 或增量查询时使用 `idapro_*`。\n\n### 兼容 HTTP 脚本\n\n- `scripts/start.ps1`\
+    \ 和 `scripts/open.ps1` 仅用于 stdio 不可用时的兼容排障。\n- 兼容脚本和 GUI MCP 都会占用 `127.0.0.1:13337`，不得同时启动。\n- 正常工作流不要杀进程、不要启动额外\
+    \ HTTP server，也不要绕过可用的 `idapro_idb_open`。\n\n## 历史问题与兼容方案（仅排障时参考）\n\n以下内容记录旧 HTTP/GUI bridge 的兼容问题。主流程以顶部双通道配置和\
+    \ MCP 实时 tool schema 为准。\n\n### 旧流程踩过的坑\n\n1. **旧 `idalib_open` API 的 schema 问题**\n   - 旧版 MCP 客户端对\
+    \ `idalib_open` 的 output schema 校验有 BUG\n   - 报错：`Structured content does not match the tool's output\
+    \ schema`\n   - **旧版解决办法**：使用 `scripts/open.ps1` 通过 HTTP API 直调\n   - **当前解决办法**：直接使用已验证的 `idapro_idb_open`，并在后续调用中传\
+    \ `database=session_id`\n\n2. **`C:\\Windows\\System32\\` 文件无权限打开**\n   - idalib 无法直接读取 System32 目录下的文件\n\
+    \   - **解决办法**：`open.ps1` 自动检测并复制到 `临时目录` 目录后再打开\n\n3. **启动服务器命令阻塞对话**\n   - `idalib-mcp` 启动后会持续输出\
+    \ INFO 日志到控制台\n   - **解决办法**：使用 `scripts/start.ps1`（`-WindowStyle Hidden` 后台静默启动）\n   - 脚本会等待服务就绪后自动退出，不阻塞对话\n\
+    \n4. **MCP 服务器名不能用横线**\n   - 之前用 `ida-pro-mcp` 作为服务器名，可能引起工具注册问题\n   - **当前配置**：服务器名 `idapro`，工具前缀\
+    \ `idapro_*`\n\n5. **Remote HTTP vs Local Stdio**\n   - 旧 `idalib_open` 在部分客户端的 stdio/HTTP 模式均有 schema\
+    \ 兼容问题\n   - **当前主方案**：`idapro` Local Stdio + `idb_open`\n   - **兼容方案**：仅在主通道不可用时使用旧 Remote HTTP 脚本\n\
+    \n6. **PR #389 修复了部分 schema 问题**\n   - 作者 mrexodia 在 issue #388 后通过 PR #389 合并了修复\n   - 修复了 HTTP 模式下的\
+    \ structuredContent schema，但 部分代码 AI 客户端 侧校验仍有问题\n   - 已安装最新 `main` 分支版本\n\n7. **idalib 超时留下孤儿 worker\
+    \ 进程锁文件**\n   - 第一次 `open.ps1` 超时后，idalib 的 python worker 子进程变成孤儿进程，咬着 `.id0`/`.id1`/`.nam` 不放\n \
+    \  - 后续任何工具或手动拖入 IDA GUI 都会报\"权限不足\"\n   - **解决办法**：`start.ps1` 改用 `taskkill /F /T` 杀进程树，不再留孤儿\n \
+    \  - **兜底**：`open.ps1` 加了自动降级，检测到旧库被锁自动复制到 Temp 并加 GUID 前缀\n\n8. **带自动分析打开看起来像卡死**\n   - `idalib_open(run_auto_analysis=true)`\
+    \ 可能长时间不回包，但后端实际上仍在继续打开和分析\n   - 之前用户侧看到的是“PowerShell 一直无输出”，容易误判成脚本卡死\n   - **当前解决办法**：`open.ps1`\
+    \ 新增 `-TimeoutSeconds`，并改为后台请求 + 前台轮询 + 定时进度输出\n   - 轮询到会话已就绪时会提前返回 `OK:文件名:session_id`，超时则返回 `ERR:open_timeout_xxs`\n\
+    \n9. **非 ASCII 路径与不同版本响应字段不稳定**\n   - idalib worker 在部分 Windows 代码页下会把中文路径转换成 `?`，导致实际存在的文件无法打开\n\
+    \   - 不同 MCP 版本的 `structuredContent` 可能只有 `error`，没有 `success` 字段\n   - **当前解决办法**：`open.ps1` 自动将非\
+    \ ASCII 路径复制到 GUID 命名的 ASCII Temp 路径，并以可选字段方式解析直接对象或 `content[].text` JSON 响应\n\n### 当前工作流程原则\n\n\
+    | 步骤 | 做什么 | 用什么 |\n|------|--------|--------|\n| 1 | 自动打开目标文件 | `idapro_idb_open(..., mode=\"force_headless\"\
+    , idle_ttl_sec=3600)` |\n| 2 | 保存会话标识 | 使用返回的 `session_id` |\n| 3 | 概览并深入分析 | 调用 `idapro_*`，始终传 `database=session_id`\
+    \ |\n| 4 | 需要 GUI 状态时切换 | 用户已启动插件时使用 `idagui_*` |\n\n## 兼容脚本资源\n\n### start.ps1 — 启动 MCP HTTP 服务器\n\
+    \n路径：`scripts/start.ps1`\n\n- 用 `taskkill /F /T` 杀旧进程树（连 worker 子进程一起清理）→ 后台启动 `idalib-mcp` → 等待就绪（最多\
+    \ 15 秒）\n- 成功输出 `OK:72`，失败输出 `ERR:timeout`\n- 服务器在后台运行，不阻塞对话\n\n**调用方式**：\n```\npowershell -File \"\
+    <skill-root>\\ida-reverse\\scripts\\start.ps1\"\n```\n\n### open.ps1 — 打开二进制文件\n\n路径：`scripts/open.ps1`\n\
+    \n- 通过 HTTP API 直调 `idalib_open`，绕过 MCP schema 校验\n- 自动检测 System32 或非 ASCII 路径并复制到 ASCII 临时目录\n- 兼容\
+    \ `structuredContent` 直接对象和 `content[].text` JSON，响应缺少 `success` 时不会触发严格模式异常\n- 自动清理同名旧数据库文件（`.id0`/`.id1`/`.nam`/`.til`/`.i64`）\n\
+    - 旧库被锁时自动降级：复制到 Temp 加 GUID 前缀后打开，不报错\n- 将打开请求放到后台执行，避免长时间同步等待导致脚本无响应\n- 支持 `-TimeoutSeconds`，超时后返回\
+    \ `ERR:open_timeout_xxs`，不会无限卡住\n- 每隔 10 秒输出一次 `INFO:opening:已用时/超时秒数`，便于判断仍在分析中\n- 成功输出 `OK:文件名:session_id`，降级时加\
+    \ `(temp copy)` 标记\n- 失败时自动重试走 Temp 副本\n\n**调用方式**：\n```\npowershell -File \"<skill-root>\\ida-reverse\\\
+    scripts\\open.ps1\" -Path \"C:\\path\\to\\file.exe\"\n```\n\n**可选参数**：\n```\n# 指定 SessionId\npowershell\
+    \ -File \"scripts\\open.ps1\" -Path \"file.exe\" -SessionId \"my_session\"\n\n# 跳过自动分析（大文件推荐）\npowershell\
+    \ -File \"scripts\\open.ps1\" -Path \"large.exe\" -NoAutoAnalysis\n\n# 设置超时，避免带自动分析时长时间无返回\npowershell\
+    \ -File \"scripts\\open.ps1\" -Path \"file.exe\" -TimeoutSeconds 600\n```\n\n**输出约定**：\n```\n# 分析进行中（每\
+    \ 10 秒输出一次）\nINFO:opening:11/600s\n\n# 成功打开\nOK:sample.exe:abcd1234\n\n# 成功打开，但因锁文件降级到 Temp 副本\nOK:1234abcd-sample.exe:abcd1234\
+    \ (temp copy)\n\n# 达到超时上限\nERR:open_timeout_600s\n```\n\n**实测说明**：\n- `Snipaste.exe` 带自动分析实测约 `324s`\
+    \ 才返回成功，属于“分析很久”而不是“脚本死锁”\n- 因此遇到 GUI 程序或较复杂样本时，建议优先显式设置 `-TimeoutSeconds 600`\n\n## 核心工具列表\n\n###\
+    \ 概况分析（第一步）\n- `idapro_survey_binary(detail_level=\"minimal\")` — 快速概况：函数数、字符串、段、入口点、导入分类（加密/网络/文件IO）\n\
+    - `idapro_list_funcs(queries)` — 列出函数（分页、按名称过滤）\n- `idapro_list_globals(queries)` — 列出全局变量\n- `idapro_entity_query(kind,\
+    \ filter)` — 统一查询：functions/globals/imports/strings/names\n\n### 反编译与反汇编\n- `idapro_decompile(addr)`\
+    \ — 反编译为伪代码\n- `idapro_disasm(addr, max_instructions=N)` — 反汇编\n- `idapro_analyze_function(addr, include_asm=false)`\
+    \ — 综合分析（伪代码+字符串+常量+调用者+被调用者+块）\n- `idapro_func_profile(queries)` — 函数概要指标\n\n### 交叉引用与数据流\n- `idapro_xrefs_to(addrs)`\
+    \ — 查谁引用目标地址\n- `idapro_xref_query(addr, direction)` — 高级 xref 查询（方向/类型过滤）\n- `idapro_callees(addrs)`\
+    \ — 子函数列表\n- `idapro_callgraph(roots, max_depth)` — 调用图\n- `idapro_trace_data_flow(addr, direction,\
+    \ max_depth)` — 数据流追踪（forward/backward）\n\n### 搜索\n- `idapro_find_regex(pattern, limit)` — 正则搜字符串\n\
+    - `idapro_search_text(pattern)` — 在反汇编列表中搜文本\n- `idapro_find_bytes(patterns, limit)` — 字节模式搜索（支持 ??\
+    \ 通配符）\n- `idapro_find(type, targets)` — 高级搜索（立即数/字符串/引用）\n\n### 内存与数据\n- `idapro_get_bytes(addrs)`\
+    \ — 读原始字节\n- `idapro_get_string(addrs)` — 读字符串\n- `idapro_get_int(queries)` — 读整数值\n- `idapro_get_global_value(queries)`\
+    \ — 读全局变量值\n- `idapro_read_struct(queries)` — 读结构体字段值\n- `idapro_search_structs(filter)` — 搜索结构体\n\
+    \n### 修改操作\n- `idapro_set_comments(items)` — 添加注释（反汇编+反编译双向同步）\n- `idapro_append_comments(items)`\
+    \ — 追加注释\n- `idapro_rename(batch)` — 批量重命名（函数/全局/局部/栈变量）\n- `idapro_patch_asm(items)` — Patch 汇编指令\n\
+    - `idapro_patch(patches)` — Patch 字节\n- `idapro_define_func(items)` — 定义函数\n- `idapro_undefine(items)`\
+    \ — 取消定义\n- `idapro_define_code(items)` — 将字节转为代码\n\n### 类型系统\n- `idapro_declare_type(decls)` — 声明\
+    \ C 结构体/枚举/联合体\n- `idapro_set_type(edits)` — 应用类型到函数/全局/局部\n- `idapro_infer_types(addrs)` — 推断类型\n\
+    - `idapro_type_query(queries)` — 查询已声明类型\n- `idapro_type_inspect(queries)` — 查看类型详情\n\n### 栈帧\n- `idapro_stack_frame(addrs)`\
+    \ — 查看栈帧变量\n- `idapro_declare_stack(items)` — 声明栈变量\n- `idapro_delete_stack(items)` — 删除栈变量\n\n###\
+    \ 签名\n- `idapro_make_signature(addrs)` — 为地址生成唯一字节签名\n- `idapro_make_signature_for_function(addrs)`\
+    \ — 为函数生成签名\n- `idapro_find_xref_signatures(addrs)` — 为引用地址的代码生成签名\n\n### 调试器（需要 ?ext=dbg）\n- `idapro_open_file(file_path)`\
+    \ — 在 GUI IDA 实例中打开文件\n- 调试器工具默认隐藏，可通过 URL 参数 `?ext=dbg` 启用\n\n### 会话管理\n- `idapro_idb_open(...)`\
+    \ — 打开或复用 headless/GUI session，返回 `session_id`\n- `idapro_idb_list()` — 列出 worker 和 GUI session\n\
+    - `idapro_idb_save(database=session_id, path=\"\")` — 保存数据库\n- `idapro_server_health(database=session_id)`\
+    \ — 检查 worker、自动分析、cache 和 Hex-Rays 状态\n- 当前 headless supervisor 没有隐式 current session；每个工具调用都必须指定\
+    \ `database`\n\n### 其他\n- `idapro_int_convert(inputs)` — 进制转换（**必须用这个，不要自己算进制！**）\n- `idapro_export_funcs(addrs,\
+    \ format)` — 导出函数（json/c_header/prototypes）\n- `idagui_py_eval(code)` — GUI bridge 启用对应扩展时执行 Python\n\
+    - `idapro_server_health(database=session_id)` — headless worker 健康检查\n\n## 逆向分析完整工作流\n\n### Step 1:\
+    \ 自动打开文件\nCodex 自动启动 stdio supervisor，不需要另行启动 HTTP 服务。\n```text\nidapro_idb_open(input_path=\"C:\\\
+    目标.exe\", mode=\"force_headless\",\n                 run_auto_analysis=true, build_caches=true,\n\
+    \                 init_hexrays=true, idle_ttl_sec=3600,\n                 preferred_session_id=\"\
+    target\")\n```\n记录返回的 `session_id`。\n\n### Step 2: 检查状态\n```text\nidapro_server_health(database=session_id)\n\
+    ```\n确认 `auto_analysis_ready`、`hexrays_ready` 和 `strings_cache_ready`。\n\n### Step 3: 全局概览\n```\n\
+    idapro_survey_binary(detail_level=\"minimal\", database=session_id)\n```\n关注：\n- 架构（x86/x64/ARM）\n\
+    - 入口点（main/WinMain/DllMain）\n- 有趣的字符串（URL、路径、错误消息）\n- 导入分类（加密函数？网络 API？文件操作？）\n- 热门函数（高 xref 计数的函数通常是关键逻辑）\n\
+    \n### Step 4: 深入关键函数\n```\nidapro_analyze_function(addr=\"关键函数名\")\n```\n或：\n```\nidapro_decompile(addr=\"\
+    函数名\")\nidapro_disasm(addr=\"函数名\", max_instructions=50)\n```\n\n### Step 5: 数据流和交叉引用\n```\nidapro_xrefs_to(addrs=\"\
+    关键地址/字符串\")\nidapro_callgraph(roots=[\"关键函数\"], max_depth=3)\nidapro_trace_data_flow(addr=\"关键地址\"\
+    , direction=\"backward\", max_depth=5)\n```\n\n### Step 6: 记录和优化\n```\nidapro_set_comments(items=[{\"\
+    addr\": \"0x140001000\", \"comment\": \"你的理解\"}])\nidapro_rename(batch={\"func\": [{\"addr\": \"函数地址\"\
+    , \"name\": \"有意义的名字\"}]})\n```\n\n### Step 7: 输出报告\n分析完成后，生成 `report.md` 记录发现和步骤。\n\n## Prompt 工程准则\n\
+    \n1. **不要手动算进制** — 任何时候需要转换数字，用 `idapro_int_convert`\n2. **先 survey 后深入** — 先看概况再针对性分析\n3. **持续加注释和重命名**\
+    \ — 分析过程中不断更新函数名和变量名，提升后续分析的准确性\n4. **跟踪交叉引用** — 发现有趣的数据/字符串，用 `xrefs_to` 看谁引用了它\n5. **遇到混淆代码** —\
+    \ 先做字符串解密、导入哈希去除、控制流平坦化去除等预处理\n6. **C++ STL 代码** — 用 FLIRT/Lumina 识别库函数后，再分析业务逻辑\n7. **不要暴力破解** —\
+    \ 分析应从反汇编中推导解决方案，用简单 Python 辅助计算\n8. **遇到 \"No database bound\"** — 还没有打开任何二进制文件，先执行 `open.ps1`\n\
+    9. **遇到 \"Failed to open database\"** — 可能是旧数据库文件被锁，`open.ps1` 会自动降级到 Temp 副本（输出含 `(temp copy)` 标记）\n\
+    10. **带自动分析打开 GUI/复杂样本时** — 默认加 `-TimeoutSeconds 600`，不要把长时间 `INFO:opening:...` 误判成脚本卡死\n\n---\n\n\
+    ## 路由上下文\n\n**上游入口**: `skills/SKILL.md`（总控）、`routing.md`\n**上游备选**: `radare2/`（如果不想开 IDA，可以先 r2 快速侦察）\n\
+    **下游出口**:\n- 需 Frida 动态验证 → `reverse-engineering/tools-dynamic.md`\n- 需符号执行/angr → `reverse-engineering/tools-dynamic.md`\n\
+    - 需通用逆向方法论 → `reverse-engineering/SKILL.md`\n\n**同级关联模块**: `radare2/`（IDA 不可用时替代方案）\n\n---\n\n## 按需自举（On-Demand\
+    \ Bootstrap）\n\n本 skill 的入口脚本已接入统一自举系统。\n\n### 自动化能力边界\n\n| 工具 | 可自动安装 | 安装方式 | 说明 |\n|------|-----------|---------|------|\n\
+    | idalib-mcp | ✓ | pip install (from GitHub) | `start.ps1` 缺失时自动安装 |\n| IDA Pro 本体 | ✗ | 商业软件，需手动安装\
+    \ | 设置 `IDADIR` 环境变量指向安装目录 |\n\n### 安装步骤（已验证）\n\n```cmd\n# 1. 设置 IDA 路径（替换为你的实际 IDA 安装目录）\nsetx IDADIR\
+    \ \"<你的IDA安装目录>\"\n\n# 2. 从 GitHub 安装 ida-pro-mcp（PyPI 上的 ida-mcp 是另一个项目，不要装错！）\npip install git+https://github.com/mrexodia/ida-pro-mcp.git\n\
+    \n# 3. 安装 IDA 插件（选择 Streamable HTTP + Global + 全选客户端）\nida-pro-mcp --install\n\n# 4. 重启 IDA Pro，打开目标文件\n\
+    # 插件自动监听 127.0.0.1:13337\n\n# 5. 验证\nida-pro-mcp --config\n```\n\n> ⚠️ **注意**：PyPI 上的 `ida-mcp` 包（作者\
+    \ jtsylve）是另一个项目，不是我们需要的。\n> 必须从 GitHub 安装 `mrexodia/ida-pro-mcp`。\n\n### 自举触发点\n\n- `scripts/start.ps1`：缺\
+    \ `idalib-mcp` 时自动调用 `bootstrap-reverse.ps1`\n- MCP 注册：bootstrap 会自动把 `idapro` 写入 Claude MCP 配置\n\n\
+    ### 前置条件\n\n- IDA Pro 已安装且 `IDADIR` 环境变量已设置（或脚本内默认路径正确）\n- Python 已安装（idalib-mcp 依赖 Python）"
+  source: x-ida-reverse
+  path: x-ida-reverse/SKILL.md
 - skill_id: js-reverse
   domain: web
   body: "\uFEFF---\nname: js-reverse\ndescription: 在使用 js-reverse-mcp 做前端 JavaScript 逆向时使用，适用于签名链路定位、页面观察取证、运行时采样、本地补环境复现与证据化输出。优先适配当前环境里的\
@@ -9296,6 +9414,25 @@ skills:
     \ + 借口反驳表 + 强制执行模板）"
   source: llm-security
   path: llm-security/SKILL.md
+- skill_id: local-kb-first
+  domain: misc
+  description: 解题前先查本地知识库与历史经验（doc / skill / experience.json），查到方法再动手，别凭记忆硬算。
+  body: "# 先查资料，再动手\n\n遇到不确定的算法、题型或工具用法，**先查本地资料，再决定解法**，不要凭记忆硬算。\n\n## 本地资料位置\n\n1. 知识库：`C:\\Users\\\
+    admin\\Desktop\\CTF\\doc`（离线 wiki、工具手册、writeup，约 314 个 md）\n2. 技能库：`C:\\Users\\admin\\Desktop\\CTF\\\
+    skill`（约 2312 个 md）\n3. 历史经验：`SpiritScout\\knowledge\\data\\experience.json`（342 条，含失败复盘）\n\n## 查法\n\
+    \n命令行：\n\n```text\nfindstr /S /I /C:\"meet-in-the-middle\" \"C:\\Users\\admin\\Desktop\\CTF\\doc\\\
+    *.md\"\n```\n\npython（更快，可只取前几条命中）：\n\n```python\nimport pathlib\nkw = \"meet-in-the-middle\"\nroot\
+    \ = pathlib.Path(r\"C:\\Users\\admin\\Desktop\\CTF\\doc\")\nhits = []\nfor p in root.rglob(\"*.md\"\
+    ):\n    try:\n        t = p.read_text(encoding=\"utf-8\", errors=\"ignore\")\n    except Exception:\n\
+    \        continue\n    if kw.lower() in t.lower():\n        hits.append(p)\n        if len(hits) >=\
+    \ 3:\n            break\nfor p in hits:\n    print(p)\n```\n\n## 铁律\n\n- 资料里的 `flag{...}` **一律不可信**（可能是别人的题、可能是假的），必须自己算出来并验证。\n\
+    - 查到方法后，说清「用了哪篇资料的哪一步」，再执行。\n- 查不到就换关键词，不要查一次就放弃。\n"
+  severity: info
+  cwe: ''
+  tools: '[]'
+  source: local
+  path: ''
+  enabled: true
 - skill_id: malware-analysis
   domain: malware
   description: 恶意样本分析：YARA / Sigma / 沙箱 / IOC 提取 / 反反分析，静态 + 动态 + 行为三合一。
@@ -9570,85 +9707,6 @@ skills:
     \n**同级关联模块**: `CTF-Sandbox-Orchestrator/`（CTF 中的 Web/Pwn 题会用到这些工具）"
   source: pentest-tools
   path: pentest-tools/SKILL.md
-- skill_id: src-hunter
-  domain: src
-  description: 实战 SRC / 众测 / Bug bounty 漏洞挖掘工作流 skill。包含：5 阶段方法论（intake → recon → enum → hunt → report）、19
-    个攻击类 playbook（SQLi/XSS/RCE/SSRF/IDOR/CSRF/Path Traversal/File Upload/SSTI/XXE/Race/HTTP Smuggling/OAuth/JWT/SAML/GraphQL/Mobile/LLM/DoS）、305
-    个结构化 payload、263 个 WAF/EDR 绕过变体、2887 份 HackerOne 真实 High/Critical 已披露案例、77,000+ WooYun 案例统计、国产 OA
-    / 中间件指纹库、银行 / 电信行业垂直 playbook。当用户提到 "src 挖洞 / src 漏洞挖掘 / bug bounty / 众测 / hackerone / 漏洞赏金 / SRC
-    / 任意 X 漏洞 / 渗透测试" 或问"如何挖某个目标 / 怎么测某个 API / 如何绕过 WAF" 时触发。
-  body: "# SRC Hunter — 实战漏洞挖掘工作流\n\n实战 Security Response Center / 众测 / Bug bounty 挖洞 skill。把白盒方法论翻译为黑盒探测，叠加真实案例统计与\
-    \ payload 库。\n\n---\n\n## 何时使用本 skill\n\n**关键词命中**：\n- \"src 挖洞\" / \"src 漏洞\" / \"src 测试\" / \"Security\
-    \ Response Center\"\n- \"bug bounty\" / \"漏洞赏金\" / \"众测\"\n- \"hackerone\" / \"h1\" / \"bugcrowd\"\
-    \ / \"intigriti\" / \"yeswehack\"\n- \"如何挖 / 怎么测 / 怎么打 + 某目标 / 某接口 / 某参数\"\n- \"WAF 绕过\" / \"绕过 WAF\"\
-    \ / \"WAF bypass\"\n- \"任意账号 / 任意修改 / 任意删除 / 任意操作\" 类越权\n- \"密码重置\" / \"找回密码\" 类逻辑\n- \"未授权访问\" /\
-    \ \"默认凭据\" / \"Actuator\" / \"Spring 暴露\" / \"Redis 未授权\"\n- 用户给一个 URL 或 API endpoint 让你测\n\n**不应使用本\
-    \ skill**：\n- 纯白盒源码审计（用 `code-audit` skill）\n- 已知漏洞的修复 / 防御问答（用通用对话）\n- 单独的 CTF 题目（这是真实环境工作流）\n\n\
-    ---\n\n## 工作流 — 5 阶段\n\n### Phase 1 · Intake（接单）\n\n输入：程序名 / SRC 入口 URL / 子域。\n\n要做的事：\n- 抓 Scope（in-scope\
-    \ domains / IPs / mobile apps / API endpoints）\n- 抓 Out-of-scope（禁测内容、第三方服务、cloud assets exclusions）\n\
-    - 抓规则（payout tiers、disclosure window、retest policy、safe-harbor）\n- 抓测试账号 / 测试 header（如 `X-Bug-Bounty:\
-    \ <handle>`）\n\n**优先级判断**（基于命中类型预估命中率，参考 `references/methodology/05-srctimebox-priority.md`）：\n- 6\
-    \ 小时窗口 → 跑高命中率类型（密码重置 88% / 任意账号 86.4% / 提现 83.1%）\n- 单日窗口 → 加上信息泄露 + 资产暴露 + Actuator\n- HVV / 重点期\
-    \ → 全谱\n\n→ 详见 [`references/methodology/00-index.md`](references/methodology/00-index.md)\n\n### Phase\
-    \ 2 · Recon（被动侦察）\n\n不发包给目标的情报收集：\n\n- **CT 日志**：crt.sh / Censys（找子域）\n- **历史快照**：Wayback / CommonCrawl\n\
-    - **GitHub 搜索**：`org:target` + 关键词（password / api_key / SECRET）\n- **搜索引擎 dorks**：`site:target.com\
-    \ inurl:/admin`、`filetype:env`、`intitle:Index of`\n- **ASN / IP 段**：bgp.he.net 找 IP 块\n- **Favicon\
-    \ hash**：FOFA / Shodan 找同 favicon 资产\n- **DNS 历史**：SecurityTrails / Whoisxmlapi\n\n### Phase 3 · Enum（主动探测）\n\
-    \n**资产枚举**：\n- 子域：amass / subfinder / puredns / dnsx\n- 存活：httpx / naabu\n- 截图：gowitness / aquatone\n\
-    - 内容发现：ffuf / feroxbuster / dirsearch\n- 技术指纹：wappalyzer / webanalyze（同时查 `references/dictionaries/chinese-srcfingerprints.md`\
-    \ 命中国产组件）\n- JS 提取：linkfinder / subjs / gau / katana\n- 子域接管指纹：subjack / subzy\n\n### Phase 4 · Hunt（漏洞探测）\n\
-    \n按攻击类型走对应 playbook，**每个 playbook 都包含**：方法论 + 参数频率表 + 真实 H1 案例 + 结构化 payload + WAF 绕过变体。\n\n**优先级路径**（按命中率\
-    \ + 价值排序）：\n\n| Playbook | 入口提示 | 文件 |\n|---|---|---|\n| **未授权访问** | Actuator/Swagger/默认端口/弱密码 | `references/playbooks/unauth-access.md`\
-    \ |\n| **信息泄露** | .git/.svn/.env/heapdump/路径列举 | `references/playbooks/info-disclosure.md` |\n| **任意\
-    \ X 越权** | 用户态 ID 可遍历/可修改 | `references/playbooks/arbitrary-x-authz.md` |\n| **业务逻辑** | 密码重置/支付/订单/验证码\
-    \ | `references/playbooks/logic-flaws.md` |\n| **OAuth/SAML/JWT** | 认证流/redirect_uri/token | `references/playbooks/oauth-saml-jwt.md`\
-    \ |\n| **API REST** | BOLA/Mass Assignment/速率 | `references/playbooks/api-rest.md` |\n| **SQLi** |\
-    \ 任何用户输入进 DB | `references/playbooks/sqli.md` |\n| **RCE** | 反序列化/SSTI/XXE/原型链/框架 | `references/playbooks/rce.md`\
-    \ |\n| **SSRF** | URL 入参/缓存/Host 注入 | `references/playbooks/ssrf-cache-host.md` |\n| **路径遍历** | 文件路径入参/LFI/RFI\
-    \ | `references/playbooks/path-traversal.md` |\n| **文件上传** | 上传点 + 解析漏洞 | `references/playbooks/file-upload.md`\
-    \ |\n| **XSS** | 任何用户输入进 HTML/JS | `references/playbooks/xss.md` |\n| **HTTP 走私** | 反代 + Content-Length\
-    \ | `references/playbooks/http-smuggling.md` |\n| **GraphQL** | introspection/嵌套 | `references/playbooks/graphql.md`\
-    \ |\n| **竞态** | 并发请求 / TOCTOU | `references/playbooks/race-conditions.md` |\n| **DoS** | ReDoS / 资源不限速\
-    \ / 算法爆炸 | `references/playbooks/dos.md` |\n| **移动端** | Android / iOS APK | `references/playbooks/mobile.md`\
-    \ |\n| **LLM Agent** | Prompt 注入 / 工具调用 | `references/playbooks/llm-prompt-injection.md` |\n| **内网后渗透**\
-    \ | 凭据 / 横向 / 域 | `references/playbooks/intranet-postexp.md` |\n\n**通用方法论**（不分攻击类型）：\n\n| 文档 | 关键内容\
-    \ |\n|---|---|\n| [`methodology/01-attack-priority.md`](references/methodology/01-attack-priority.md)\
-    \ | RCE>文件写>认证绕过>注入>信息泄露 价值排序 |\n| [`methodology/02-bypass-toolkit.md`](references/methodology/02-bypass-toolkit.md)\
-    \ | 通用绕过决策树 + 编码 / 混淆 / WAF |\n| [`methodology/03-evidence-discipline.md`](references/methodology/03-evidence-discipline.md)\
-    \ | 黑盒证据规则 + 反幻觉 + 合规 |\n| [`methodology/04-control-gap-hunting.md`](references/methodology/04-control-gap-hunting.md)\
-    \ | 9 类敏感操作 → 应有控制 → 探测缺失 |\n| [`methodology/05-srctimebox-priority.md`](references/methodology/05-srctimebox-priority.md)\
-    \ | 6h / 单日 / HVV / 月度 时间盒模板 |\n\n**行业垂直 playbook**（资产相关时优先看）：\n\n| 行业 | 文档 | 何时用 |\n|---|---|---|\n\
-    | 银行 / 支付 / 金融 | [`industry/banking-finance.md`](references/industry/banking-finance.md) | 目标含支付 /\
-    \ 网银 / 第三方支付聚合 |\n| 电信 / ISP | [`industry/telecom-isp.md`](references/industry/telecom-isp.md) | 目标是运营商\
-    \ / BOSS / 网管 / 物联网卡 |\n\n**字典 / 凭据**：\n\n| 文档 | 用途 |\n|---|---|\n| [`dictionaries/default-credentials-cn.md`](references/dictionaries/default-credentials-cn.md)\
-    \ | 致远 / 通达 / 万户 / 泛微 / 用友 / 金蝶 / 华为 / 中兴 / 海康等国产凭据 |\n| [`dictionaries/chinese-srcfingerprints.md`](references/dictionaries/chinese-srcfingerprints.md)\
-    \ | 国产 OA / 中间件指纹 + 高频参数 + 一键检测命令 |\n\n### Phase 5 · Report（提交）\n\n→ 用模板 [`templates/report-submission.md`](references/templates/report-submission.md)\n\
-    \n**三段式骨架**：\n1. **标题**：精确到 endpoint + 漏洞类型，不超过 80 字\n2. **重现步骤**：每步可执行 / 截图 / HAR\n3. **影响 + 修复建议**：CVSS\
-    \ 4.0 vector + 业务影响段\n\n---\n\n## MCP 工具集成\n\n本 skill 支持调用本地 MCP 服务器作为工具层。**主选 jshookmcp**(134 工具精选\
-    \ / 386 全集 / 36 域,内置 Burp Suite bridge / Frida / WASM / 反调试 / Android adb / sourcemap 重构)。完整索引与场景映射:\n\
-    \n→ [`references/tools/mcp-jshook.md`](references/tools/mcp-jshook.md)\n\n默认推荐 `search` profile(上下文成本\
-    \ ~3K token),通过 `mcp__jshook__search_tools` + `mcp__jshook__activate_tools` 按需激活,避免 `full` profile\
-    \ 一次性加载 40K+ token。\n\n---\n\n## 数据资产规模\n\n| 类别 | 量级 |\n|---|---|\n| 攻击类 playbook | 19 个 |\n| 通用方法论文档\
-    \ | 6 个 |\n| 行业垂直 playbook | 2 个（银行 / 电信） |\n| 字典 / 凭据 | 3 个 |\n| 报告模板 | 1 个 |\n| 结构化 payload | **305\
-    \ 条**（177 web + 128 内网） |\n| WAF / EDR 绕过变体 | **263 个步骤**，覆盖 23 类 Web 攻击 |\n| 工具命令速查 | 114 条（Nmap/SQLMap/Burp/MSF/...）\
-    \ |\n| HackerOne 真实案例（已披露 High/Critical） | **2887 份**，按 weakness 分到 141 个分类 MD |\n| WooYun 历史案例统计（不可再生）\
-    \ | 88,636 条 |\n\nH1 真实案例已**直接嵌入对应 playbook 末尾**（每个 playbook 末尾有\"H1 真实案例\" Top 12 表 + 摘要）。\n\n---\n\
-    \n## 合规与合法红线\n\n每个 playbook 末段都有\"不要做的事\"。通用红线（任何 SRC 都遵守）：\n\n- ❌ 出 scope 的资产 / 域名 → 立即停手并报备\n- ❌\
-    \ 实际取走他人 PII → 仅证明可访问，立即销毁\n- ❌ 持续负载 / DoS / 大流量 → 仅 1–3 个 PoC 包，立即停止\n- ❌ 修改他人数据（即使有写权限）→ 仅在自己控制的对象上验证\n\
-    - ❌ 在生产做钓鱼或社工 → 不做\n- ❌ 提交未复现的猜测 → 必须有 HTTP 包 / 截图 / 视频证据\n- ✅ 测试 header 标记自己（如 `X-Bug-Bounty: <handle>`）\n\
-    - ✅ 用自己的两个账号自演越权场景\n- ✅ 用 OOB 域名做 SSRF 探测，不要用别人的 DNSLog\n- ✅ 提交前用 `references/templates/report-submission.md`\
-    \ 自查\n\n---\n\n## CLI 助记前缀\n\n`srchunter`（如：`srchunter scope set <program>`、`srchunter recon run`、`srchunter\
-    \ findings new <type>`）。当前未实现 CLI，仅作命名约定。\n\n---\n\n## 引用 / 跨链结构\n\n```\nsrc-hunter/\n├── SKILL.md\
-    \                    # 本文件 — skill 入口\n├── README.md                   # 项目说明\n└── references/\n \
-    \   ├── methodology/   6 docs   # 通用打法\n    ├── playbooks/    19 docs   # 攻击类 playbook（每个含 H1 案例 +\
-    \ Payload 库）\n    ├── industry/      3 docs   # 行业垂直\n    ├── dictionaries/  3 docs   # 字典 / 凭据\n\
-    \    ├── templates/     1 doc    # 报告模板\n    ├── h1-reports/             # 2887 份 H1 报告原始数据 + 141\
-    \ 类 MD\n    │   ├── raw/                # 原始 JSON（resume / 二次分析用）\n    │   └── by-weakness/      \
-    \  # 按 CWE 分类的 Markdown\n    └── payloader/              # 305 条结构化 payload 数据\n        ├── raw/ \
-    \               # JSON（机读）\n        ├── by-category/        # 按分类的 MD\n        ├── tools/        \
-    \      # 工具命令\n        └── waf-bypass.md       # 263 步骤 WAF 绕过集\n```"
-  source: src-hunter
-  path: src-hunter/SKILL.md
 - skill_id: pwn-chain
   domain: custom
   description: '从逆向走到可用利用 (Working Exploit) 的全链路工程化方法。
@@ -10810,6 +10868,85 @@ skills:
     $ARGUMENTS'
   source: solve-challenge
   path: solve-challenge/SKILL.md
+- skill_id: src-hunter
+  domain: src
+  description: 实战 SRC / 众测 / Bug bounty 漏洞挖掘工作流 skill。包含：5 阶段方法论（intake → recon → enum → hunt → report）、19
+    个攻击类 playbook（SQLi/XSS/RCE/SSRF/IDOR/CSRF/Path Traversal/File Upload/SSTI/XXE/Race/HTTP Smuggling/OAuth/JWT/SAML/GraphQL/Mobile/LLM/DoS）、305
+    个结构化 payload、263 个 WAF/EDR 绕过变体、2887 份 HackerOne 真实 High/Critical 已披露案例、77,000+ WooYun 案例统计、国产 OA
+    / 中间件指纹库、银行 / 电信行业垂直 playbook。当用户提到 "src 挖洞 / src 漏洞挖掘 / bug bounty / 众测 / hackerone / 漏洞赏金 / SRC
+    / 任意 X 漏洞 / 渗透测试" 或问"如何挖某个目标 / 怎么测某个 API / 如何绕过 WAF" 时触发。
+  body: "# SRC Hunter — 实战漏洞挖掘工作流\n\n实战 Security Response Center / 众测 / Bug bounty 挖洞 skill。把白盒方法论翻译为黑盒探测，叠加真实案例统计与\
+    \ payload 库。\n\n---\n\n## 何时使用本 skill\n\n**关键词命中**：\n- \"src 挖洞\" / \"src 漏洞\" / \"src 测试\" / \"Security\
+    \ Response Center\"\n- \"bug bounty\" / \"漏洞赏金\" / \"众测\"\n- \"hackerone\" / \"h1\" / \"bugcrowd\"\
+    \ / \"intigriti\" / \"yeswehack\"\n- \"如何挖 / 怎么测 / 怎么打 + 某目标 / 某接口 / 某参数\"\n- \"WAF 绕过\" / \"绕过 WAF\"\
+    \ / \"WAF bypass\"\n- \"任意账号 / 任意修改 / 任意删除 / 任意操作\" 类越权\n- \"密码重置\" / \"找回密码\" 类逻辑\n- \"未授权访问\" /\
+    \ \"默认凭据\" / \"Actuator\" / \"Spring 暴露\" / \"Redis 未授权\"\n- 用户给一个 URL 或 API endpoint 让你测\n\n**不应使用本\
+    \ skill**：\n- 纯白盒源码审计（用 `code-audit` skill）\n- 已知漏洞的修复 / 防御问答（用通用对话）\n- 单独的 CTF 题目（这是真实环境工作流）\n\n\
+    ---\n\n## 工作流 — 5 阶段\n\n### Phase 1 · Intake（接单）\n\n输入：程序名 / SRC 入口 URL / 子域。\n\n要做的事：\n- 抓 Scope（in-scope\
+    \ domains / IPs / mobile apps / API endpoints）\n- 抓 Out-of-scope（禁测内容、第三方服务、cloud assets exclusions）\n\
+    - 抓规则（payout tiers、disclosure window、retest policy、safe-harbor）\n- 抓测试账号 / 测试 header（如 `X-Bug-Bounty:\
+    \ <handle>`）\n\n**优先级判断**（基于命中类型预估命中率，参考 `references/methodology/05-srctimebox-priority.md`）：\n- 6\
+    \ 小时窗口 → 跑高命中率类型（密码重置 88% / 任意账号 86.4% / 提现 83.1%）\n- 单日窗口 → 加上信息泄露 + 资产暴露 + Actuator\n- HVV / 重点期\
+    \ → 全谱\n\n→ 详见 [`references/methodology/00-index.md`](references/methodology/00-index.md)\n\n### Phase\
+    \ 2 · Recon（被动侦察）\n\n不发包给目标的情报收集：\n\n- **CT 日志**：crt.sh / Censys（找子域）\n- **历史快照**：Wayback / CommonCrawl\n\
+    - **GitHub 搜索**：`org:target` + 关键词（password / api_key / SECRET）\n- **搜索引擎 dorks**：`site:target.com\
+    \ inurl:/admin`、`filetype:env`、`intitle:Index of`\n- **ASN / IP 段**：bgp.he.net 找 IP 块\n- **Favicon\
+    \ hash**：FOFA / Shodan 找同 favicon 资产\n- **DNS 历史**：SecurityTrails / Whoisxmlapi\n\n### Phase 3 · Enum（主动探测）\n\
+    \n**资产枚举**：\n- 子域：amass / subfinder / puredns / dnsx\n- 存活：httpx / naabu\n- 截图：gowitness / aquatone\n\
+    - 内容发现：ffuf / feroxbuster / dirsearch\n- 技术指纹：wappalyzer / webanalyze（同时查 `references/dictionaries/chinese-srcfingerprints.md`\
+    \ 命中国产组件）\n- JS 提取：linkfinder / subjs / gau / katana\n- 子域接管指纹：subjack / subzy\n\n### Phase 4 · Hunt（漏洞探测）\n\
+    \n按攻击类型走对应 playbook，**每个 playbook 都包含**：方法论 + 参数频率表 + 真实 H1 案例 + 结构化 payload + WAF 绕过变体。\n\n**优先级路径**（按命中率\
+    \ + 价值排序）：\n\n| Playbook | 入口提示 | 文件 |\n|---|---|---|\n| **未授权访问** | Actuator/Swagger/默认端口/弱密码 | `references/playbooks/unauth-access.md`\
+    \ |\n| **信息泄露** | .git/.svn/.env/heapdump/路径列举 | `references/playbooks/info-disclosure.md` |\n| **任意\
+    \ X 越权** | 用户态 ID 可遍历/可修改 | `references/playbooks/arbitrary-x-authz.md` |\n| **业务逻辑** | 密码重置/支付/订单/验证码\
+    \ | `references/playbooks/logic-flaws.md` |\n| **OAuth/SAML/JWT** | 认证流/redirect_uri/token | `references/playbooks/oauth-saml-jwt.md`\
+    \ |\n| **API REST** | BOLA/Mass Assignment/速率 | `references/playbooks/api-rest.md` |\n| **SQLi** |\
+    \ 任何用户输入进 DB | `references/playbooks/sqli.md` |\n| **RCE** | 反序列化/SSTI/XXE/原型链/框架 | `references/playbooks/rce.md`\
+    \ |\n| **SSRF** | URL 入参/缓存/Host 注入 | `references/playbooks/ssrf-cache-host.md` |\n| **路径遍历** | 文件路径入参/LFI/RFI\
+    \ | `references/playbooks/path-traversal.md` |\n| **文件上传** | 上传点 + 解析漏洞 | `references/playbooks/file-upload.md`\
+    \ |\n| **XSS** | 任何用户输入进 HTML/JS | `references/playbooks/xss.md` |\n| **HTTP 走私** | 反代 + Content-Length\
+    \ | `references/playbooks/http-smuggling.md` |\n| **GraphQL** | introspection/嵌套 | `references/playbooks/graphql.md`\
+    \ |\n| **竞态** | 并发请求 / TOCTOU | `references/playbooks/race-conditions.md` |\n| **DoS** | ReDoS / 资源不限速\
+    \ / 算法爆炸 | `references/playbooks/dos.md` |\n| **移动端** | Android / iOS APK | `references/playbooks/mobile.md`\
+    \ |\n| **LLM Agent** | Prompt 注入 / 工具调用 | `references/playbooks/llm-prompt-injection.md` |\n| **内网后渗透**\
+    \ | 凭据 / 横向 / 域 | `references/playbooks/intranet-postexp.md` |\n\n**通用方法论**（不分攻击类型）：\n\n| 文档 | 关键内容\
+    \ |\n|---|---|\n| [`methodology/01-attack-priority.md`](references/methodology/01-attack-priority.md)\
+    \ | RCE>文件写>认证绕过>注入>信息泄露 价值排序 |\n| [`methodology/02-bypass-toolkit.md`](references/methodology/02-bypass-toolkit.md)\
+    \ | 通用绕过决策树 + 编码 / 混淆 / WAF |\n| [`methodology/03-evidence-discipline.md`](references/methodology/03-evidence-discipline.md)\
+    \ | 黑盒证据规则 + 反幻觉 + 合规 |\n| [`methodology/04-control-gap-hunting.md`](references/methodology/04-control-gap-hunting.md)\
+    \ | 9 类敏感操作 → 应有控制 → 探测缺失 |\n| [`methodology/05-srctimebox-priority.md`](references/methodology/05-srctimebox-priority.md)\
+    \ | 6h / 单日 / HVV / 月度 时间盒模板 |\n\n**行业垂直 playbook**（资产相关时优先看）：\n\n| 行业 | 文档 | 何时用 |\n|---|---|---|\n\
+    | 银行 / 支付 / 金融 | [`industry/banking-finance.md`](references/industry/banking-finance.md) | 目标含支付 /\
+    \ 网银 / 第三方支付聚合 |\n| 电信 / ISP | [`industry/telecom-isp.md`](references/industry/telecom-isp.md) | 目标是运营商\
+    \ / BOSS / 网管 / 物联网卡 |\n\n**字典 / 凭据**：\n\n| 文档 | 用途 |\n|---|---|\n| [`dictionaries/default-credentials-cn.md`](references/dictionaries/default-credentials-cn.md)\
+    \ | 致远 / 通达 / 万户 / 泛微 / 用友 / 金蝶 / 华为 / 中兴 / 海康等国产凭据 |\n| [`dictionaries/chinese-srcfingerprints.md`](references/dictionaries/chinese-srcfingerprints.md)\
+    \ | 国产 OA / 中间件指纹 + 高频参数 + 一键检测命令 |\n\n### Phase 5 · Report（提交）\n\n→ 用模板 [`templates/report-submission.md`](references/templates/report-submission.md)\n\
+    \n**三段式骨架**：\n1. **标题**：精确到 endpoint + 漏洞类型，不超过 80 字\n2. **重现步骤**：每步可执行 / 截图 / HAR\n3. **影响 + 修复建议**：CVSS\
+    \ 4.0 vector + 业务影响段\n\n---\n\n## MCP 工具集成\n\n本 skill 支持调用本地 MCP 服务器作为工具层。**主选 jshookmcp**(134 工具精选\
+    \ / 386 全集 / 36 域,内置 Burp Suite bridge / Frida / WASM / 反调试 / Android adb / sourcemap 重构)。完整索引与场景映射:\n\
+    \n→ [`references/tools/mcp-jshook.md`](references/tools/mcp-jshook.md)\n\n默认推荐 `search` profile(上下文成本\
+    \ ~3K token),通过 `mcp__jshook__search_tools` + `mcp__jshook__activate_tools` 按需激活,避免 `full` profile\
+    \ 一次性加载 40K+ token。\n\n---\n\n## 数据资产规模\n\n| 类别 | 量级 |\n|---|---|\n| 攻击类 playbook | 19 个 |\n| 通用方法论文档\
+    \ | 6 个 |\n| 行业垂直 playbook | 2 个（银行 / 电信） |\n| 字典 / 凭据 | 3 个 |\n| 报告模板 | 1 个 |\n| 结构化 payload | **305\
+    \ 条**（177 web + 128 内网） |\n| WAF / EDR 绕过变体 | **263 个步骤**，覆盖 23 类 Web 攻击 |\n| 工具命令速查 | 114 条（Nmap/SQLMap/Burp/MSF/...）\
+    \ |\n| HackerOne 真实案例（已披露 High/Critical） | **2887 份**，按 weakness 分到 141 个分类 MD |\n| WooYun 历史案例统计（不可再生）\
+    \ | 88,636 条 |\n\nH1 真实案例已**直接嵌入对应 playbook 末尾**（每个 playbook 末尾有\"H1 真实案例\" Top 12 表 + 摘要）。\n\n---\n\
+    \n## 合规与合法红线\n\n每个 playbook 末段都有\"不要做的事\"。通用红线（任何 SRC 都遵守）：\n\n- ❌ 出 scope 的资产 / 域名 → 立即停手并报备\n- ❌\
+    \ 实际取走他人 PII → 仅证明可访问，立即销毁\n- ❌ 持续负载 / DoS / 大流量 → 仅 1–3 个 PoC 包，立即停止\n- ❌ 修改他人数据（即使有写权限）→ 仅在自己控制的对象上验证\n\
+    - ❌ 在生产做钓鱼或社工 → 不做\n- ❌ 提交未复现的猜测 → 必须有 HTTP 包 / 截图 / 视频证据\n- ✅ 测试 header 标记自己（如 `X-Bug-Bounty: <handle>`）\n\
+    - ✅ 用自己的两个账号自演越权场景\n- ✅ 用 OOB 域名做 SSRF 探测，不要用别人的 DNSLog\n- ✅ 提交前用 `references/templates/report-submission.md`\
+    \ 自查\n\n---\n\n## CLI 助记前缀\n\n`srchunter`（如：`srchunter scope set <program>`、`srchunter recon run`、`srchunter\
+    \ findings new <type>`）。当前未实现 CLI，仅作命名约定。\n\n---\n\n## 引用 / 跨链结构\n\n```\nsrc-hunter/\n├── SKILL.md\
+    \                    # 本文件 — skill 入口\n├── README.md                   # 项目说明\n└── references/\n \
+    \   ├── methodology/   6 docs   # 通用打法\n    ├── playbooks/    19 docs   # 攻击类 playbook（每个含 H1 案例 +\
+    \ Payload 库）\n    ├── industry/      3 docs   # 行业垂直\n    ├── dictionaries/  3 docs   # 字典 / 凭据\n\
+    \    ├── templates/     1 doc    # 报告模板\n    ├── h1-reports/             # 2887 份 H1 报告原始数据 + 141\
+    \ 类 MD\n    │   ├── raw/                # 原始 JSON（resume / 二次分析用）\n    │   └── by-weakness/      \
+    \  # 按 CWE 分类的 Markdown\n    └── payloader/              # 305 条结构化 payload 数据\n        ├── raw/ \
+    \               # JSON（机读）\n        ├── by-category/        # 按分类的 MD\n        ├── tools/        \
+    \      # 工具命令\n        └── waf-bypass.md       # 263 步骤 WAF 绕过集\n```"
+  source: src-hunter
+  path: src-hunter/SKILL.md
 - skill_id: supply-chain-security
   domain: supply-chain
   description: 供应链安全测试：SBOM / SCA / CI-CD 管道 / 依赖溯源，含 SBOM 法规与溯源取证路径。
@@ -10849,124 +10986,6 @@ skills:
     \ — CI/CD 管道安全审计"
   source: supply-chain-security
   path: supply-chain-security/SKILL.md
-- skill_id: ida-reverse
-  domain: reverse
-  description: IDA Pro 逆向分析辅助技能。当用户提到逆向、反编译、分析二进制/PE/ELF/APK/DLL/SO、破解、找密码、漏洞分析、病毒分析、firmware 固件分析，或需要分析
-    exe/dll/so/elf/macho/sys 等文件时，务必使用此技能。
-  body: "# IDA Pro 逆向分析技能\n\n## 本机双通道配置（最高优先级）\n\n本机同时保留三种工作方式，按以下顺序路由。除非主通道不可用，不要执行后文的旧 HTTP `start.ps1/open.ps1`\
-    \ 流程。\n\n### 1. `idapro_*`：默认主通道，headless IDALib\n\n- Codex 自动启动 `idalib-mcp --stdio --max-workers\
-    \ 4`，不需要用户打开 IDA GUI。\n- 首次处理文件时调用 `idapro_idb_open`：\n\n```text\nidapro_idb_open(\n  input_path=\"\
-    C:\\\\path\\\\to\\\\sample.exe\",\n  mode=\"force_headless\",\n  run_auto_analysis=true,\n  build_caches=true,\n\
-    \  init_hexrays=true,\n  idle_ttl_sec=3600,\n  preferred_session_id=\"sample\"\n)\n```\n\n- 保存返回的\
-    \ `session_id`。后续每个 `idapro_*` 分析/修改调用都显式传 `database=session_id`，不要重复打开同一个文件。\n- 先调用 `idapro_survey_binary(detail_level=\"\
-    minimal\", database=session_id)`，再深入目标函数。\n- 多目标优先使用 `analyze_batch`、`lookup_funcs`、`entity_query`\
-    \ 等批量接口，减少 MCP 往返；不要逐函数串行调用能批量完成的操作。\n- 正常样本保留自动分析、cache 和 Hex-Rays 预热。超大样本才按需关闭 `build_caches` 或\
-    \ `init_hexrays`。\n- 长期分析统一使用 `idle_ttl_sec=3600`，避免 10 分钟空闲后 worker 退出并重新加载数据库。\n\n### 2. `idagui_*`：保留的\
-    \ GUI 通道\n\n- 仅在用户已经打开 IDA、加载数据库并启动 `Edit -> Plugins -> MCP` 时使用。\n- 用于同步操作当前 GUI 状态、光标、选择区或调试器。\n\
-    - IDA GUI 未启动时该 server 的工具枚举会失败，这是预期状态；直接使用 `idapro_*`，不要要求用户启动 GUI。\n\n### 3. IDA-NO-MCP：批量文本导出\n\
-    \n- 插件路径：`%APPDATA%\\Hex-Rays\\IDA Pro\\plugins\\INP.py`。\n- 适合一次性导出全部伪代码、反汇编、字符串、导入导出表和内存 hexdump，再用\
-    \ `rg`/代码索引分析。\n- 本机版本支持 `idat -A -S...` headless 批处理，可由 Codex 自动运行，不需要手工按 `Ctrl-Shift-E`。\n- 它不是实时\
-    \ RPC 通道；需要 rename、comment、type、patch 或增量查询时使用 `idapro_*`。\n\n### 兼容 HTTP 脚本\n\n- `scripts/start.ps1`\
-    \ 和 `scripts/open.ps1` 仅用于 stdio 不可用时的兼容排障。\n- 兼容脚本和 GUI MCP 都会占用 `127.0.0.1:13337`，不得同时启动。\n- 正常工作流不要杀进程、不要启动额外\
-    \ HTTP server，也不要绕过可用的 `idapro_idb_open`。\n\n## 历史问题与兼容方案（仅排障时参考）\n\n以下内容记录旧 HTTP/GUI bridge 的兼容问题。主流程以顶部双通道配置和\
-    \ MCP 实时 tool schema 为准。\n\n### 旧流程踩过的坑\n\n1. **旧 `idalib_open` API 的 schema 问题**\n   - 旧版 MCP 客户端对\
-    \ `idalib_open` 的 output schema 校验有 BUG\n   - 报错：`Structured content does not match the tool's output\
-    \ schema`\n   - **旧版解决办法**：使用 `scripts/open.ps1` 通过 HTTP API 直调\n   - **当前解决办法**：直接使用已验证的 `idapro_idb_open`，并在后续调用中传\
-    \ `database=session_id`\n\n2. **`C:\\Windows\\System32\\` 文件无权限打开**\n   - idalib 无法直接读取 System32 目录下的文件\n\
-    \   - **解决办法**：`open.ps1` 自动检测并复制到 `临时目录` 目录后再打开\n\n3. **启动服务器命令阻塞对话**\n   - `idalib-mcp` 启动后会持续输出\
-    \ INFO 日志到控制台\n   - **解决办法**：使用 `scripts/start.ps1`（`-WindowStyle Hidden` 后台静默启动）\n   - 脚本会等待服务就绪后自动退出，不阻塞对话\n\
-    \n4. **MCP 服务器名不能用横线**\n   - 之前用 `ida-pro-mcp` 作为服务器名，可能引起工具注册问题\n   - **当前配置**：服务器名 `idapro`，工具前缀\
-    \ `idapro_*`\n\n5. **Remote HTTP vs Local Stdio**\n   - 旧 `idalib_open` 在部分客户端的 stdio/HTTP 模式均有 schema\
-    \ 兼容问题\n   - **当前主方案**：`idapro` Local Stdio + `idb_open`\n   - **兼容方案**：仅在主通道不可用时使用旧 Remote HTTP 脚本\n\
-    \n6. **PR #389 修复了部分 schema 问题**\n   - 作者 mrexodia 在 issue #388 后通过 PR #389 合并了修复\n   - 修复了 HTTP 模式下的\
-    \ structuredContent schema，但 部分代码 AI 客户端 侧校验仍有问题\n   - 已安装最新 `main` 分支版本\n\n7. **idalib 超时留下孤儿 worker\
-    \ 进程锁文件**\n   - 第一次 `open.ps1` 超时后，idalib 的 python worker 子进程变成孤儿进程，咬着 `.id0`/`.id1`/`.nam` 不放\n \
-    \  - 后续任何工具或手动拖入 IDA GUI 都会报\"权限不足\"\n   - **解决办法**：`start.ps1` 改用 `taskkill /F /T` 杀进程树，不再留孤儿\n \
-    \  - **兜底**：`open.ps1` 加了自动降级，检测到旧库被锁自动复制到 Temp 并加 GUID 前缀\n\n8. **带自动分析打开看起来像卡死**\n   - `idalib_open(run_auto_analysis=true)`\
-    \ 可能长时间不回包，但后端实际上仍在继续打开和分析\n   - 之前用户侧看到的是“PowerShell 一直无输出”，容易误判成脚本卡死\n   - **当前解决办法**：`open.ps1`\
-    \ 新增 `-TimeoutSeconds`，并改为后台请求 + 前台轮询 + 定时进度输出\n   - 轮询到会话已就绪时会提前返回 `OK:文件名:session_id`，超时则返回 `ERR:open_timeout_xxs`\n\
-    \n9. **非 ASCII 路径与不同版本响应字段不稳定**\n   - idalib worker 在部分 Windows 代码页下会把中文路径转换成 `?`，导致实际存在的文件无法打开\n\
-    \   - 不同 MCP 版本的 `structuredContent` 可能只有 `error`，没有 `success` 字段\n   - **当前解决办法**：`open.ps1` 自动将非\
-    \ ASCII 路径复制到 GUID 命名的 ASCII Temp 路径，并以可选字段方式解析直接对象或 `content[].text` JSON 响应\n\n### 当前工作流程原则\n\n\
-    | 步骤 | 做什么 | 用什么 |\n|------|--------|--------|\n| 1 | 自动打开目标文件 | `idapro_idb_open(..., mode=\"force_headless\"\
-    , idle_ttl_sec=3600)` |\n| 2 | 保存会话标识 | 使用返回的 `session_id` |\n| 3 | 概览并深入分析 | 调用 `idapro_*`，始终传 `database=session_id`\
-    \ |\n| 4 | 需要 GUI 状态时切换 | 用户已启动插件时使用 `idagui_*` |\n\n## 兼容脚本资源\n\n### start.ps1 — 启动 MCP HTTP 服务器\n\
-    \n路径：`scripts/start.ps1`\n\n- 用 `taskkill /F /T` 杀旧进程树（连 worker 子进程一起清理）→ 后台启动 `idalib-mcp` → 等待就绪（最多\
-    \ 15 秒）\n- 成功输出 `OK:72`，失败输出 `ERR:timeout`\n- 服务器在后台运行，不阻塞对话\n\n**调用方式**：\n```\npowershell -File \"\
-    <skill-root>\\ida-reverse\\scripts\\start.ps1\"\n```\n\n### open.ps1 — 打开二进制文件\n\n路径：`scripts/open.ps1`\n\
-    \n- 通过 HTTP API 直调 `idalib_open`，绕过 MCP schema 校验\n- 自动检测 System32 或非 ASCII 路径并复制到 ASCII 临时目录\n- 兼容\
-    \ `structuredContent` 直接对象和 `content[].text` JSON，响应缺少 `success` 时不会触发严格模式异常\n- 自动清理同名旧数据库文件（`.id0`/`.id1`/`.nam`/`.til`/`.i64`）\n\
-    - 旧库被锁时自动降级：复制到 Temp 加 GUID 前缀后打开，不报错\n- 将打开请求放到后台执行，避免长时间同步等待导致脚本无响应\n- 支持 `-TimeoutSeconds`，超时后返回\
-    \ `ERR:open_timeout_xxs`，不会无限卡住\n- 每隔 10 秒输出一次 `INFO:opening:已用时/超时秒数`，便于判断仍在分析中\n- 成功输出 `OK:文件名:session_id`，降级时加\
-    \ `(temp copy)` 标记\n- 失败时自动重试走 Temp 副本\n\n**调用方式**：\n```\npowershell -File \"<skill-root>\\ida-reverse\\\
-    scripts\\open.ps1\" -Path \"C:\\path\\to\\file.exe\"\n```\n\n**可选参数**：\n```\n# 指定 SessionId\npowershell\
-    \ -File \"scripts\\open.ps1\" -Path \"file.exe\" -SessionId \"my_session\"\n\n# 跳过自动分析（大文件推荐）\npowershell\
-    \ -File \"scripts\\open.ps1\" -Path \"large.exe\" -NoAutoAnalysis\n\n# 设置超时，避免带自动分析时长时间无返回\npowershell\
-    \ -File \"scripts\\open.ps1\" -Path \"file.exe\" -TimeoutSeconds 600\n```\n\n**输出约定**：\n```\n# 分析进行中（每\
-    \ 10 秒输出一次）\nINFO:opening:11/600s\n\n# 成功打开\nOK:sample.exe:abcd1234\n\n# 成功打开，但因锁文件降级到 Temp 副本\nOK:1234abcd-sample.exe:abcd1234\
-    \ (temp copy)\n\n# 达到超时上限\nERR:open_timeout_600s\n```\n\n**实测说明**：\n- `Snipaste.exe` 带自动分析实测约 `324s`\
-    \ 才返回成功，属于“分析很久”而不是“脚本死锁”\n- 因此遇到 GUI 程序或较复杂样本时，建议优先显式设置 `-TimeoutSeconds 600`\n\n## 核心工具列表\n\n###\
-    \ 概况分析（第一步）\n- `idapro_survey_binary(detail_level=\"minimal\")` — 快速概况：函数数、字符串、段、入口点、导入分类（加密/网络/文件IO）\n\
-    - `idapro_list_funcs(queries)` — 列出函数（分页、按名称过滤）\n- `idapro_list_globals(queries)` — 列出全局变量\n- `idapro_entity_query(kind,\
-    \ filter)` — 统一查询：functions/globals/imports/strings/names\n\n### 反编译与反汇编\n- `idapro_decompile(addr)`\
-    \ — 反编译为伪代码\n- `idapro_disasm(addr, max_instructions=N)` — 反汇编\n- `idapro_analyze_function(addr, include_asm=false)`\
-    \ — 综合分析（伪代码+字符串+常量+调用者+被调用者+块）\n- `idapro_func_profile(queries)` — 函数概要指标\n\n### 交叉引用与数据流\n- `idapro_xrefs_to(addrs)`\
-    \ — 查谁引用目标地址\n- `idapro_xref_query(addr, direction)` — 高级 xref 查询（方向/类型过滤）\n- `idapro_callees(addrs)`\
-    \ — 子函数列表\n- `idapro_callgraph(roots, max_depth)` — 调用图\n- `idapro_trace_data_flow(addr, direction,\
-    \ max_depth)` — 数据流追踪（forward/backward）\n\n### 搜索\n- `idapro_find_regex(pattern, limit)` — 正则搜字符串\n\
-    - `idapro_search_text(pattern)` — 在反汇编列表中搜文本\n- `idapro_find_bytes(patterns, limit)` — 字节模式搜索（支持 ??\
-    \ 通配符）\n- `idapro_find(type, targets)` — 高级搜索（立即数/字符串/引用）\n\n### 内存与数据\n- `idapro_get_bytes(addrs)`\
-    \ — 读原始字节\n- `idapro_get_string(addrs)` — 读字符串\n- `idapro_get_int(queries)` — 读整数值\n- `idapro_get_global_value(queries)`\
-    \ — 读全局变量值\n- `idapro_read_struct(queries)` — 读结构体字段值\n- `idapro_search_structs(filter)` — 搜索结构体\n\
-    \n### 修改操作\n- `idapro_set_comments(items)` — 添加注释（反汇编+反编译双向同步）\n- `idapro_append_comments(items)`\
-    \ — 追加注释\n- `idapro_rename(batch)` — 批量重命名（函数/全局/局部/栈变量）\n- `idapro_patch_asm(items)` — Patch 汇编指令\n\
-    - `idapro_patch(patches)` — Patch 字节\n- `idapro_define_func(items)` — 定义函数\n- `idapro_undefine(items)`\
-    \ — 取消定义\n- `idapro_define_code(items)` — 将字节转为代码\n\n### 类型系统\n- `idapro_declare_type(decls)` — 声明\
-    \ C 结构体/枚举/联合体\n- `idapro_set_type(edits)` — 应用类型到函数/全局/局部\n- `idapro_infer_types(addrs)` — 推断类型\n\
-    - `idapro_type_query(queries)` — 查询已声明类型\n- `idapro_type_inspect(queries)` — 查看类型详情\n\n### 栈帧\n- `idapro_stack_frame(addrs)`\
-    \ — 查看栈帧变量\n- `idapro_declare_stack(items)` — 声明栈变量\n- `idapro_delete_stack(items)` — 删除栈变量\n\n###\
-    \ 签名\n- `idapro_make_signature(addrs)` — 为地址生成唯一字节签名\n- `idapro_make_signature_for_function(addrs)`\
-    \ — 为函数生成签名\n- `idapro_find_xref_signatures(addrs)` — 为引用地址的代码生成签名\n\n### 调试器（需要 ?ext=dbg）\n- `idapro_open_file(file_path)`\
-    \ — 在 GUI IDA 实例中打开文件\n- 调试器工具默认隐藏，可通过 URL 参数 `?ext=dbg` 启用\n\n### 会话管理\n- `idapro_idb_open(...)`\
-    \ — 打开或复用 headless/GUI session，返回 `session_id`\n- `idapro_idb_list()` — 列出 worker 和 GUI session\n\
-    - `idapro_idb_save(database=session_id, path=\"\")` — 保存数据库\n- `idapro_server_health(database=session_id)`\
-    \ — 检查 worker、自动分析、cache 和 Hex-Rays 状态\n- 当前 headless supervisor 没有隐式 current session；每个工具调用都必须指定\
-    \ `database`\n\n### 其他\n- `idapro_int_convert(inputs)` — 进制转换（**必须用这个，不要自己算进制！**）\n- `idapro_export_funcs(addrs,\
-    \ format)` — 导出函数（json/c_header/prototypes）\n- `idagui_py_eval(code)` — GUI bridge 启用对应扩展时执行 Python\n\
-    - `idapro_server_health(database=session_id)` — headless worker 健康检查\n\n## 逆向分析完整工作流\n\n### Step 1:\
-    \ 自动打开文件\nCodex 自动启动 stdio supervisor，不需要另行启动 HTTP 服务。\n```text\nidapro_idb_open(input_path=\"C:\\\
-    目标.exe\", mode=\"force_headless\",\n                 run_auto_analysis=true, build_caches=true,\n\
-    \                 init_hexrays=true, idle_ttl_sec=3600,\n                 preferred_session_id=\"\
-    target\")\n```\n记录返回的 `session_id`。\n\n### Step 2: 检查状态\n```text\nidapro_server_health(database=session_id)\n\
-    ```\n确认 `auto_analysis_ready`、`hexrays_ready` 和 `strings_cache_ready`。\n\n### Step 3: 全局概览\n```\n\
-    idapro_survey_binary(detail_level=\"minimal\", database=session_id)\n```\n关注：\n- 架构（x86/x64/ARM）\n\
-    - 入口点（main/WinMain/DllMain）\n- 有趣的字符串（URL、路径、错误消息）\n- 导入分类（加密函数？网络 API？文件操作？）\n- 热门函数（高 xref 计数的函数通常是关键逻辑）\n\
-    \n### Step 4: 深入关键函数\n```\nidapro_analyze_function(addr=\"关键函数名\")\n```\n或：\n```\nidapro_decompile(addr=\"\
-    函数名\")\nidapro_disasm(addr=\"函数名\", max_instructions=50)\n```\n\n### Step 5: 数据流和交叉引用\n```\nidapro_xrefs_to(addrs=\"\
-    关键地址/字符串\")\nidapro_callgraph(roots=[\"关键函数\"], max_depth=3)\nidapro_trace_data_flow(addr=\"关键地址\"\
-    , direction=\"backward\", max_depth=5)\n```\n\n### Step 6: 记录和优化\n```\nidapro_set_comments(items=[{\"\
-    addr\": \"0x140001000\", \"comment\": \"你的理解\"}])\nidapro_rename(batch={\"func\": [{\"addr\": \"函数地址\"\
-    , \"name\": \"有意义的名字\"}]})\n```\n\n### Step 7: 输出报告\n分析完成后，生成 `report.md` 记录发现和步骤。\n\n## Prompt 工程准则\n\
-    \n1. **不要手动算进制** — 任何时候需要转换数字，用 `idapro_int_convert`\n2. **先 survey 后深入** — 先看概况再针对性分析\n3. **持续加注释和重命名**\
-    \ — 分析过程中不断更新函数名和变量名，提升后续分析的准确性\n4. **跟踪交叉引用** — 发现有趣的数据/字符串，用 `xrefs_to` 看谁引用了它\n5. **遇到混淆代码** —\
-    \ 先做字符串解密、导入哈希去除、控制流平坦化去除等预处理\n6. **C++ STL 代码** — 用 FLIRT/Lumina 识别库函数后，再分析业务逻辑\n7. **不要暴力破解** —\
-    \ 分析应从反汇编中推导解决方案，用简单 Python 辅助计算\n8. **遇到 \"No database bound\"** — 还没有打开任何二进制文件，先执行 `open.ps1`\n\
-    9. **遇到 \"Failed to open database\"** — 可能是旧数据库文件被锁，`open.ps1` 会自动降级到 Temp 副本（输出含 `(temp copy)` 标记）\n\
-    10. **带自动分析打开 GUI/复杂样本时** — 默认加 `-TimeoutSeconds 600`，不要把长时间 `INFO:opening:...` 误判成脚本卡死\n\n---\n\n\
-    ## 路由上下文\n\n**上游入口**: `skills/SKILL.md`（总控）、`routing.md`\n**上游备选**: `radare2/`（如果不想开 IDA，可以先 r2 快速侦察）\n\
-    **下游出口**:\n- 需 Frida 动态验证 → `reverse-engineering/tools-dynamic.md`\n- 需符号执行/angr → `reverse-engineering/tools-dynamic.md`\n\
-    - 需通用逆向方法论 → `reverse-engineering/SKILL.md`\n\n**同级关联模块**: `radare2/`（IDA 不可用时替代方案）\n\n---\n\n## 按需自举（On-Demand\
-    \ Bootstrap）\n\n本 skill 的入口脚本已接入统一自举系统。\n\n### 自动化能力边界\n\n| 工具 | 可自动安装 | 安装方式 | 说明 |\n|------|-----------|---------|------|\n\
-    | idalib-mcp | ✓ | pip install (from GitHub) | `start.ps1` 缺失时自动安装 |\n| IDA Pro 本体 | ✗ | 商业软件，需手动安装\
-    \ | 设置 `IDADIR` 环境变量指向安装目录 |\n\n### 安装步骤（已验证）\n\n```cmd\n# 1. 设置 IDA 路径（替换为你的实际 IDA 安装目录）\nsetx IDADIR\
-    \ \"<你的IDA安装目录>\"\n\n# 2. 从 GitHub 安装 ida-pro-mcp（PyPI 上的 ida-mcp 是另一个项目，不要装错！）\npip install git+https://github.com/mrexodia/ida-pro-mcp.git\n\
-    \n# 3. 安装 IDA 插件（选择 Streamable HTTP + Global + 全选客户端）\nida-pro-mcp --install\n\n# 4. 重启 IDA Pro，打开目标文件\n\
-    # 插件自动监听 127.0.0.1:13337\n\n# 5. 验证\nida-pro-mcp --config\n```\n\n> ⚠️ **注意**：PyPI 上的 `ida-mcp` 包（作者\
-    \ jtsylve）是另一个项目，不是我们需要的。\n> 必须从 GitHub 安装 `mrexodia/ida-pro-mcp`。\n\n### 自举触发点\n\n- `scripts/start.ps1`：缺\
-    \ `idalib-mcp` 时自动调用 `bootstrap-reverse.ps1`\n- MCP 注册：bootstrap 会自动把 `idapro` 写入 Claude MCP 配置\n\n\
-    ### 前置条件\n\n- IDA Pro 已安装且 `IDADIR` 环境变量已设置（或脚本内默认路径正确）\n- Python 已安装（idalib-mcp 依赖 Python）"
-  source: x-ida-reverse
-  path: x-ida-reverse/SKILL.md
 - skill_id: xigong-funk-hikari
   domain: reverse
   description: Evidence-driven Hikari-LLVM/OLLVM deobfuscation and plaintext recovery for ELF/SO, especially
@@ -11813,57 +11832,3 @@ skills:
     - 新任务开始前先查索引和先例，复用已有经验'
   source: zzy-skills-index
   path: zzy-skills-index/SKILL.md
-
-- skill_id: local-kb-first
-  domain: misc
-  description: 解题前先查本地知识库与历史经验（doc / skill / experience.json），查到方法再动手，别凭记忆硬算。
-  body: |
-    # 先查资料，再动手
-    
-    遇到不确定的算法、题型或工具用法，**先查本地资料，再决定解法**，不要凭记忆硬算。
-    
-    ## 本地资料位置
-    
-    1. 知识库：`C:\Users\admin\Desktop\CTF\doc`（离线 wiki、工具手册、writeup，约 314 个 md）
-    2. 技能库：`C:\Users\admin\Desktop\CTF\skill`（约 2312 个 md）
-    3. 历史经验：`SpiritScout\knowledge\data\experience.json`（342 条，含失败复盘）
-    
-    ## 查法
-    
-    命令行：
-    
-    ```text
-    findstr /S /I /C:"meet-in-the-middle" "C:\Users\admin\Desktop\CTF\doc\*.md"
-    ```
-    
-    python（更快，可只取前几条命中）：
-    
-    ```python
-    import pathlib
-    kw = "meet-in-the-middle"
-    root = pathlib.Path(r"C:\Users\admin\Desktop\CTF\doc")
-    hits = []
-    for p in root.rglob("*.md"):
-        try:
-            t = p.read_text(encoding="utf-8", errors="ignore")
-        except Exception:
-            continue
-        if kw.lower() in t.lower():
-            hits.append(p)
-            if len(hits) >= 3:
-                break
-    for p in hits:
-        print(p)
-    ```
-    
-    ## 铁律
-    
-    - 资料里的 `flag{...}` **一律不可信**（可能是别人的题、可能是假的），必须自己算出来并验证。
-    - 查到方法后，说清「用了哪篇资料的哪一步」，再执行。
-    - 查不到就换关键词，不要查一次就放弃。
-  severity: info
-  cwe: ""
-  tools: []
-  source: local
-  path: ""
-  enabled: true

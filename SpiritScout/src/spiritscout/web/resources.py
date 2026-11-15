@@ -17,9 +17,15 @@ from pydantic import (
     ValidationError,
 )
 
+from spiritscout.core.audit import AuditLogger
 from spiritscout.core.exceptions import SpiritScoutError
 from spiritscout.resources.assistant import ResourceAssistant, validate_skill
 from spiritscout.resources.store import ResourceStore, redact_credentials, validate_mcp
+
+
+class SkillExportPayload(BaseModel):
+    """导出载荷（目前无参数；留着方便以后加「只导出某类」）。"""
+    mode: str = ""
 
 
 class ResourceChange(BaseModel):
@@ -187,6 +193,44 @@ def mount_resources(
             "total": len(items),
             "has_more": offset + limit < len(items),
         }
+
+    @app.post("/api/resources/skills/sync")
+    def skill_sync_pull() -> dict[str, Any]:
+        """拉取：把仓库里的 ``configs/skills.yaml`` 同步进本地资源库。
+
+        只增改不删——清单里没有的条目留在库里，避免一次手滑就从页面消失。
+        """
+        from spiritscout.resources.skill_sync import sync_skills
+
+        path = Path(cfg.models_config_path).parent / "skills.yaml"
+        if not path.exists():
+            raise HTTPException(404, f"清单不存在：{path.name}")
+        try:
+            stats = sync_skills(store, path)
+        except (OSError, ValueError, SpiritScoutError) as exc:
+            raise HTTPException(400, str(exc)) from exc
+        AuditLogger(cfg.audit_log_path).log("skills.sync", "user", stats)
+        return {"ok": True, **stats}
+
+    @app.post("/api/resources/skills/export")
+    def skill_sync_push(payload: SkillExportPayload | None = None) -> dict[str, Any]:
+        """提交：把库里的自定义技能写回 ``configs/skills.yaml``。
+
+        只写文件，不碰 git——服务端替用户提交有风险（可能在别人的分支、
+        可能带上未审的改动）。前端随后提示该跑哪条命令。
+        """
+        from spiritscout.resources.skill_sync import export_skills, write_skills
+
+        path = Path(cfg.models_config_path).parent / "skills.yaml"
+        try:
+            items = export_skills(store)
+            write_skills(path, items)
+        except (OSError, ValueError, SpiritScoutError) as exc:
+            raise HTTPException(400, str(exc)) from exc
+        AuditLogger(cfg.audit_log_path).log("skills.export", "user",
+                                             {"total": len(items)})
+        return {"ok": True, "total": len(items),
+                "path": str(path), "hint": "git add configs/skills.yaml && git commit && git push"}
 
     @app.get("/api/resources/skills/{key}")
     def skill_detail(key: str) -> dict[str, Any]:

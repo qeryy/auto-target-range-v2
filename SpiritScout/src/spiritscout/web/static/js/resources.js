@@ -6,17 +6,41 @@ const ResourceConsole = (() => {
   const root = kind => $(`#view-${kind}`);
   function shell(kind) {
     const [title,description]=titles[kind],el=root(kind);if(el.dataset.ready)return;el.dataset.ready='yes';
-    el.innerHTML=`<header class="resource-head"><div><h2>${title}</h2><p>${description}</p></div><div class="resource-head-actions"><button class="btn" data-refresh>刷新</button><button class="btn primary" data-new>手动添加</button></div></header>
+    el.innerHTML=`<header class="resource-head"><div><h2>${title}</h2><p>${description}</p></div><div class="resource-head-actions">${kind==='skill'?'<button class="btn" data-skill-pull title="把仓库里 configs/skills.yaml 的技能同步进本地库：只增改，不删本地条目">拉取清单</button><button class="btn" data-skill-push title="把本地库里的自定义技能写回 configs/skills.yaml，之后用 git 提交推送">提交清单</button>':''}<button class="btn" data-refresh>刷新</button><button class="btn primary" data-new>手动添加</button></div></header>
       ${kind==='mcp'?'<div data-exa-settings></div>':''}
       <div class="resource-layout"><section class="resource-catalog" aria-label="${title}目录"><label class="resource-search">检索已配置资源<input type="search" data-search placeholder="输入关键词…" maxlength="200"></label><div class="resource-list-status" role="status"></div><div class="resource-list"></div><button class="btn resource-more" hidden>加载更多</button></section>
       <section class="resource-chat" aria-label="${title}专属管理对话"><header><div><b>资源助手</b><small>变更需确认后执行</small></div></header><div class="resource-chat-log" aria-live="polite"></div><div class="resource-proposals"></div><form class="resource-chat-form"><label class="sr-only" for="resource-message-${kind}">向${title}助手描述需求</label><textarea id="resource-message-${kind}" placeholder="${kind==='mcp'?'例如：帮我配置一个只读浏览器 MCP，请先给出安装方案':'例如：添加一份关于接口权限边界的参考技能'}" rows="3" maxlength="16000"></textarea><div><small>请勿在聊天中粘贴密钥</small><button class="btn primary" type="submit">发送</button></div><p class="resource-chat-status" role="status"></p></form></section></div>`;
     if(kind==='mcp')ExaSettings.mount(el.querySelector('[data-exa-settings]'));
     el.querySelector('[data-refresh]').onclick=()=>{load(kind);loadChat(kind);if(kind==='mcp')ExaSettings.load();};
+    if(kind==='skill'){
+      el.querySelector('[data-skill-pull]').onclick=e=>skillSync(e.currentTarget,'sync','拉取');
+      el.querySelector('[data-skill-push]').onclick=e=>skillSync(e.currentTarget,'export','提交');
+    }
     el.querySelector('[data-new]').onclick=()=>edit(kind);
     let timer;el.querySelector('[data-search]').oninput=e=>{const s=stateFor(kind);s.q=e.target.value.trim();s.generation++;clearTimeout(timer);timer=setTimeout(()=>load(kind),250);};
     el.querySelector('.resource-more').onclick=()=>load(kind,true);
     el.querySelector('.resource-chat-form').onsubmit=e=>send(kind,e);
   }
+  // 技能清单往返：拉取把仓库里的清单同步进库，提交把库写回清单文件。
+  // 提交只写文件不碰 git——服务端替用户提交有风险，提示他自己跑那两条命令。
+  async function skillSync(button,action,label){
+    const original=button.textContent;
+    button.disabled=true;button.textContent=label+'中…';
+    try{
+      const data=await api('/api/resources/skills/'+action,{method:'POST'});
+      if(action==='sync'){
+        toast(`拉取完成：新增 ${data.added} 条，更新 ${data.updated} 条，未变 ${data.unchanged} 条`);
+      }else{
+        toast(`已写回清单（${data.total} 条）。接着运行：${data.hint||'git add && git commit && git push'}`);
+      }
+      await load('skill');
+    }catch(err){
+      toast(label+'失败：'+(err?.message||err),true);
+    }finally{
+      button.disabled=false;button.textContent=original;
+    }
+  }
+
   async function load(kind,append=false) {
     const s=stateFor(kind),version=++s.generation,status=root(kind).querySelector('.resource-list-status');
     status.textContent='正在读取…';
