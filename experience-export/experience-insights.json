@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "kind": "spiritscout-experience-insights",
-  "generated_at": "2026-11-15T14:09:31+00:00",
+  "generated_at": "2026-11-15T15:25:45+00:00",
   "source": "SpiritScout/.spiritscout/experience.db -> table insights",
   "redaction": [
     "http/https 链接",
@@ -10,14 +10,14 @@
     "sk- / ghp_ / xox 形态密钥",
     "靶场主机名归一为 local-range"
   ],
-  "total": 542,
+  "total": 546,
   "tag_frequency": {
-    "ctf": 384,
+    "ctf": 386,
     "crypto": 96,
     "web": 63,
     "flag": 53,
+    "misc": 53,
     "base64": 52,
-    "misc": 52,
     "判读": 35,
     "reverse": 34,
     "复盘": 34,
@@ -27,8 +27,8 @@
     "编码": 20,
     "流程": 18,
     "CTF": 15,
+    "reporting": 14,
     "validation": 14,
-    "reporting": 13,
     "sqli": 12,
     "workflow": 12,
     "逆向": 12,
@@ -77,6 +77,7 @@
     "judgment": 4,
     "metrics": 4,
     "rce": 4,
+    "triage": 4,
     "信息收集": 4,
     "信息泄露": 4,
     "命令注入": 4,
@@ -86,6 +87,7 @@
     "解密": 4,
     "记录": 4,
     "证据": 4,
+    "agent": 3,
     "barcode": 3,
     "bypass": 3,
     "decoding": 3,
@@ -99,7 +101,6 @@
     "replay": 3,
     "rsa": 3,
     "source-review": 3,
-    "triage": 3,
     "vm": 3,
     "二进制分析": 3,
     "二进制文件": 3,
@@ -127,9 +128,11 @@
     "AVR固件": 2,
     "attachment": 2,
     "audio": 2,
+    "authorization": 2,
     "blind": 2,
     "bruteforce": 2,
     "context": 2,
+    "convergence": 2,
     "environment": 2,
     "ephemeral": 2,
     "failure": 2,
@@ -156,6 +159,7 @@
     "rev": 2,
     "review": 2,
     "sage": 2,
+    "scope": 2,
     "scoping": 2,
     "static-analysis": 2,
     "status": 2,
@@ -195,7 +199,6 @@
     "GDB": 1,
     "IoT": 1,
     "access-control": 1,
-    "agent": 1,
     "algebra": 1,
     "alternative": 1,
     "anti-debug": 1,
@@ -220,7 +223,6 @@
     "constraint": 1,
     "constraints": 1,
     "control-flow": 1,
-    "convergence": 1,
     "correlation-attack": 1,
     "coverage": 1,
     "custom-encoding": 1,
@@ -291,11 +293,13 @@
     "resume": 1,
     "ret2libc": 1,
     "retry": 1,
+    "roe": 1,
     "roi": 1,
     "rounds": 1,
     "rust": 1,
     "scoring": 1,
     "secret": 1,
+    "self-check": 1,
     "service_provider": 1,
     "spectrogram": 1,
     "stacked-query": 1,
@@ -7327,6 +7331,56 @@
       ],
       "source_model": "master",
       "captured_at": "2026-11-15T14:08:58+00:00"
+    },
+    {
+      "id": "exp-d0889385c326",
+      "insight": "当用户诉求的措辞是「确认某状态/连通性是否正常」而非解题，且授权范围字段只含占位目标时，这两者共同构成「未获授权执行」的信号——此时任何主动探测都超出授权边界，正确产出是状态结论本身。",
+      "context": "由 Agent 驱动的渗透/CTF 执行框架，含明确 allowed-scope 字段的场景",
+      "tags": [
+        "scope",
+        "authorization",
+        "agent",
+        "ctf"
+      ],
+      "source_model": "master",
+      "captured_at": "2026-11-15T15:25:34+00:00"
+    },
+    {
+      "id": "exp-38d85cf12101",
+      "insight": "授权范围里出现的是示例性/占位式的主机或 URL，其语义是「授权缺失」而不是「目标列表」，按字面解读范围比按任务描述补全目标更安全。",
+      "context": "任何带 Rules of Engagement / allowed_urls 白名单的测试编排",
+      "tags": [
+        "scope",
+        "roe",
+        "authorization"
+      ],
+      "source_model": "master",
+      "captured_at": "2026-11-15T15:25:34+00:00"
+    },
+    {
+      "id": "exp-0cf7b1317805",
+      "insight": "收尾原因为「决策收敛」且线索数、发现数均为零时，这是合法的终态而非失败——结论由收敛理由承载，不应为了凑产出而追加探测轮次。",
+      "context": "CTF/演练编排中的任务终止与结果汇总",
+      "tags": [
+        "ctf",
+        "convergence",
+        "reporting",
+        "misc"
+      ],
+      "source_model": "master",
+      "captured_at": "2026-11-15T15:25:34+00:00"
+    },
+    {
+      "id": "exp-545dd2ad84a6",
+      "insight": "计划中唯一节点是非技术性的确认类条目、轮次停在 1 时，这类请求往往来自编排层的自检或计量校验，而非真实挑战；把它当成可解题目会导致任务误框定与预算浪费。",
+      "context": "混合了自检/计价/健康检查流量的自动化任务队列",
+      "tags": [
+        "agent",
+        "triage",
+        "self-check"
+      ],
+      "source_model": "master",
+      "captured_at": "2026-11-15T15:25:34+00:00"
     }
   ]
 }

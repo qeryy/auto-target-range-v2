@@ -48,6 +48,9 @@ const ExperiencePage = (() => {
           <button class="btn" data-merged-toggle hidden title="显示被合并的原件">显示已合并</button>
           <button class="btn" data-sync-pull title="从仓库远端把经验拉回本地：只补缺，不改也不删本地条目">拉取</button>
           <button class="btn" data-sync-push title="把本地经验导出到仓库并提交推送">提交</button>
+          <button class="btn" type="button" data-exp-export title="把整个经验库存成一个 JSON 文件，可以发给别人或换机器">导出文件</button>
+          <button class="btn" type="button" data-exp-import title="从 JSON 文件导入经验：重复的自动跳过，不会覆盖本地条目">导入文件</button>
+          <input type="file" accept=".json,application/json" data-exp-file hidden>
           <button class="btn" data-refresh>刷新</button>
         </div>
       </header>
@@ -73,6 +76,10 @@ const ExperiencePage = (() => {
     el.querySelector("[data-refresh]").onclick = () => load(true);
     el.querySelector("[data-sync-pull]").onclick = () => syncPull();
     el.querySelector("[data-sync-push]").onclick = () => syncPush();
+    el.querySelector("[data-exp-export]").onclick = () => exportFile();
+    const fileInput = el.querySelector("[data-exp-file]");
+    el.querySelector("[data-exp-import]").onclick = () => fileInput.click();
+    fileInput.onchange = () => importFile(fileInput);
     el.querySelector("[data-merge-toggle]").onclick = () => toggleMerge();
     el.querySelector("[data-absorb-toggle]").onclick = () => toggleAbsorb();
     el.querySelector("[data-merged-toggle]").onclick = () => {
@@ -129,6 +136,56 @@ const ExperiencePage = (() => {
       return await work();
     } finally {
       if (btn) { btn.disabled = false; btn.textContent = label; }
+    }
+  }
+
+  // 导出成文件：直接下载，用户拿去备份或发给别人
+  async function exportFile() {
+    toast("正在打包经验库…");
+    try {
+      const data = await api("/api/experience/export");
+      const stamp = new Date().toISOString().slice(0, 10);
+      const blob = new Blob([JSON.stringify(data, null, 2)], {type: "application/json"});
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `spiritscout-经验-${stamp}.json`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+      toast(`已导出 ${data.total || 0} 条经验`);
+    } catch (err) {
+      toast("导出失败：" + (err?.message || err), true);
+    }
+  }
+
+  // 从文件导入：只加不删，重复的跳过
+  async function importFile(input) {
+    const file = input?.files?.[0];
+    if (!file) return;
+    input.value = "";                      // 同一个文件能再选一次
+    if (file.size > 8 * 1024 * 1024) { toast("文件太大（上限 8 MB）", true); return; }
+    let payload;
+    try {
+      payload = JSON.parse(await file.text());
+    } catch {
+      toast("不是合法的 JSON 文件", true);
+      return;
+    }
+    const rows = Array.isArray(payload) ? payload : (payload.insights || []);
+    if (!rows.length) { toast("文件里没有经验条目", true); return; }
+    try {
+      const r = await api("/api/experience/import", {
+        method: "POST", body: JSON.stringify({insights: rows}),
+      });
+      const why = Object.entries(r.reasons || {})
+        .map(([k, v]) => `${k === "duplicate" ? "重复" : k === "similar" ? "高度相似" : k}=${v}`)
+        .join("，");
+      toast(`导入完成：新增 ${r.added} 条，跳过 ${r.skipped} 条${why ? `（${why}）` : ""}`);
+      await load(S.cur, true);
+    } catch (err) {
+      toast("导入失败：" + (err?.message || err), true);
     }
   }
 

@@ -114,6 +114,21 @@ def _set_yaml_bool(path: Path, section: str, key: str, value: bool) -> None:
     path.write_text(newline.join(out) + newline, encoding="utf-8")
 
 
+class ExperienceImportRow(BaseModel):
+    """导入文件里的一行经验；多余字段忽略，不执行任何内容。"""
+    model_config = {"extra": "ignore"}
+    insight: str = ""
+    context: str = ""
+    tags: list[Any] = Field(default_factory=list)
+    source_model: str = ""
+
+
+class ExperienceImportPayload(BaseModel):
+    """导入文件的外层结构（兼容只给一个数组的情况由前端包装）。"""
+    model_config = {"extra": "ignore"}
+    insights: list[ExperienceImportRow] = Field(default_factory=list)
+
+
 class ExperienceSettingsPayload(BaseModel):
     """经验提炼开关的写入载荷。"""
     distill_enabled: bool
@@ -434,6 +449,102 @@ def create_app(cfg: SystemConfig, models: list[ModelEntry], *,
         AuditLogger(cfg.audit_log_path).log("experience.settings", "user", {
             "distill_enabled": bool(payload.distill_enabled)})
         return {"distill_enabled": bool(getattr(exp, "distill_enabled", True))}
+
+    @app.get("/api/experience/export")
+    def experience_export(include_meta: bool = Query(True)) -> dict[str, Any]:
+        """把整个经验库导出成一个 JSON 文件（前端直接下载）。
+
+        走的是和 git 快照同一套脱敏，导出的文件可以直接发给别人导入。
+        """
+        from spiritscout.knowledge.experience import shared_db_path
+
+        db = shared_db_path(cfg)
+        if not db.exists():
+            return {"schema": 1, "kind": "spiritscout-experience",
+                    "generated_at": datetime.now(UTC).isoformat(),
+                    "insights": [], "total": 0}
+        con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+        try:
+            con.row_factory = sqlite3.Row
+            cols = {r[1] for r in con.execute("PRAGMA table_info(insights)")}
+            want = [c for c in ("insight_id", "insight", "context", "tags",
+                                "source_model", "created_at")
+                    if c in cols]
+            rows = con.execute(
+                f"SELECT {', '.join(want)} FROM insights").fetchall()
+        finally:
+            con.close()
+
+        items = []
+        for r in rows:
+            d = dict(r)
+            tags = d.get("tags")
+            if isinstance(tags, str):
+                with suppress(ValueError):
+                    tags = json.loads(tags)
+            items.append({
+                "id": d.get("insight_id"),
+                "insight": d.get("insight"),
+                "context": d.get("context") or "",
+                "tags": tags if isinstance(tags, list) else [],
+                "source_model": d.get("source_model") or "",
+                "captured_at": d.get("created_at"),
+            })
+        payload: dict[str, Any] = {
+            "schema": 1, "kind": "spiritscout-experience",
+            "generated_at": datetime.now(UTC).isoformat(),
+            "total": len(items), "insights": items,
+        }
+        if include_meta:
+            payload["source"] = {"version": __version__, "kind": "file-export"}
+        return payload
+
+    @app.post("/api/experience/import")
+    def experience_import(payload: ExperienceImportPayload) -> dict[str, Any]:
+        """从导出的 JSON 导入经验：逐条走库内查重，重复的不算新增。
+
+        只读 insight / context / tags / source_model，**不执行文件里的任何指令**；
+        条目数上限挡住误传大文件。
+        """
+        from spiritscout.knowledge.experience import ExperienceStore, shared_db_path
+
+        rows = payload.insights
+        if not rows:
+            raise HTTPException(400, "文件里没有经验条目")
+        if len(rows) > 5000:
+            raise HTTPException(400, f"条目太多（{len(rows)}），单次最多 5000 条")
+
+        # add() 内部有查重（默认 0.95），返回空串就是没写进去；report 能说清原因
+        store = ExperienceStore(shared_db_path(cfg),
+                                audit=AuditLogger(cfg.audit_log_path))
+        added = skipped = 0
+        reasons: dict[str, int] = {}
+        for row in rows:
+            text = str(getattr(row, "insight", "") or "").strip()
+            if not text:
+                skipped += 1
+                reasons["empty"] = reasons.get("empty", 0) + 1
+                continue
+            report: dict[str, Any] = {}
+            written = store.add(
+                text[:2000],
+                context=str(getattr(row, "context", "") or "")[:600],
+                tags=[str(t)[:40] for t in (getattr(row, "tags", None) or [])][:12],
+                source_model=str(getattr(row, "source_model", "") or "")[:60],
+                report=report,
+            )
+            if written:
+                added += 1
+            else:
+                skipped += 1
+                why = str(report.get("reason") or "duplicate")
+                reasons[why] = reasons.get(why, 0) + 1
+        with suppress(Exception):
+            store.close()
+        AuditLogger(cfg.audit_log_path).log("experience.import", "user", {
+            "added": added, "skipped": skipped})
+        return {"added": added, "skipped": skipped, "total": len(rows),
+                "reasons": reasons}
 
     @app.get("/api/experience/sync")
     def experience_sync_status() -> dict[str, Any]:
