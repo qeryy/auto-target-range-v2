@@ -84,10 +84,25 @@
 /* 技能页的任务大类筛选：三个按钮 + 条数，选中的高亮。
    技能库存的是技术领域（web/reverse…），用户选的是工作模式（SRC/CTF/竞赛），
    这排按钮就是那层映射的可见入口。 */
-.resource-modes { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0 4px; }
-.resource-mode-btn { display: inline-flex; align-items: center; gap: 6px; }
-.resource-mode-btn.on { border-color: var(--accent); color: var(--accent-ink); background: var(--accent-soft); }
-.resource-mode-count { font: 10px var(--mono); opacity: .75; }
+/* 技能页的任务大类：与经验页同一套视觉（药丸按钮 + 竖线分隔的条数） */
+.resource-modes {
+  display: flex; flex-wrap: wrap; gap: 6px;
+  margin: 10px 0 6px; padding: 8px 10px;
+  border: 1px solid var(--line); border-radius: 10px;
+  background: var(--surface);
+}
+.resource-mode-btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  border-radius: 999px; padding: 4px 12px; font-size: 12px;
+}
+.resource-mode-btn.on {
+  border-color: var(--accent); color: var(--accent-ink);
+  background: var(--accent-soft); font-weight: 600;
+}
+.resource-mode-count {
+  font: 10px var(--mono); opacity: .7;
+  padding-left: 6px; border-left: 1px solid currentColor;
+}
 /* 每条技能上的分类标签 */
 .resource-modes-inline { display: inline-flex; flex-wrap: wrap; gap: 4px; margin: 6px 0 0; }
 .resource-mode {
@@ -96,10 +111,27 @@
 }
 
 /* 经验页的任务大类筛选：与技能页同一套视觉语言 */
-.exp-modes { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 10px; }
-.exp-mode-btn { display: inline-flex; align-items: center; gap: 6px; }
-.exp-mode-btn.on { border-color: var(--accent); color: var(--accent-ink); background: var(--accent-soft); }
-.exp-mode-count { font: 10px var(--mono); opacity: .75; }
+/* 筛选条：独立一行，左侧标签 + 右侧按钮组，和「操作按钮」分开视觉层级 */
+.exp-filterbar {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  margin: 0 0 16px; padding: 10px 14px;
+  border: 1px solid var(--line); border-radius: 10px;
+  background: var(--surface);
+}
+.exp-filterbar-label { font-size: 12px; color: var(--ink-2); letter-spacing: .02em; }
+.exp-modes { display: flex; flex-wrap: wrap; gap: 6px; }
+.exp-mode-btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  border-radius: 999px; padding: 4px 12px; font-size: 12px;
+}
+.exp-mode-btn.on {
+  border-color: var(--accent); color: var(--accent-ink);
+  background: var(--accent-soft); font-weight: 600;
+}
+.exp-mode-count {
+  font: 10px var(--mono); opacity: .7;
+  padding-left: 6px; border-left: 1px solid currentColor;
+}
 /* 经验卡片上的大类标签，比普通 tag 更显眼一点 */
 .exp-mode-tag { color: var(--accent-ink); border-color: var(--accent); }
 

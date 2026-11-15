@@ -46,7 +46,6 @@ const ExperiencePage = (() => {
           <button class="btn" data-merge-toggle title="把极其相似的经验提炼成一条">二次提炼</button>
           <button class="btn" data-absorb-toggle title="交给 AI 判断能不能并进已有的某条经验（不删任何经验）">合并</button>
           <button class="btn" data-merged-toggle hidden title="显示被合并的原件">显示已合并</button>
-          <div class="exp-modes" data-exp-modes role="group" aria-label="按任务大类筛选"></div>
           <button class="btn" data-sync-pull title="从仓库远端把经验拉回本地：只补缺，不改也不删本地条目">拉取</button>
           <button class="btn" data-sync-push title="把本地经验导出到仓库并提交推送">提交</button>
           <button class="btn" type="button" data-exp-export title="把整个经验库存成一个 JSON 文件，可以发给别人或换机器">导出文件</button>
@@ -62,6 +61,10 @@ const ExperiencePage = (() => {
       </div>
       <section class="exp-merge" data-merge-panel hidden aria-label="二次提炼"></section>
       <section class="exp-merge exp-absorb" data-absorb-panel hidden aria-label="合并"></section>
+      <div class="exp-filterbar">
+        <span class="exp-filterbar-label">任务大类</span>
+        <div class="exp-modes" data-exp-modes role="group" aria-label="按任务大类筛选"></div>
+      </div>
       <div class="exp-layout">
         <section aria-label="经验列表">
           <div class="resource-list-status" data-status role="status"></div>
