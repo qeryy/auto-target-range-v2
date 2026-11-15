@@ -22,6 +22,7 @@ param(
     [int]$Port = 8010,
     [switch]$Debug,
     [switch]$NoInstall,
+    [switch]$NoBrowser,
     [string]$PipIndex = '',
     [switch]$ShowPipIndex
 )
@@ -327,6 +328,24 @@ if ($LASTEXITCODE -ne 0) {
 Write-Host "[>] 控制台：http://127.0.0.1:$Port"
 Write-Host "    模型页应已看到 configs/models.yaml 里配置的模型。"
 Write-Host "[>] 前台运行中：关闭本窗口（或按 Ctrl+C）即停止控制台" -ForegroundColor Cyan
+
+# 服务起来后自动开浏览器，省掉「复制地址再贴到地址栏」那一步。
+# 用后台任务等端口真的能应答再开——先开只会看到一个连接被拒的空页。
+if (-not $NoBrowser) {
+    $consoleUrl = "http://127.0.0.1:$Port"
+    Start-Job -ScriptBlock {
+        param($url)
+        for ($i = 0; $i -lt 90; $i++) {
+            Start-Sleep -Seconds 2
+            try {
+                $null = Invoke-WebRequest $url -TimeoutSec 3 -UseBasicParsing -ErrorAction Stop
+                Start-Process $url
+                return
+            } catch { }
+        }
+    } -ArgumentList $consoleUrl | Out-Null
+    Write-Host "    稍等片刻会自动打开浏览器（不想开就加 -NoBrowser）" -ForegroundColor DarkGray
+}
 try {
     & $venvPy -X utf8 -m spiritscout --config configs\system.yaml --port $Port
 } finally {
