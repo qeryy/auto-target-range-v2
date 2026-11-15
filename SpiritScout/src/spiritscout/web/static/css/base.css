@@ -325,3 +325,20 @@ main { min-width: 0; padding: 22px 26px 40px; }
 .selx-check { flex: none; width: 9px; height: 5px;
   border-left: 2px solid var(--accent); border-bottom: 2px solid var(--accent);
   transform: rotate(-45deg) translateY(-1px); }
+
+/* 跳到主内容：平时移出视口，键盘聚焦时浮在左上角。
+   SPA 的侧栏有 6 个按钮，键盘用户不跳过它就得按 6 下 Tab 才能到正文。 */
+.skip-link {
+  position: absolute;
+  left: -9999px;
+  top: 0;
+  z-index: 100;
+  padding: 8px 14px;
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--ink);
+  font-size: 13px;
+  text-decoration: none;
+}
+.skip-link:focus { left: 12px; top: 12px; outline: 2px solid var(--accent); outline-offset: 2px; }
