@@ -186,12 +186,34 @@ def mount_resources(
         q: str = Query("", max_length=200),
         offset: int = Query(0, ge=0),
         limit: int = Query(40, ge=1, le=100),
+        mode: str = Query("", max_length=20),
     ) -> dict[str, Any]:
-        items = store.skills(q)
+        """技能目录：可按任务大类（src / ctf / competition）筛选。
+
+        每条带 ``modes`` 字段，前端据此显示分类标签；``mode_counts`` 给筛选
+        按钮上的数字——三类各自能拿到多少条，一眼看得见。
+        """
+        from spiritscout.resources.skill_modes import (
+            MODE_LABELS,
+            filter_by_mode,
+            modes_for,
+            summary,
+        )
+
+        all_items = store.skills(q)
+        counts = summary(all_items)
+        picked = filter_by_mode(all_items, mode) if mode else all_items
+        # 就地补 modes：条目来自资源库，不一定带 domain，modes_for 会按 id 前缀猜
+        page = []
+        for it in picked[offset : offset + limit]:
+            page.append({**it, "modes": modes_for(it)})
         return {
-            "items": items[offset : offset + limit],
-            "total": len(items),
-            "has_more": offset + limit < len(items),
+            "items": page,
+            "total": len(picked),
+            "has_more": offset + limit < len(picked),
+            "mode": mode,
+            "mode_counts": counts,
+            "mode_labels": MODE_LABELS,
         }
 
     @app.post("/api/resources/skills/sync")

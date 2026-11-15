@@ -29,6 +29,11 @@ _DEDUPE_SCAN = 2000
 # 候选缓存的有效期（秒）：跨进程写入最多晚这么久被看到，批量入库不必逐条全表读
 _CACHE_TTL = 30.0
 
+#: 默认任务大类。历史条目绝大多数来自 CTF 解题，补列时统一落到这里。
+DEFAULT_MODE = "ctf"
+#: 允许的大类（与首页三张卡一致）
+MODES = ("src", "ctf", "competition")
+
 _COLUMNS = ["insight_id", "insight", "context", "tags",
             "source_session", "source_model", "ts",
             # 二次提炼的溯源：merged_from 记着提炼吸收了哪些条目（原件随确认删除，
@@ -36,8 +41,12 @@ _COLUMNS = ["insight_id", "insight", "context", "tags",
             # 原件靠它隐藏，仍可 restore_merge 还原。
             "merged_into", "merged_from",
             # 合并（absorb）的溯源：目标条目吸收了哪些条目（原件仍在，只是内容已并入）
-            "absorbed_from"]
-_MERGE_COLUMNS = {"merged_into": "TEXT DEFAULT ''", "merged_from": "TEXT DEFAULT '[]'",
+            "absorbed_from",
+            # 任务大类：src / ctf / competition。老库补列时默认 ctf，因为历史条目
+            # 绝大多数来自 CTF 解题；写入时由调用方指定。
+            "mode"]
+_MERGE_COLUMNS = {"mode": "TEXT DEFAULT 'ctf'",
+                  "merged_into": "TEXT DEFAULT ''", "merged_from": "TEXT DEFAULT '[]'",
                   # 合并（absorb）只更新目标条目、原件全部保留，这里记下它吸收过谁
                   "absorbed_from": "TEXT DEFAULT '[]'"}
 
@@ -134,7 +143,12 @@ def _normalize(row: tuple[Any, ...]) -> dict[str, Any]:
     """
     item = dict(zip(_COLUMNS, row, strict=False))
     for name in _COLUMNS:
-        item.setdefault(name, [] if name == "merged_from" else "")
+        if name == "merged_from":
+            item.setdefault(name, [])
+        elif name == "mode":
+            item.setdefault(name, DEFAULT_MODE)
+        else:
+            item.setdefault(name, "")
     try:
         tags = json.loads(item.get("tags") or "[]")
     except (TypeError, ValueError):
@@ -185,18 +199,6 @@ def _active_clause(conn: sqlite3.Connection) -> str:
     return " WHERE COALESCE(merged_into, '') = ''" if _has_column(conn, "merged_into") else ""
 
 
-def _modes_of(tags: list[str] | None) -> set[str]:
-    """按标签推断这条经验适用的任务模式；认不出来就返回空集（= 通用）。"""
-    from spiritscout.resources.skill_modes import _MODES  # noqa: PLC0415 — 避免循环导入
-
-    out: set[str] = set()
-    for tag in tags or []:
-        key = str(tag).strip().lower()
-        if key:
-            out.update(_MODES.get(key, ()))
-    return out
-
-
 def read_recent(db_path: str | Path, *, limit: int = 6,
                 mode: str = "") -> dict[str, Any]:
     """只读快照（面板/状态展示用）：不建表、不写盘，缺失或损坏返回空。
@@ -229,11 +231,10 @@ def read_recent(db_path: str | Path, *, limit: int = 6,
         from spiritscout.resources.skill_modes import ALL_MODES  # noqa: PLC0415
 
         if key in ALL_MODES:
+            # 按**显式大类**排序：同类排前面，别的大类的压后（不是丢掉——
+            # 换模式时仍能看到全部，只是顺序不同）。
             def rank(item: dict[str, Any]) -> int:
-                modes = _modes_of(item.get("tags"))
-                if not modes:
-                    return 0              # 通用：原样带上
-                return 0 if key in modes else 1   # 明确属于别的模式：压后
+                return 0 if str(item.get("mode") or "") == key else 1
             items.sort(key=rank)          # 稳定排序，同档内保持时间序
     return {"total": int(total), "items": items}
 
@@ -417,6 +418,7 @@ class ExperienceStore:
     def add(self, insight: str, *, context: str = "",
             tags: list[str] | None = None,
             source_session: str = "", source_model: str = "",
+            mode: str = DEFAULT_MODE,
             report: dict[str, Any] | None = None) -> str:
         """写入一条经验；与库里高度相似（默认 ≥0.95）的直接取消，返回空串。
 
@@ -444,10 +446,11 @@ class ExperienceStore:
         eid = new_id("exp")
         self._conn.execute(
             "INSERT OR IGNORE INTO insights (insight_id, insight, context, tags,"
-            " source_session, source_model, ts) VALUES (?,?,?,?,?,?,?)",
+            " source_session, source_model, ts, mode) VALUES (?,?,?,?,?,?,?,?)",
             (eid, text, context.strip()[:_CONTEXT_CAP],
              json.dumps([str(tag) for tag in (tags or [])][:8], ensure_ascii=False),
-             source_session[:200], source_model, time.time()))
+             source_session[:200], source_model, time.time(),
+             str(mode or DEFAULT_MODE)))
         self._conn.commit()
         if self._cache is not None:
             self._cache.insert(0, (eid, text))

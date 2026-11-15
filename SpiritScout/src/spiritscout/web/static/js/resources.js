@@ -2,13 +2,13 @@
 const ResourceConsole = (() => {
   const states = new Map(); let editor = null, poll;
   const titles = {mcp:['MCP 管理','添加工具服务器，或编辑已有连接。'],skill:['Skill 管理','添加和管理智能体可查阅的参考知识。']};
-  const stateFor = kind => {if(!states.has(kind)) states.set(kind,{items:[],offset:0,q:'',generation:0});return states.get(kind);};
+  const stateFor = kind => {if(!states.has(kind)) states.set(kind,{items:[],offset:0,q:'',mode:'',modeCounts:{},modeLabels:{},generation:0});return states.get(kind);};
   const root = kind => $(`#view-${kind}`);
   function shell(kind) {
     const [title,description]=titles[kind],el=root(kind);if(el.dataset.ready)return;el.dataset.ready='yes';
     el.innerHTML=`<header class="resource-head"><div><h2>${title}</h2><p>${description}</p></div><div class="resource-head-actions">${kind==='skill'?'<button class="btn" data-skill-pull title="把仓库里 configs/skills.yaml 的技能同步进本地库：只增改，不删本地条目">拉取清单</button><button class="btn" data-skill-push title="把本地库里的自定义技能写回 configs/skills.yaml，之后用 git 提交推送">提交清单</button>':''}<button class="btn" data-refresh>刷新</button><button class="btn primary" data-new>手动添加</button></div></header>
       ${kind==='mcp'?'<div data-exa-settings></div>':''}
-      <div class="resource-layout"><section class="resource-catalog" aria-label="${title}目录"><label class="resource-search">检索已配置资源<input type="search" data-search placeholder="输入关键词…" maxlength="200"></label><div class="resource-list-status" role="status"></div><div class="resource-list"></div><button class="btn resource-more" hidden>加载更多</button></section>
+      <div class="resource-layout"><section class="resource-catalog" aria-label="${title}目录"><label class="resource-search">检索已配置资源<input type="search" data-search placeholder="输入关键词…" maxlength="200"></label>${kind==="skill"?"<div class=\"resource-modes\" data-modes role=\"group\" aria-label=\"按任务大类筛选\"></div>":""}<div class="resource-list-status" role="status"></div><div class="resource-list"></div><button class="btn resource-more" hidden>加载更多</button></section>
       <section class="resource-chat" aria-label="${title}专属管理对话"><header><div><b>资源助手</b><small>变更需确认后执行</small></div></header><div class="resource-chat-log" aria-live="polite"></div><div class="resource-proposals"></div><form class="resource-chat-form"><label class="sr-only" for="resource-message-${kind}">向${title}助手描述需求</label><textarea id="resource-message-${kind}" placeholder="${kind==='mcp'?'例如：帮我配置一个只读浏览器 MCP，请先给出安装方案':'例如：添加一份关于接口权限边界的参考技能'}" rows="3" maxlength="16000"></textarea><div><small>请勿在聊天中粘贴密钥</small><button class="btn primary" type="submit">发送</button></div><p class="resource-chat-status" role="status"></p></form></section></div>`;
     if(kind==='mcp')ExaSettings.mount(el.querySelector('[data-exa-settings]'));
     el.querySelector('[data-refresh]').onclick=()=>{load(kind);loadChat(kind);if(kind==='mcp')ExaSettings.load();};
@@ -47,13 +47,35 @@ const ResourceConsole = (() => {
     try{
       const offset=append?s.items.length:0;
       const path=`/api/resources/${kind==='skill'?'skills':'mcp'}`;
-      const result=await api(path+'?'+new URLSearchParams({q:s.q,offset:String(offset),limit:'40'}));
+      const params={q:s.q,offset:String(offset),limit:'40'};
+      if(kind==='skill'&&s.mode) params.mode=s.mode;   // 只技能页有任务大类
+      const result=await api(path+'?'+new URLSearchParams(params));
       if(version!==s.generation)return;
       let rows=result.items||[];if(kind==='mcp'&&s.q)rows=rows.filter(x=>JSON.stringify(x.data).toLowerCase().includes(s.q.toLowerCase()));
       s.items=append?[...s.items,...rows]:rows;s.more=result.has_more;s.total=result.total??rows.length;
+      if(kind==='skill'){s.modeCounts=result.mode_counts||{};s.modeLabels=result.mode_labels||{};paintModes(kind);}
       status.textContent=`${s.total} 条记录${kind==='mcp'?' · 保存后新会话生效':''}`;render(kind);
     }catch(e){status.textContent=`读取失败：${e.message}。点击刷新重试。`;}
   }
+  // 技能页的分类筛选：全部 / SRC 渗透 / CTF 解题 / 智能体竞赛，按钮上带条数
+  function paintModes(kind) {
+    const box = root(kind)?.querySelector('[data-modes]');
+    if (!box) return;
+    const s = stateFor(kind);
+    const order = ['', 'src', 'ctf', 'competition'];
+    const labelOf = m => m ? (s.modeLabels[m] || m) : '全部';
+    // 「全部」用后端给的总数：三类会重叠（web 技能既属 SRC 也属 CTF），
+    // 相加会把同一条计两次，441 而实际只有 288。
+    const countOf = m => m ? (s.modeCounts[m] || 0) : (s.total || 0);
+    box.innerHTML = order.map(m =>
+      `<button class="btn sm resource-mode-btn${s.mode === m ? ' on' : ''}" type="button"`
+      + ` data-skill-mode="${m}" aria-pressed="${s.mode === m}">${esc(labelOf(m))}`
+      + `<span class="resource-mode-count">${countOf(m)}</span></button>`).join('');
+    box.querySelectorAll('[data-skill-mode]').forEach(b => {
+      b.onclick = () => { s.mode = b.dataset.skillMode; s.generation++; load(kind); };
+    });
+  }
+
   function render(kind) {
     const s=stateFor(kind),list=root(kind).querySelector('.resource-list');
     list.innerHTML=s.items.map((item,i)=>{
@@ -61,7 +83,8 @@ const ResourceConsole = (() => {
       const title=kind==='mcp'?d.name:d.skill_id;
       const badge=d.enabled?'已启用':'已停用';
       const subtitle=kind==='mcp'?`${d.transport} · ${d.command||d.url||'尚未配置地址'}`:d.description||'尚无描述';
-      return `<article class="resource-item"><button class="resource-select" data-select="${i}"><span class="resource-badge">${esc(badge)}</span><strong>${esc(title)}</strong><p>${esc(subtitle)}</p><small>${esc(kind==='mcp'?`配置版本 ${item.version} · ${d.default_risk} · ${d.allowed_agents?.length?d.allowed_agents.join(', '):'沿用角色默认范围'}`:`${d.domain||'未分类'} · ${d.origin==='builtin'?'内置参考':'自定义'} · v${d.version}`)}</small></button><button class="btn sm resource-toggle" data-toggle="${i}">${d.enabled?'停用':'启用'}</button></article>`;
+      const modeTags = kind==='skill' ? (d.modes||[]).map(m=>`<span class="resource-mode">${esc(s.modeLabels[m]||m)}</span>`).join('') : '';
+      return `<article class="resource-item"><button class="resource-select" data-select="${i}"><span class="resource-badge">${esc(badge)}</span><strong>${esc(title)}</strong>${modeTags?`<span class="resource-modes-inline">${modeTags}</span>`:''}<p>${esc(subtitle)}</p><small>${esc(kind==='mcp'?`配置版本 ${item.version} · ${d.default_risk} · ${d.allowed_agents?.length?d.allowed_agents.join(', '):'沿用角色默认范围'}`:`${d.domain||'未分类'} · ${d.origin==='builtin'?'内置参考':'自定义'} · v${d.version}`)}</small></button><button class="btn sm resource-toggle" data-toggle="${i}">${d.enabled?'停用':'启用'}</button></article>`;
     }).join('')||`<div class="resource-empty">还没有匹配记录<p>可更换关键词，或从资源助手对话开始配置。</p></div>`;
     list.querySelectorAll('[data-select]').forEach(b=>b.onclick=()=>edit(kind,s.items[+b.dataset.select]));
     list.querySelectorAll('[data-toggle]').forEach(b=>b.onclick=async()=>{const item=s.items[+b.dataset.toggle],d=kind==='mcp'?item.data:item;b.disabled=true;try{await api(`/api/resources/${kind==='mcp'?'mcp':'skills'}/${encodeURIComponent(kind==='mcp'?item.id:d.skill_id)}`,{method:'PUT',body:JSON.stringify({data:{enabled:!d.enabled},expected_version:item.version??d.version})});load(kind);}catch(e){toast(e.message,true);b.disabled=false;}});

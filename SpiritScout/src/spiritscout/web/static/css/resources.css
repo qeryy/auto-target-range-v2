@@ -80,3 +80,17 @@
 .model-chip:hover { border-color: var(--accent); color: var(--accent-ink); }
 .model-chip.on { border-color: var(--accent); color: var(--accent-ink); font-weight: 600; }
 .model-chip:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+/* 技能页的任务大类筛选：三个按钮 + 条数，选中的高亮。
+   技能库存的是技术领域（web/reverse…），用户选的是工作模式（SRC/CTF/竞赛），
+   这排按钮就是那层映射的可见入口。 */
+.resource-modes { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0 4px; }
+.resource-mode-btn { display: inline-flex; align-items: center; gap: 6px; }
+.resource-mode-btn.on { border-color: var(--accent); color: var(--accent-ink); background: var(--accent-soft); }
+.resource-mode-count { font: 10px var(--mono); opacity: .75; }
+/* 每条技能上的分类标签 */
+.resource-modes-inline { display: inline-flex; flex-wrap: wrap; gap: 4px; margin: 6px 0 0; }
+.resource-mode {
+  font: 10px var(--mono); color: var(--ink-2);
+  border: 1px solid var(--line); border-radius: 4px; padding: 1px 6px;
+}
