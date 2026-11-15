@@ -188,9 +188,20 @@ def session_usage(workspace: Path, audit_path: Path, *, root: Path | None = None
         return hit
 
     local = read_usage(local_path, readonly=True)
+    ids = audit_call_ids(Path(audit_path))
     if local is None:
         local = dict(fallback or {})
-    ids = audit_call_ids(Path(audit_path))
+        # 运行汇总里的用量快照可能是**全场累计**（网关恢复的是共享账本），
+        # 直接拿来当会话总量会出现「50 秒解完一道题、显示 1.3 亿 token」。
+        # 有审计 call_id 就只留属于本会话的那些，总量按留下的重算。
+        series = local.get("call_series") or []
+        if ids and series:
+            kept = [r for r in series if str(r.get("call_id") or "") in ids]
+            local = dict(local)
+            local["call_series"] = kept
+            local["used_tokens"] = sum(int(r.get("tokens") or 0) for r in kept)
+            local["used_usd"] = sum(float(r.get("cost_usd") or 0.0) for r in kept)
+            local["calls"] = len(kept)
     shared = read_usage(shared_path, readonly=True) if ids else None
     if not ids or not shared:
         _remember(key, version, dict(local))
