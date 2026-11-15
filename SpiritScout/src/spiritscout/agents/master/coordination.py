@@ -264,70 +264,95 @@ class MasterCoordination:
         states = self._challenge_states(dag)
         known = set(states)
         # 生命周期由模型明确选择；保留现场不意味着增加并发或阻止其后暂缓。
-        raw_retained = decision.get("retain_instances") or []
-        retained = {str(cid) for cid in (raw_retained if isinstance(raw_retained, list) else [])
-                    if isinstance(cid, str) and cid in known}
-        for node in dag.all_nodes():
-            if str((node.meta.get("challenge") or {}).get("id") or "") in retained:
-                node.meta["retain_instance"] = True
-
-        retried: list[str] = []
-        raw_retry = decision.get("retry_challenges") or []
-        if isinstance(raw_retry, list):
-            for item in raw_retry:
-                cid = str(item.get("id") if isinstance(item, dict) else item).strip()
-                if not cid or cid not in known:
-                    continue
-                for node in dag.all_nodes():
-                    ch = (node.meta or {}).get("challenge") or {}
-                    if str(ch.get("id") or "") != cid:
-                        continue
-                    node.meta["deferred"] = False
-                    node.meta.pop("defer_reason", None)
-                retried.append(cid)
-
-        deferred: list[dict[str, str]] = []
-        raw_defer = decision.get("defer_challenges") or []
-        if isinstance(raw_defer, list):
-            for item in raw_defer:
-                if isinstance(item, dict):
-                    cid = str(item.get("id") or "").strip()
-                    reason = str(item.get("reason") or "模型判定暂缓")[:200]
-                else:
-                    cid, reason = str(item).strip(), "模型判定暂缓"
-                if not cid or cid not in known or cid in retried:
-                    continue
-                for node in dag.all_nodes():
-                    ch = (node.meta or {}).get("challenge") or {}
-                    if str(ch.get("id") or "") != cid:
-                        continue
-                    node.meta["deferred"] = True
-                    node.meta.pop("retain_instance", None)
-                    node.meta["defer_reason"] = reason
-                    if node.status in (TaskStatus.PENDING, TaskStatus.DISPATCHED,
-                                       TaskStatus.RUNNING):
-                        dag.mark(node.node_id, TaskStatus.CANCELLED)
-                        node.meta["cancel_reason"] = f"赛题暂缓: {reason}"
-                deferred.append({"id": cid, "reason": reason})
-
-        platform = self.ctx.extra.get("platform")
-        released: list[str] = []
-        if deferred and platform is not None:
-            for item in deferred:
-                try:
-                    if await platform.close_instance(
-                            item["id"], reason=f"赛题暂缓: {item['reason']}"):
-                        released.append(item["id"])
-                except Exception as exc:  # noqa: BLE001 —— 回收失败不连坐主链路
-                    self.ctx.audit.log("platform.fact", self.agent_id, {
-                        "action": "defer_close_failed", "challenge": item["id"],
-                        "error": str(exc)[:200]})
-
+        retained = self._apply_retain(dag, decision, known)
+        retried = self._apply_retries(dag, decision, known)
+        deferred = self._apply_defers(dag, decision, known, retried)
+        released = await self._release_deferred_instances(deferred)
         if retried or deferred or released or retained:
             self.ctx.audit.log("decision.change", self.agent_id, {
                 "action": "competition_challenge_state",
                 "deferred": deferred, "retried": retried, "released": released,
                 "retained": sorted(retained)})
+
+    @staticmethod
+    def _nodes_for(dag: TaskDAG, challenge_id: str):
+        """该赛题对应的 DAG 节点（一道题可能派生出多个节点）。"""
+        for node in dag.all_nodes():
+            ch = (node.meta or {}).get("challenge") or {}
+            if str(ch.get("id") or "") == challenge_id:
+                yield node
+
+    def _apply_retain(self, dag: TaskDAG, decision: dict[str, Any],
+                      known: set[str]) -> set[str]:
+        """记下要保留现场的赛题：只打标记，不增并发、不阻止其后暂缓。"""
+        raw = decision.get("retain_instances") or []
+        retained = {str(cid) for cid in (raw if isinstance(raw, list) else [])
+                    if isinstance(cid, str) and cid in known}
+        for cid in retained:
+            for node in self._nodes_for(dag, cid):
+                node.meta["retain_instance"] = True
+        return retained
+
+    def _apply_retries(self, dag: TaskDAG, decision: dict[str, Any],
+                       known: set[str]) -> list[str]:
+        """撤销暂缓：清 deferred 标记，让该题重新参与调度。"""
+        retried: list[str] = []
+        raw = decision.get("retry_challenges") or []
+        if not isinstance(raw, list):
+            return retried
+        for item in raw:
+            cid = str(item.get("id") if isinstance(item, dict) else item).strip()
+            if not cid or cid not in known:
+                continue
+            for node in self._nodes_for(dag, cid):
+                node.meta["deferred"] = False
+                node.meta.pop("defer_reason", None)
+            retried.append(cid)
+        return retried
+
+    def _apply_defers(self, dag: TaskDAG, decision: dict[str, Any],
+                      known: set[str], retried: list[str]) -> list[dict[str, str]]:
+        """暂缓赛题：打标记、撤掉保留位、把在途节点取消。同一轮里重试优先。"""
+        deferred: list[dict[str, str]] = []
+        raw = decision.get("defer_challenges") or []
+        if not isinstance(raw, list):
+            return deferred
+        for item in raw:
+            if isinstance(item, dict):
+                cid = str(item.get("id") or "").strip()
+                reason = str(item.get("reason") or "模型判定暂缓")[:200]
+            else:
+                cid, reason = str(item).strip(), "模型判定暂缓"
+            if not cid or cid not in known or cid in retried:
+                continue
+            for node in self._nodes_for(dag, cid):
+                node.meta["deferred"] = True
+                node.meta.pop("retain_instance", None)
+                node.meta["defer_reason"] = reason
+                if node.status in (TaskStatus.PENDING, TaskStatus.DISPATCHED,
+                                   TaskStatus.RUNNING):
+                    dag.mark(node.node_id, TaskStatus.CANCELLED)
+                    node.meta["cancel_reason"] = f"赛题暂缓: {reason}"
+            deferred.append({"id": cid, "reason": reason})
+        return deferred
+
+    async def _release_deferred_instances(
+            self, deferred: list[dict[str, str]]) -> list[str]:
+        """回收暂缓赛题的靶机实例；单条失败只记审计，不连坐主链路。"""
+        platform = self.ctx.extra.get("platform")
+        released: list[str] = []
+        if not deferred or platform is None:
+            return released
+        for item in deferred:
+            try:
+                if await platform.close_instance(
+                        item["id"], reason=f"赛题暂缓: {item['reason']}"):
+                    released.append(item["id"])
+            except Exception as exc:  # noqa: BLE001 —— 回收失败不连坐主链路
+                self.ctx.audit.log("platform.fact", self.agent_id, {
+                    "action": "defer_close_failed", "challenge": item["id"],
+                    "error": str(exc)[:200]})
+        return released
 
     def _effort_options(self, task: Task) -> list[str]:
         """该任务可用的思考强度取值——按实际会用到的模型各自声明的档位算。
