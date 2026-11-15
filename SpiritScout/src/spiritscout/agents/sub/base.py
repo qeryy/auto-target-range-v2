@@ -398,10 +398,23 @@ class SubAgent(abc.ABC):
         try:
             from spiritscout.knowledge.experience import read_recent  # noqa: PLC0415
 
-            exp_db = Path(str(getattr(kb, "db_path", ""))).parent / "experience.db"
-            if exp_db.exists():
+            # 知识库是**会话级**的（sessions/<id>/kb.db），而提炼经验是**工作区共享**
+            # 的（<工作区>/.spiritscout/experience.db）。所以不能按 kb.db 的同级目录
+            # 找，得沿祖先目录往上搜——实测同级推出的是 sessions/<id>/experience.db，
+            # 永不存在，于是静默退化成「没有经验」，看起来像功能没做。
+            raw = (getattr(kb, "db_path", None)
+                   or getattr(kb, "_path", None) or "")
+            distilled_db: Path | None = None
+            if str(raw):
+                here = Path(str(raw)).resolve()
+                for parent in (here.parent, *here.parents):
+                    cand = parent / "experience.db"
+                    if cand.exists():
+                        distilled_db = cand
+                        break
+            if distilled_db is not None:
                 mode = str(getattr(getattr(self.ctx, "mode", None), "value", "") or "")
-                distilled = (read_recent(exp_db, limit=6, mode=mode).get("items") or [])
+                distilled = (read_recent(distilled_db, limit=6, mode=mode).get("items") or [])
         except (OSError, ValueError, sqlite3.Error):
             distilled = []
 

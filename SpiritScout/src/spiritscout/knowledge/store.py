@@ -239,6 +239,9 @@ class KnowledgeStore:
 
     def __init__(self, db_path: str | Path, *, auto_seed: bool = True):
         self._path = Path(db_path)
+        # 公开一份路径：外部（如经验召回）要按它的父目录找同目录的其它库，
+        # 只留私有 _path 的话 getattr 会静默拿到空串，Path("") 变成 "."。
+        self.db_path = str(self._path)
         self._path.parent.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(str(self._path), check_same_thread=False)
         self._conn.row_factory = sqlite3.Row

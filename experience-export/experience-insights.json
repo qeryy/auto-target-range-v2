@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "kind": "spiritscout-experience-insights",
-  "generated_at": "2026-11-15T16:09:37+00:00",
+  "generated_at": "2026-11-15T16:22:39+00:00",
   "source": "SpiritScout/.spiritscout/experience.db -> table insights",
   "redaction": [
     "http/https 链接",
@@ -10,13 +10,13 @@
     "sk- / ghp_ / xox 形态密钥",
     "靶场主机名归一为 local-range"
   ],
-  "total": 548,
+  "total": 557,
   "tag_frequency": {
-    "ctf": 388,
+    "ctf": 397,
     "crypto": 98,
     "web": 63,
-    "flag": 55,
-    "misc": 53,
+    "flag": 56,
+    "misc": 56,
     "base64": 52,
     "判读": 35,
     "reverse": 34,
@@ -29,30 +29,32 @@
     "CTF": 15,
     "validation": 15,
     "reporting": 14,
+    "workflow": 13,
     "sqli": 12,
-    "workflow": 12,
     "逆向": 12,
     "recon": 10,
+    "战报": 10,
     "重攻": 10,
     "php": 9,
+    "signal": 9,
     "度量": 9,
-    "战报": 9,
     "llm": 8,
+    "verification": 8,
     "附件分析": 8,
     "forensics": 7,
     "lfi": 7,
     "process": 7,
-    "verification": 7,
     "中断": 7,
     "信号判读": 7,
     "战报判读": 7,
     "方法论": 7,
     "reversing": 6,
-    "signal": 6,
     "判读信号": 6,
     "证据链": 6,
     "音频": 6,
     "automation": 5,
+    "findings": 5,
+    "metrics": 5,
     "pwn": 5,
     "session": 5,
     "stego": 5,
@@ -72,10 +74,8 @@
     "验收": 5,
     "analysis": 4,
     "auth": 4,
-    "findings": 4,
     "flask": 4,
     "judgment": 4,
-    "metrics": 4,
     "rce": 4,
     "triage": 4,
     "信息收集": 4,
@@ -99,6 +99,7 @@
     "offline": 3,
     "platform": 3,
     "replay": 3,
+    "retrospective": 3,
     "rsa": 3,
     "source-review": 3,
     "vm": 3,
@@ -155,7 +156,6 @@
     "pitfall": 2,
     "planning": 2,
     "resource_allocation": 2,
-    "retrospective": 2,
     "rev": 2,
     "review": 2,
     "sage": 2,
@@ -170,6 +170,7 @@
     "任务状态": 2,
     "任务记录": 2,
     "假阳性": 2,
+    "单轮": 2,
     "可复现性": 2,
     "平台特性": 2,
     "提示": 2,
@@ -324,6 +325,7 @@
     "timeout": 1,
     "timing": 1,
     "token": 1,
+    "trivia": 1,
     "unavailable": 1,
     "unclear_objectives": 1,
     "union": 1,
@@ -359,6 +361,7 @@
     "分诊": 1,
     "判分": 1,
     "判别信号": 1,
+    "判定": 1,
     "判题": 1,
     "制品": 1,
     "制品分析": 1,
@@ -368,7 +371,6 @@
     "动态调试": 1,
     "十六进制编辑器": 1,
     "单点突破": 1,
-    "单轮": 1,
     "参数估计": 1,
     "参数复用": 1,
     "反复尝试": 1,
@@ -388,6 +390,7 @@
     "字典": 1,
     "安全测试": 1,
     "安全策略": 1,
+    "完成": 1,
     "完成判据": 1,
     "密文": 1,
     "密文分析": 1,
@@ -399,6 +402,7 @@
     "差异响应": 1,
     "已知明文": 1,
     "带外": 1,
+    "平台": 1,
     "异常": 1,
     "异常处理": 1,
     "弱口令": 1,
@@ -440,6 +444,7 @@
     "文件读取": 1,
     "方法": 1,
     "无新线索": 1,
+    "无服务": 1,
     "无标志": 1,
     "无线电": 1,
     "无进展": 1,
@@ -448,10 +453,12 @@
     "未授权": 1,
     "未探索路径": 1,
     "本地环境": 1,
+    "极简": 1,
     "标志": 1,
     "标志提交": 1,
     "标志管理": 1,
     "标签": 1,
+    "样本": 1,
     "样本质量": 1,
     "格式要求": 1,
     "模型端点": 1,
@@ -538,6 +545,7 @@
     "重复攻击": 1,
     "错误处理": 1,
     "长度约束": 1,
+    "问答": 1,
     "问题解决": 1,
     "难度": 1,
     "难度升级": 1,
@@ -7407,6 +7415,118 @@
       ],
       "source_model": "master",
       "captured_at": "2026-11-13T01:29:16+00:00"
+    },
+    {
+      "id": "exp-11cc46253158",
+      "insight": "挑战若以纯文本问答形式直接索取计算结果，说明它不依赖网络服务或二进制环境，针对此类目标进行资产探测或扫描属于无效动作。",
+      "context": "CTF misc 纯问答式挑战",
+      "tags": [
+        "ctf",
+        "misc",
+        "问答",
+        "无服务"
+      ],
+      "source_model": "master",
+      "captured_at": "2026-11-15T16:20:04+00:00"
+    },
+    {
+      "id": "exp-d8842e12697d",
+      "insight": "战报中 findings 为 0 而 outcome 为 completed 可同时成立，说明并非所有完成挑战的路径都会产生漏洞类发现，简单逻辑或计算验证不会留下 finding 记录。",
+      "context": "CTF 战报指标解读",
+      "tags": [
+        "ctf",
+        "findings",
+        "战报",
+        "完成"
+      ],
+      "source_model": "master",
+      "captured_at": "2026-11-15T16:20:04+00:00"
+    },
+    {
+      "id": "exp-6c6404d991ac",
+      "insight": "flags extracted 计数大于 0 但 submitted/accepted 为 0 仍可判定 completed，说明部分 CTF 平台或本地靶场以提取到 flag 为完成标准，不强制提交回传。",
+      "context": "CTF 平台完成判定",
+      "tags": [
+        "ctf",
+        "flag",
+        "判定",
+        "平台"
+      ],
+      "source_model": "master",
+      "captured_at": "2026-11-15T16:20:04+00:00"
+    },
+    {
+      "id": "exp-c970db91a5cd",
+      "insight": "rounds 为 1 且 stop_reason 为 Flag 已解出的挑战通常不存在多阶段利用链或可复现攻击面，此类战报更适合作为流程性样本而非技术性样本。",
+      "context": "单轮 CTF 极简目标",
+      "tags": [
+        "ctf",
+        "单轮",
+        "极简",
+        "样本"
+      ],
+      "source_model": "master",
+      "captured_at": "2026-11-15T16:20:04+00:00"
+    },
+    {
+      "id": "exp-06959965218f",
+      "insight": "题干本身就是完整规格的计算类 / 字面型 misc 题不存在可侦察的攻击面，此类题型的解法收益与额外探测无关，多轮探索只会消耗轮次而不产生新信息。",
+      "context": "CTF misc 中题干自带明确计算或转换要求的轻量题",
+      "tags": [
+        "ctf",
+        "misc",
+        "trivia"
+      ],
+      "source_model": "master",
+      "captured_at": "2026-11-15T16:20:56+00:00"
+    },
+    {
+      "id": "exp-a05991df2ad3",
+      "insight": "战报里 extracted 大于 0 而 submitted 与 accepted 都为 0，表明「解出」是自评结论而非平台回执，这类记录不能作为手法有效性的证据，事后也无法区分是猜对还是被确认。",
+      "context": "任何依赖自动判分平台的演练战报复盘",
+      "tags": [
+        "ctf",
+        "signal",
+        "metrics"
+      ],
+      "source_model": "master",
+      "captured_at": "2026-11-15T16:20:56+00:00"
+    },
+    {
+      "id": "exp-2deb47655378",
+      "insight": "单轮即收尾且 findings 为空的战报几乎不携带可迁移的技术信号，其提炼价值与轮次数、finding 密度正相关，而不是与是否产出 flag 正相关。",
+      "context": "演练结束后的战报质量评估与经验沉淀",
+      "tags": [
+        "ctf",
+        "retrospective",
+        "signal"
+      ],
+      "source_model": "master",
+      "captured_at": "2026-11-15T16:20:56+00:00"
+    },
+    {
+      "id": "exp-836bd8103c3e",
+      "insight": "结束状态为 completed 但 flags.submitted 与 accepted 均为 0 时，该「完成」只是执行方的自评，未经平台校验的 flag 无从确认正确，收尾结论的可信度需要区分「自评完成」与「外部确认」。",
+      "context": "自动化测评/CTF 平台中由 agent 自行判定收尾的场景",
+      "tags": [
+        "ctf",
+        "workflow",
+        "verification"
+      ],
+      "source_model": "master",
+      "captured_at": "2026-11-15T16:21:52+00:00"
+    },
+    {
+      "id": "exp-5faf8ad66b0b",
+      "insight": "目标本身是纯计算或纯知识型题目时攻击面为零，findings 为空属于这类题目的预期形态，不能当作侦察不足或手法失效的信号。",
+      "context": "CTF misc/知识型题目、无真实服务端的靶标",
+      "tags": [
+        "ctf",
+        "misc",
+        "signal"
+      ],
+      "source_model": "master",
+      "captured_at": "2026-11-15T16:21:52+00:00"
     }
   ]
 }
