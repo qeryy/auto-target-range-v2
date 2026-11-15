@@ -206,7 +206,7 @@
 .td-note { font-size: 11.5px; color: var(--ink-2); line-height: 1.6;
   white-space: pre-wrap; word-break: break-word; background: var(--surface-2);
   border-radius: 6px; padding: 8px 10px; margin-top: 4px; }
-.td-empty { font-size: 12px; color: var(--ink-3); text-align: center; padding: 20px 0; }
+.td-empty { font-size: 13px; color: var(--ink-3); text-align: center; padding: 20px 0; }
 
 /* ================= 表格与列表 ================= */
 table.list { width: 100%; border-collapse: collapse; background: var(--surface);
@@ -991,7 +991,7 @@ dialog.panel { width: min(880px, 94vw); padding: 0; overflow: hidden; max-height
 .aw-entry.bad header b { color: var(--bad); }
 .aw-entry details { margin-top: 6px; font-size: 11px; }
 .aw-entry summary { cursor: pointer; color: var(--accent-ink); }
-.aw-empty { color: var(--ink-2); font-size: 12px; line-height: 1.7; padding: 10px 0; }
+.aw-empty { color: var(--ink-3); font-size: 13px; line-height: 1.7; padding: 10px 0; }
 .agent-workbench button:focus-visible, .agent-workbench summary:focus-visible, .agent-workbench .aw-pane:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 @media (max-width: 1150px) { .aw-columns { grid-template-columns: minmax(0,1fr); gap: 8px; } }
 @media (max-width: 600px) {
