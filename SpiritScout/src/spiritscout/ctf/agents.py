@@ -2121,7 +2121,13 @@ class CTFBaseAgent(SubAgent):
             )
 
             terms = _skill_terms(query)
-            pool = [sk for sk in _load_sec_skills() if sk.get("enabled", True)]
+            # 只给当前任务模式用得上的技能：SRC 不必看 pwn/stego，CTF 不必看
+            # 企业内网那一套。RunMode 的取值与 skill_modes 的 MODE_* 一一对应。
+            from spiritscout.resources.skill_modes import filter_by_mode
+
+            mode_key = str(getattr(getattr(self.ctx, "mode", None), "value", "") or "")
+            pool = filter_by_mode(
+                [sk for sk in _load_sec_skills() if sk.get("enabled", True)], mode_key)
             idf = _skill_idf(terms, pool)
             ranked = sorted(((s, sk) for sk in pool
                              if (s := _skill_score(terms, sk, idf=idf)) > 0),
