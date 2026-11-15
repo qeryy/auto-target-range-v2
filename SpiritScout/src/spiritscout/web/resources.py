@@ -224,6 +224,9 @@ def mount_resources(
         path = Path(cfg.models_config_path).parent / "skills.yaml"
         try:
             items = export_skills(store)
+            # 按 skill_id 排序再写回：库里的顺序随写入时间变，排序后 yaml 的 diff
+            # 只反映真实增删，不会因为顺序抖动整篇变红。
+            items.sort(key=lambda x: str(x.get("skill_id") or ""))
             write_skills(path, items)
         except (OSError, ValueError, SpiritScoutError) as exc:
             raise HTTPException(400, str(exc)) from exc
