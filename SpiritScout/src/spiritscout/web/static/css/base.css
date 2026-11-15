@@ -129,7 +129,7 @@ code, .mono { font-family: var(--mono); font-size: .92em; }
 .sess-item:hover .ops, .sess-item.on .ops { display: flex; }
 .sess-item .ops button {
   border: 0; background: var(--surface); color: var(--ink-3); border-radius: 6px;
-  width: 22px; height: 22px; font-size: 12px; line-height: 1; cursor: pointer;
+  width: 24px; height: 24px; font-size: 12px; line-height: 1; cursor: pointer;
   box-shadow: 0 0 0 1px var(--line);
 }
 .sess-item .ops button:hover { color: var(--ink); }
