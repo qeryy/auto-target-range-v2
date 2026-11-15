@@ -127,13 +127,14 @@ def _read_all(db_path: Path) -> list[dict[str, Any]]:
     """全量读取一个经验库文件；损坏或没有表一律当空库。"""
     try:
         conn = sqlite3.connect(ro_uri(db_path), uri=True)
+        conn.row_factory = sqlite3.Row
         try:
             rows = conn.execute("SELECT * FROM insights").fetchall()
         finally:
             conn.close()
     except (sqlite3.Error, OSError):
         return []
-    return [_normalize(tuple(row)) for row in rows]
+    return [_normalize(row) for row in rows]
 
 
 def _normalize(row: tuple[Any, ...]) -> dict[str, Any]:
@@ -141,7 +142,15 @@ def _normalize(row: tuple[Any, ...]) -> dict[str, Any]:
 
     老库可能没有合并相关的两列：多退少补，缺的按「没被合并」处理。
     """
-    item = dict(zip(_COLUMNS, row, strict=False))
+    # 有真实列名就用它：ALTER TABLE 补的列顺序不完全等于 _COLUMNS（mode 补在
+    # merged_into 之前），靠位置映射会把 ts 的值对到 merged_into 上。没有列名
+    # 时退回按长度截取（SELECT 出来的裸元组）。
+    keys = getattr(row, "keys", None)
+    if callable(keys):
+        item = {str(k): row[k] for k in keys()}
+    else:
+        cols = _COLUMNS[: len(row)] if len(row) <= len(_COLUMNS) else _COLUMNS
+        item = dict(zip(cols, row, strict=False))
     for name in _COLUMNS:
         if name == "merged_from":
             item.setdefault(name, [])
@@ -214,6 +223,7 @@ def read_recent(db_path: str | Path, *, limit: int = 6,
         return {"total": 0, "items": []}
     try:
         conn = sqlite3.connect(ro_uri(path), uri=True)
+        conn.row_factory = sqlite3.Row
         try:
             clause = _active_clause(conn)
             total = conn.execute(
@@ -276,6 +286,7 @@ def read_page(db_path: str | Path, *, q: str = "", tag: str = "",
         return empty
     try:
         conn = sqlite3.connect(ro_uri(path), uri=True)
+        conn.row_factory = sqlite3.Row
         try:
             has_merge = _has_column(conn, "merged_into")
             where, args = [], []
@@ -522,6 +533,9 @@ class ExperienceStore:
 
 def _load_conn(db_path: str | Path) -> sqlite3.Connection:
     conn = sqlite3.connect(str(db_path))
+    # 按列名取数：ALTER TABLE 补的列顺序不等于 _COLUMNS（mode 补在 merged_into
+    # 之前），靠位置映射会把 ts 的值对到 merged_into 上，合并直接判成「已合并过」。
+    conn.row_factory = sqlite3.Row
     _ensure_columns(conn)
     return conn
 
@@ -581,6 +595,7 @@ def merge_candidates(db_path: str | Path, *,
         return []
     try:
         conn = sqlite3.connect(ro_uri(path), uri=True)
+        conn.row_factory = sqlite3.Row
         try:
             rows = [_normalize(row) for row in conn.execute(
                 "SELECT * FROM insights").fetchall()]
