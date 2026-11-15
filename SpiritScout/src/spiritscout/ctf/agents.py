@@ -1353,6 +1353,12 @@ class CTFBaseAgent(SubAgent):
         if materials:
             messages.insert(1 if messages and messages[0].get("role") == "system" else 0,
                             {"role": "system", "content": materials})
+        # 知识引导与跨会话经验：_attach_kb_guidance 早就把它们算好了，但从来没人读
+        # plan.meta["kb_guidance"]——所谓「带经验解题」一直没生效。这里补上注入。
+        guidance = self._kb_guidance_message(plan, state)
+        if guidance:
+            messages.insert(1 if messages and messages[0].get("role") == "system" else 0,
+                            {"role": "system", "content": guidance})
         stage = self._stage_hint(task, state)
         # 只在阶段真正切换时插一次：每轮都插会把稳定前缀打碎，prefill 全废。
         if stage is not None and state.get("stage_announced") != stage["key"]:
@@ -2843,6 +2849,46 @@ class CTFBaseAgent(SubAgent):
 
             prompt += "\n" + competition_solver_prompt()
         return prompt
+
+    def _kb_guidance_message(self, plan: Any, state: dict[str, Any]) -> str:
+        """把知识库引导与提炼经验渲染成一段 system 文本。
+
+        只给「核验面」与「踩过的坑」，不给步骤序列——怎么走到验证点仍由执行者
+        按现场证据决定。同一路线只算一次并缓存：每轮重算会把稳定前缀打碎。
+
+        ``plan.meta["kb_guidance"]`` 由基类 ``_attach_kb_guidance`` 写入，
+        之前无人消费；这里接上。
+        """
+        cached = state.get("kb_guidance_block")
+        if isinstance(cached, str):
+            return cached
+        guidance = (getattr(plan, "meta", None) or {}).get("kb_guidance")
+        if not isinstance(guidance, dict):
+            return ""
+        lines: list[str] = []
+        for item in (guidance.get("distilled_insights") or [])[:6]:
+            text = str(item.get("insight") or "").strip()
+            if text:
+                ctx = str(item.get("context") or "").strip()
+                lines.append(f"- {text}" + (f"（适用：{ctx[:60]}）" if ctx else ""))
+        for item in (guidance.get("hunt_templates") or [])[:5]:
+            pit = str(item.get("common_pitfall") or "").strip()
+            pre = str(item.get("precondition") or "").strip()
+            if pit or pre:
+                lines.append(f"- 前置：{pre[:100]}；常见坑：{pit[:120]}")
+        for item in (guidance.get("experiences") or [])[:3]:
+            title = str(item.get("title") or "").strip()
+            verify = str(item.get("verify_method") or "").strip()
+            if title:
+                lines.append(f"- {title[:100]}" + (f"；核验：{verify[:100]}" if verify else ""))
+        if not lines:
+            return ""
+        block = ("【过往经验·跨会话积累】下列是同类任务里踩过的坑与核验要点，供参考；"
+                 "与当前题无关的忽略，不要照搬步骤。\n" + "\n".join(lines))
+        state["kb_guidance_block"] = block
+        self.ctx.audit.log("agent.kb_guidance_loaded", self.agent_id, {
+            "lines": len(lines), "chars": len(block)})
+        return block
 
     def _materials_message(self, task: Task, state: dict[str, Any]) -> str:
         """把文本类附件正文放进常驻 system 消息。

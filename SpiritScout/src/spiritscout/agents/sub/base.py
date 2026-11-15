@@ -10,9 +10,11 @@ import contextlib
 import dataclasses
 import json
 import re
+import sqlite3
 import time
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, ClassVar
 
 from spiritscout.agents.ring import RingLedger, attempt_key
@@ -390,7 +392,20 @@ class SubAgent(abc.ABC):
                 if tpl["template_id"] not in seen:
                     seen.add(tpl["template_id"])
                     hunt_templates.append(tpl)
-        if not experiences and not hunt_templates:
+        # 跨会话提炼的经验（experience.db，控制台「经验」页那批）：与知识库同目录。
+        # 之前只有写入和展示，从没进过提示词——所谓「跨会话自我进化」名不副实。
+        distilled: list[dict[str, Any]] = []
+        try:
+            from spiritscout.knowledge.experience import read_recent  # noqa: PLC0415
+
+            exp_db = Path(str(getattr(kb, "db_path", ""))).parent / "experience.db"
+            if exp_db.exists():
+                mode = str(getattr(getattr(self.ctx, "mode", None), "value", "") or "")
+                distilled = (read_recent(exp_db, limit=6, mode=mode).get("items") or [])
+        except (OSError, ValueError, sqlite3.Error):
+            distilled = []
+
+        if not experiences and not hunt_templates and not distilled:
             return
         guidance = {
             "experiences": [
@@ -398,6 +413,11 @@ class SubAgent(abc.ABC):
                  "preconditions": e.get("preconditions", []),
                  "verify_method": e.get("verify_method", "")}
                 for e in experiences
+            ],
+            "distilled_insights": [
+                {"insight": str(it.get("insight") or "")[:240],
+                 "context": str(it.get("context") or "")[:120]}
+                for it in distilled if it.get("insight")
             ],
             "hunt_templates": [
                 {"template_id": t["template_id"], "scene": t["scene"],
