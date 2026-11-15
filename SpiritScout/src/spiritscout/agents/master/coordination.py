@@ -518,6 +518,70 @@ class MasterCoordination:
     _REFILL_INTERVAL = 1.0       # 无事件时重查资源退避，不依赖其他解题任务结束
     _QUEUE_RETRY_INTERVAL = 5.0  # 规划失败或没有新增节点时的重试间隔
 
+    def _refill_candidates(self, dag: TaskDAG, platform: Any,
+                           closing_ids: set[str]) -> dict[str, Any]:
+        """持续竞赛里「这一轮还能补哪些题」——纯计算，不改任何状态。
+
+        三类来源：赛方列出但还没进 DAG 的、跑过但当前空着的回访题、以及
+        明确要求保留现场却暂时没在跑的题。``closing_ids`` 是正在关容器的，
+        必须排除，否则会出现「关掉又立刻重新拉起」的抖动。
+        """
+        listed = (self.ctx.extra.get("competition_context") or {}).get("challenges") or []
+        covered = set(self._challenge_states(dag))
+        missing = {str(ch["id"]) for ch in listed
+                   if isinstance(ch, dict) and ch.get("id")
+                   and str(ch["id"]) not in covered
+                   and not platform.is_completed(str(ch["id"]))}
+        active_ids = {str((n.meta.get("challenge") or {}).get("id") or "")
+                      for n in dag.all_nodes() if n.status in {
+                          TaskStatus.PENDING, TaskStatus.DISPATCHED, TaskStatus.RUNNING}}
+        # 回访队列也要持续补位，不能只补从未进入过 DAG 的题。
+        revisit = {cid for cid in covered - active_ids - closing_ids
+                   if not platform.is_completed(cid)
+                   and platform.can_start_instance(cid)}
+        retained_idle = {
+            str((n.meta.get("challenge") or {}).get("id") or "")
+            for n in dag.all_nodes() if n.meta.get("retain_instance") is True
+            and not n.meta.get("deferred")} - active_ids - closing_ids
+        return {"missing": missing, "revisit": revisit,
+                "retained_idle": retained_idle, "ready": dag.ready_nodes()}
+
+    async def _run_task_entry(self, spec: dict[str, Any],
+                              task: Task) -> tuple[str, TaskStatus]:
+        """跑一个子 Agent 并把结果收敛成终态；单题故障不牵连全局。
+
+        原本是 ``_dispatch`` 里的内嵌闭包，只为了省一次写 ``self.ctx``。提出来
+        后 ``_dispatch`` 少一层缩进，也方便单测直接打这个入口。
+        """
+        ctx = self.ctx
+        agent = ctx.agents[task.agent_type]
+        try:
+            await agent.run(task)
+            status = task.status if task.status in {
+                TaskStatus.DONE, TaskStatus.FAILED, TaskStatus.PRUNED, TaskStatus.CANCELLED
+            } else TaskStatus.FAILED
+            return spec["node_id"], status
+        except asyncio.CancelledError:
+            task.status = TaskStatus.CANCELLED
+            bb = getattr(ctx, "blackboard", None)
+            if bb is not None:
+                data = bb.read(BlackboardLayer.TASK_STATE, task.task_id)
+                if data is not None:
+                    data["task"] = task.model_dump(mode="json")
+                    for route in data.get("routes", []):
+                        if route.get("status") in {"pending", "dispatched", "running"}:
+                            route["status"] = TaskStatus.CANCELLED.value
+                    bb.write(BlackboardLayer.TASK_STATE, task.task_id, data,
+                             agent_type=task.agent_type, updated_by=self.agent_id,
+                             dedup_key=f"task|{task.task_id}")
+            ctx.audit.log("task.cancelled", self.agent_id, {"task_id": task.task_id})
+            raise
+        except Exception as exc:  # noqa: BLE001 —— 单子 Agent 故障不影响全局（2.1-3）
+            assert ctx.audit is not None
+            ctx.audit.log("task.failed", self.agent_id,
+                          {"task_id": task.task_id, "error": str(exc)[:300]})
+            return spec["node_id"], TaskStatus.FAILED
+
     async def _dispatch(self, state: MasterState) -> dict[str, Any]:
         ctx = self.ctx
         await self._gate_wait()
@@ -528,34 +592,7 @@ class MasterCoordination:
                        if Task.model_validate(t["task"]).round_no == state["round_no"]]
         round_tasks = [Task.model_validate(s["task"]) for s in round_specs]
 
-        async def _run_one(spec: dict[str, Any], task: Task) -> tuple[str, TaskStatus]:
-            agent = ctx.agents[task.agent_type]
-            try:
-                await agent.run(task)
-                status = task.status if task.status in {
-                    TaskStatus.DONE, TaskStatus.FAILED, TaskStatus.PRUNED, TaskStatus.CANCELLED
-                } else TaskStatus.FAILED
-                return spec["node_id"], status
-            except asyncio.CancelledError:
-                task.status = TaskStatus.CANCELLED
-                bb = getattr(ctx, "blackboard", None)
-                if bb is not None:
-                    data = bb.read(BlackboardLayer.TASK_STATE, task.task_id)
-                    if data is not None:
-                        data["task"] = task.model_dump(mode="json")
-                        for route in data.get("routes", []):
-                            if route.get("status") in {"pending", "dispatched", "running"}:
-                                route["status"] = TaskStatus.CANCELLED.value
-                        bb.write(BlackboardLayer.TASK_STATE, task.task_id, data,
-                                 agent_type=task.agent_type, updated_by=self.agent_id,
-                                 dedup_key=f"task|{task.task_id}")
-                ctx.audit.log("task.cancelled", self.agent_id, {"task_id": task.task_id})
-                raise
-            except Exception as exc:  # noqa: BLE001 —— 单子 Agent 故障不影响全局（2.1-3）
-                assert ctx.audit is not None
-                ctx.audit.log("task.failed", self.agent_id,
-                              {"task_id": task.task_id, "error": str(exc)[:300]})
-                return spec["node_id"], TaskStatus.FAILED
+        _run_one = self._run_task_entry
 
         # 下发决策（复杂度/路线预算/思考强度）与子 Agent 执行并行：裁定本身
         # 是一次模型调用（重推理端点上可达十余秒），串行挡在开工路径上纯属
@@ -620,24 +657,11 @@ class MasterCoordination:
 
                 try:
                     while True:
-                        listed = (ctx.extra.get("competition_context") or {}).get("challenges") or []
-                        covered = set(self._challenge_states(dag))
-                        missing = {str(ch["id"]) for ch in listed
-                                   if isinstance(ch, dict) and ch.get("id")
-                                   and str(ch["id"]) not in covered
-                                   and not platform.is_completed(str(ch["id"]))}
-                        # 回访队列也要持续补位，不能只补从未进入过 DAG 的题。
-                        active_ids = {str((n.meta.get("challenge") or {}).get("id") or "")
-                                      for n in dag.all_nodes() if n.status in {
-                                          TaskStatus.PENDING, TaskStatus.DISPATCHED, TaskStatus.RUNNING}}
-                        revisit = {cid for cid in covered - active_ids - closing_ids
-                                   if not platform.is_completed(cid)
-                                   and platform.can_start_instance(cid)}
-                        retained_idle = {
-                            str((n.meta.get("challenge") or {}).get("id") or "")
-                            for n in dag.all_nodes() if n.meta.get("retain_instance") is True
-                            and not n.meta.get("deferred")} - active_ids - closing_ids
-                        ready = dag.ready_nodes()
+                        refill = self._refill_candidates(dag, platform, closing_ids)
+                        missing = refill["missing"]
+                        revisit = refill["revisit"]
+                        retained_idle = refill["retained_idle"]
+                        ready = refill["ready"]
                         capacity_blocked = bool(ready) and all(
                             platform.owns(str((n.meta.get("challenge") or {}).get("id") or ""))
                             and not platform.can_start_instance(
