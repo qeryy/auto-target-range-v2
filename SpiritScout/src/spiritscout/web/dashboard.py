@@ -44,13 +44,16 @@ def start_of_period(period: str, now: float) -> float:
 
 def usage_metrics(calls: list[dict[str, Any]]) -> dict[str, Any]:
     cache = cache_summary(calls)
-    priced_usd = [r for r in calls if float(r.get("cost_usd") or 0) > 0
+    # cost_usd 是账本里的确定值（本地模型、免费额度就是 0）。0 不等于「不知道」：
+    # 只有压根没有这个字段才算未计价，否则所有本地调用都会被显示成「未知」。
+    priced_usd = [r for r in calls if r.get("cost_usd") is not None
                   and (r.get("estimated_cost_cny_min") is None
                        or r.get("estimated_cost_cny_max") is None)]
     cny = [r for r in calls if r.get("estimated_cost_cny_min") is not None
            and r.get("estimated_cost_cny_max") is not None]
     known = sum((r.get("estimated_cost_cny_min") is not None
-                 and r.get("estimated_cost_cny_max") is not None) or float(r.get("cost_usd") or 0) > 0
+                 and r.get("estimated_cost_cny_max") is not None)
+                or r.get("cost_usd") is not None
                 for r in calls)
     return {"calls": len(calls), "tokens": sum(r.get("tokens", 0) for r in calls),
             "cost": {"cny_min": sum(r["estimated_cost_cny_min"] for r in cny) if cny else None,
