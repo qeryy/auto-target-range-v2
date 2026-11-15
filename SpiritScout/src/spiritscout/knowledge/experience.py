@@ -280,7 +280,8 @@ def read_page(db_path: str | Path, *, q: str = "", tag: str = "",
     """
     empty: dict[str, Any] = {"total": 0, "items": [], "has_more": False,
                              "tags": [], "sources": 0, "last_ts": None,
-                             "merged_total": 0, "mode_counts": {}}
+                             "merged_total": 0, "mode_counts": {},
+                               "all_total": 0}
     path = Path(db_path)
     if not path.exists():
         return empty
@@ -323,6 +324,13 @@ def read_page(db_path: str | Path, *, q: str = "", tag: str = "",
                 if has_merge else 0)
             # 必须在这里算：下面 finally 会关连接，关掉后再查只会静默返回空
             mode_counts = _mode_counts(conn, active)
+            # 「全部」按钮要一个固定数字：不能用受 mode 过滤影响的 total，
+            # 否则选到只有 0 条的类时「全部」也显示 0，看着像库里空了。
+            try:
+                all_total = int(conn.execute(
+                    f"SELECT COUNT(*) FROM insights{active}").fetchone()[0])
+            except sqlite3.Error:
+                all_total = 0
         finally:
             conn.close()
     except sqlite3.Error:
@@ -348,6 +356,7 @@ def read_page(db_path: str | Path, *, q: str = "", tag: str = "",
         # 各任务大类的条数（对有效经验全量统计，不受当前 mode 过滤影响）——
         # 筛选按钮上的数字就取这里
         "mode_counts": mode_counts,
+        "all_total": all_total,
     }
 
 

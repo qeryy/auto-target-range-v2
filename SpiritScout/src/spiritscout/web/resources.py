@@ -203,6 +203,7 @@ def mount_resources(
         all_items = store.skills(q)
         counts = summary(all_items)
         picked = filter_by_mode(all_items, mode) if mode else all_items
+        all_total = len(filter_by_mode(all_items, ""))   # 未筛选的总数，固定不变
         # 就地补 modes：条目来自资源库，不一定带 domain，modes_for 会按 id 前缀猜
         page = []
         for it in picked[offset : offset + limit]:
@@ -212,6 +213,7 @@ def mount_resources(
             "total": len(picked),
             "has_more": offset + limit < len(picked),
             "mode": mode,
+            "all_total": all_total,
             "mode_counts": counts,
             "mode_labels": MODE_LABELS,
         }

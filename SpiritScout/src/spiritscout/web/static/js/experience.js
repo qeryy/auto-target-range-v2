@@ -116,7 +116,7 @@ const ExperiencePage = (() => {
     if (!box) return;
     const order = ["", "src", "ctf", "competition"];
     const labelOf = m => m ? (state.modeLabels[m] || m) : "全部";
-    const countOf = m => m ? (state.modeCounts[m] || 0) : (state.total || 0);
+    const countOf = m => m ? (state.modeCounts[m] || 0) : (state.allTotal || 0);
     box.innerHTML = order.map(m =>
       `<button class="btn sm exp-mode-btn${state.mode === m ? " on" : ""}" type="button"`
       + ` data-exp-mode="${m}" aria-pressed="${state.mode === m}">${esc(labelOf(m))}`
@@ -145,6 +145,7 @@ const ExperiencePage = (() => {
       state.offset = state.items.length;
       state.more = !!data.has_more;
       state.total = data.total || 0;
+      state.allTotal = data.all_total || 0;     // 「全部」固定用它，不随筛选变
       state.modeCounts = data.mode_counts || {};
       state.modeLabels = data.mode_labels || {};
       paintModes();

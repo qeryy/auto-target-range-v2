@@ -53,7 +53,7 @@ const ResourceConsole = (() => {
       if(version!==s.generation)return;
       let rows=result.items||[];if(kind==='mcp'&&s.q)rows=rows.filter(x=>JSON.stringify(x.data).toLowerCase().includes(s.q.toLowerCase()));
       s.items=append?[...s.items,...rows]:rows;s.more=result.has_more;s.total=result.total??rows.length;
-      if(kind==='skill'){s.modeCounts=result.mode_counts||{};s.modeLabels=result.mode_labels||{};paintModes(kind);}
+      if(kind==='skill'){s.modeCounts=result.mode_counts||{};s.modeLabels=result.mode_labels||{};s.allTotal=result.all_total||0;paintModes(kind);}
       status.textContent=`${s.total} 条记录${kind==='mcp'?' · 保存后新会话生效':''}`;render(kind);
     }catch(e){status.textContent=`读取失败：${e.message}。点击刷新重试。`;}
   }
@@ -66,7 +66,7 @@ const ResourceConsole = (() => {
     const labelOf = m => m ? (s.modeLabels[m] || m) : '全部';
     // 「全部」用后端给的总数：三类会重叠（web 技能既属 SRC 也属 CTF），
     // 相加会把同一条计两次，441 而实际只有 288。
-    const countOf = m => m ? (s.modeCounts[m] || 0) : (s.total || 0);
+    const countOf = m => m ? (s.modeCounts[m] || 0) : (s.allTotal || 0);
     box.innerHTML = order.map(m =>
       `<button class="btn sm resource-mode-btn${s.mode === m ? ' on' : ''}" type="button"`
       + ` data-skill-mode="${m}" aria-pressed="${s.mode === m}">${esc(labelOf(m))}`
