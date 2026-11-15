@@ -185,10 +185,27 @@ def _active_clause(conn: sqlite3.Connection) -> str:
     return " WHERE COALESCE(merged_into, '') = ''" if _has_column(conn, "merged_into") else ""
 
 
-def read_recent(db_path: str | Path, *, limit: int = 6) -> dict[str, Any]:
+def _modes_of(tags: list[str] | None) -> set[str]:
+    """按标签推断这条经验适用的任务模式；认不出来就返回空集（= 通用）。"""
+    from spiritscout.resources.skill_modes import _MODES  # noqa: PLC0415 — 避免循环导入
+
+    out: set[str] = set()
+    for tag in tags or []:
+        key = str(tag).strip().lower()
+        if key:
+            out.update(_MODES.get(key, ()))
+    return out
+
+
+def read_recent(db_path: str | Path, *, limit: int = 6,
+                mode: str = "") -> dict[str, Any]:
     """只读快照（面板/状态展示用）：不建表、不写盘，缺失或损坏返回空。
 
     已被二次提炼合并掉的条目不再计入——压缩的意义就是别让同一件事重复出现。
+
+    ``mode`` 给定时按标签优先：命中当前模式的排前面，通用条目（标签认不出模式）
+    照样带上；只有明确属于**别的**模式的才压到最后。经验的跨模式复用比技能更
+    实在（「命令退出码不代表绕过成功」在 SRC 和 CTF 都成立），所以不做硬过滤。
     """
     path = Path(db_path)
     if not path.exists():
@@ -206,7 +223,19 @@ def read_recent(db_path: str | Path, *, limit: int = 6) -> dict[str, Any]:
             conn.close()
     except sqlite3.Error:
         return {"total": 0, "items": []}
-    return {"total": int(total), "items": [_normalize(row) for row in rows]}
+    items = [_normalize(row) for row in rows]
+    key = str(mode or "").strip().lower()
+    if key and items:
+        from spiritscout.resources.skill_modes import ALL_MODES  # noqa: PLC0415
+
+        if key in ALL_MODES:
+            def rank(item: dict[str, Any]) -> int:
+                modes = _modes_of(item.get("tags"))
+                if not modes:
+                    return 0              # 通用：原样带上
+                return 0 if key in modes else 1   # 明确属于别的模式：压后
+            items.sort(key=rank)          # 稳定排序，同档内保持时间序
+    return {"total": int(total), "items": items}
 
 
 def read_page(db_path: str | Path, *, q: str = "", tag: str = "",

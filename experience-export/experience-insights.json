@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "kind": "spiritscout-experience-insights",
-  "generated_at": "2026-11-15T15:25:45+00:00",
+  "generated_at": "2026-11-15T16:09:37+00:00",
   "source": "SpiritScout/.spiritscout/experience.db -> table insights",
   "redaction": [
     "http/https 链接",
@@ -10,12 +10,12 @@
     "sk- / ghp_ / xox 形态密钥",
     "靶场主机名归一为 local-range"
   ],
-  "total": 546,
+  "total": 548,
   "tag_frequency": {
-    "ctf": 386,
-    "crypto": 96,
+    "ctf": 388,
+    "crypto": 98,
     "web": 63,
-    "flag": 53,
+    "flag": 55,
     "misc": 53,
     "base64": 52,
     "判读": 35,
@@ -27,8 +27,8 @@
     "编码": 20,
     "流程": 18,
     "CTF": 15,
+    "validation": 15,
     "reporting": 14,
-    "validation": 14,
     "sqli": 12,
     "workflow": 12,
     "逆向": 12,
@@ -180,6 +180,7 @@
     "样本偏差": 2,
     "格式检查": 2,
     "格式错误": 2,
+    "模式识别": 2,
     "注入": 2,
     "源码审计": 2,
     "环境": 2,
@@ -455,7 +456,6 @@
     "格式要求": 1,
     "模型端点": 1,
     "模式": 1,
-    "模式识别": 1,
     "正则": 1,
     "正常收尾": 1,
     "汇报": 1,
@@ -7381,6 +7381,32 @@
       ],
       "source_model": "master",
       "captured_at": "2026-11-15T15:25:34+00:00"
+    },
+    {
+      "id": "exp-76598ead4af7",
+      "insight": "在 base64 解码后的内容中，若发现类似 [flag值已脱敏] 或 [flag值已脱敏] 的固定前缀模式，即使后续字符被混淆或截断，该模式本身可作为识别有效 flag 的强信号，无需完整还原即可确认存在性。",
+      "context": "CTF 平台中 base64 编码的 flag 提取场景",
+      "tags": [
+        "crypto",
+        "flag",
+        "ctf",
+        "模式识别"
+      ],
+      "source_model": "master",
+      "captured_at": "2026-11-12T19:09:38+00:00"
+    },
+    {
+      "id": "exp-67c8ed2d04fb",
+      "insight": "解码后的 flag 通常遵循特定格式（如 [flag值已脱敏]），解码结果若不符合格式需重新审视解码路径。",
+      "context": "CTF 密码学题目中，解码结果需符合题目要求的 flag 格式，否则需调整解码策略。",
+      "tags": [
+        "crypto",
+        "flag",
+        "ctf",
+        "validation"
+      ],
+      "source_model": "master",
+      "captured_at": "2026-11-13T01:29:16+00:00"
     }
   ]
 }
