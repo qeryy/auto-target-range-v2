@@ -112,3 +112,8 @@ _build-out/
 # 运行时读的是 configs/skills.yaml（已把这些技能内联成 body 字段），
 # 这两个目录只是 import 时的原料，删掉不影响功能。
 SpiritScout/skills/
+
+# 经验投稿收件箱：放进来等合并的一次性文件，合并进 experience-insights.json
+# 之后就没用了。目录保留（别人往上放投稿），内容不入库。
+experience-export/inbox/*.json
+
