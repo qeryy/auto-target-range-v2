@@ -97,6 +97,16 @@ const ExperiencePage = (() => {
     el.querySelector("[data-more]").onclick = () => load(false, true);
   }
 
+  // 卡片上的大类：可直接改（下拉），改完立刻写库并刷新列表
+  function modeSelect(item) {
+    const cur = String(item.mode || "ctf");
+    const opts = ["src", "ctf", "competition"].map(m =>
+      `<option value="${m}"${m === cur ? " selected" : ""}>${esc(state.modeLabels[m] || m)}</option>`
+    ).join("");
+    return `<select class="exp-mode-select" data-mode-for="${esc(item.insight_id || "")}"`
+      + ` title="改这条经验的任务大类" aria-label="任务大类">${opts}</select>`;
+  }
+
   // 任务大类筛选：全部 / SRC 渗透 / CTF 解题 / 智能体竞赛，按钮带条数
   function paintModes() {
     const box = root()?.querySelector("[data-exp-modes]");
@@ -640,7 +650,7 @@ const ExperiencePage = (() => {
         ? `<button class="btn exp-restore" data-restore="${esc(String(item.merged_into))}" title="把这次合并还原，原件全部恢复">还原</button>`
         : "";
       return `<article class="exp-card${item.merged ? " merged" : ""}">
-        <div class="exp-card-tags">${item.mode ? `<span class="exp-ins-tag exp-mode-tag">${esc(state.modeLabels[item.mode] || item.mode)}</span>` : ""}${tags || '<span class="exp-ins-tag muted">未打标签</span>'}${badge}</div>
+        <div class="exp-card-tags">${modeSelect(item)}${tags || '<span class="exp-ins-tag muted">未打标签</span>'}${badge}</div>
         <p class="exp-insight">${esc(item.insight || "")}</p>
         ${item.context ? `<p class="exp-context">适用：${esc(item.context)}</p>` : ""}
         <footer>${source}<span class="exp-card-ops">
@@ -657,6 +667,22 @@ const ExperiencePage = (() => {
       </div>`);
     box.querySelectorAll("[data-open-session]").forEach(b =>
       b.onclick = () => openSession(b.dataset.openSession));
+    box.querySelectorAll("[data-mode-for]").forEach(sel => {
+      sel.onchange = async () => {
+        const id = sel.dataset.modeFor, want = sel.value;
+        sel.disabled = true;
+        try {
+          await api(`/api/experience/${encodeURIComponent(id)}/mode`, {
+            method: "PUT", body: JSON.stringify({mode: want}),
+          });
+          toast(`已改为 ${state.modeLabels[want] || want}`);
+        } catch (err) {
+          toast("改不了：" + (err?.message || err), true);
+        } finally {
+          await load();          // 刷新统计与列表（分类变了条数也变）
+        }
+      };
+    });
     box.querySelectorAll("[data-del]").forEach(b =>
       b.onclick = () => armConfirm(b, () => removeItem(b.dataset.del)));
     box.querySelectorAll("[data-restore]").forEach(b =>

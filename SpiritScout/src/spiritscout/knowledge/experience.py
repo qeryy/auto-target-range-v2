@@ -496,6 +496,20 @@ class ExperienceStore:
             "insight_id": eid, "insight": text[:200]})
         return eid
 
+    def set_mode(self, insight_id: str, mode: str) -> bool:
+        """改一条经验的任务大类；返回是否真的改动。"""
+        key = str(insight_id or "").strip()
+        want = str(mode or "").strip().lower()
+        if not key or want not in MODES:
+            return False
+        _ensure_columns(self._conn)      # 老库先补列
+        with self._conn:
+            cur = self._conn.execute(
+                "UPDATE insights SET mode = ? WHERE insight_id = ?", (want, key))
+        self.audit.log("experience.mode", "master",
+                       {"insight_id": key, "mode": want})
+        return cur.rowcount > 0
+
     def _skip(self, report: dict[str, Any] | None, reason: str,
               match_id: str, score: float, text: str, event: str) -> None:
         """记一次「没收下」：审计留痕 + 回填给调用方的原因。"""

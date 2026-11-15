@@ -114,6 +114,11 @@ def _set_yaml_bool(path: Path, section: str, key: str, value: bool) -> None:
     path.write_text(newline.join(out) + newline, encoding="utf-8")
 
 
+class ExperienceModePayload(BaseModel):
+    """改大类载荷。"""
+    mode: str = ""
+
+
 class ExperienceImportRow(BaseModel):
     """导入文件里的一行经验；多余字段忽略，不执行任何内容。"""
     model_config = {"extra": "ignore"}
@@ -455,6 +460,29 @@ def create_app(cfg: SystemConfig, models: list[ModelEntry], *,
         AuditLogger(cfg.audit_log_path).log("experience.settings", "user", {
             "distill_enabled": bool(payload.distill_enabled)})
         return {"distill_enabled": bool(getattr(exp, "distill_enabled", True))}
+
+    @app.put("/api/experience/{insight_id}/mode")
+    def experience_set_mode(insight_id: str, payload: ExperienceModePayload) -> dict[str, Any]:
+        """改一条经验的任务大类（src / ctf / competition）。"""
+        from spiritscout.knowledge.experience import (
+            MODES,
+            ExperienceStore,
+            shared_db_path,
+        )
+
+        want = str(payload.mode or "").strip().lower()
+        if want not in MODES:
+            raise HTTPException(400, f"大类只能是 {'/'.join(MODES)}")
+        store = ExperienceStore(shared_db_path(cfg),
+                                audit=AuditLogger(cfg.audit_log_path))
+        try:
+            ok = store.set_mode(insight_id, want)
+        finally:
+            with suppress(Exception):
+                store.close()
+        if not ok:
+            raise HTTPException(404, "经验不存在或大类没变")
+        return {"ok": True, "insight_id": insight_id, "mode": want}
 
     @app.get("/api/experience/export")
     def experience_export(include_meta: bool = Query(True)) -> dict[str, Any]:

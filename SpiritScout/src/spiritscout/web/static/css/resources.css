@@ -102,3 +102,15 @@
 .exp-mode-count { font: 10px var(--mono); opacity: .75; }
 /* 经验卡片上的大类标签，比普通 tag 更显眼一点 */
 .exp-mode-tag { color: var(--accent-ink); border-color: var(--accent); }
+
+/* 经验卡片上的大类下拉：小一号，贴着标签行 */
+.exp-mode-select {
+  font-size: 11px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  border: 1px solid var(--accent);
+  background: var(--surface);
+  color: var(--accent-ink);
+  cursor: pointer;
+  max-width: 9em;
+}
