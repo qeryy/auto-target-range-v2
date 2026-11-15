@@ -53,7 +53,7 @@ if ($conn) {
 # 兜底：清掉没有 python 子进程的项目窗口空壳
 Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" -ErrorAction SilentlyContinue |
     Where-Object {
-        $_.CommandLine -match 'run-spiritscout\.ps1' -and
+        $_.CommandLine -match 'run-spiritscout\.ps1|start-all\.ps1|run-case\.py|run_case\.py|run-model|run-llama|run_warmup' -and
         $_.CommandLine -notmatch 'stop-all' -and
         $_.ProcessId -ne $PID -and
         -not (Get-CimInstance Win32_Process -Filter "ParentProcessId=$($_.ProcessId)" -ErrorAction SilentlyContinue |
