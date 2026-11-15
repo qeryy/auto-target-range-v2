@@ -1861,6 +1861,22 @@ namespace SpiritScoutDesktop
             if (_server != null && !_server.HasExited) { OpenExternal(); }
         }
 
+        /// <summary>系统是否处于暗色主题：读 AppsUseLightTheme，读不到就当浅色。</summary>
+        private static bool IsDarkMode()
+        {
+            try
+            {
+                using (Microsoft.Win32.RegistryKey key = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(
+                    @"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize"))
+                {
+                    if (key == null) { return false; }
+                    object v = key.GetValue("AppsUseLightTheme");
+                    return v is int && (int)v == 0;
+                }
+            }
+            catch { return false; }
+        }
+
         /// <summary>兜底页：一张白卡片 + 主按钮，配色/字号跟控制台那套令牌对齐。</summary>
         private void BuildFallbackPage(string reason)
         {
@@ -1871,16 +1887,25 @@ namespace SpiritScoutDesktop
 
             Panel page = new Panel();
             page.Dock = DockStyle.Fill;
-            page.BackColor = Color.FromArgb(246, 248, 250);   // --bg
+            // 配色跟随系统主题：web 端有两套令牌，桌面壳不能只有白的
+            bool dark = IsDarkMode();
+            Color cBg = dark ? Color.FromArgb(13, 17, 23) : Color.FromArgb(246, 248, 250);      // --bg
+            Color cSurface = dark ? Color.FromArgb(22, 27, 34) : Color.White;                  // --surface
+            Color cLine = dark ? Color.FromArgb(48, 54, 61) : Color.FromArgb(216, 222, 228);   // --line
+            Color cInk = dark ? Color.FromArgb(230, 237, 243) : Color.FromArgb(31, 35, 40);    // --ink
+            Color cInk2 = dark ? Color.FromArgb(154, 164, 174) : Color.FromArgb(89, 99, 110);  // --ink-2
+            Color cInk3 = dark ? Color.FromArgb(133, 144, 160) : Color.FromArgb(98, 107, 119); // --ink-3
+
+            page.BackColor = cBg;
             page.Padding = new Padding(28);
 
             Panel card = new Panel();
             card.Dock = DockStyle.Top;
             card.Height = 232;
-            card.BackColor = Color.White;                     // --surface
+            card.BackColor = cSurface;
             card.Paint += delegate(object sender, PaintEventArgs e)
             {
-                using (Pen pen = new Pen(Color.FromArgb(216, 222, 228)))   // --line
+                using (Pen pen = new Pen(cLine))
                 {
                     e.Graphics.DrawRectangle(pen, 0, 0, card.Width - 1, card.Height - 1);
                 }
@@ -1889,14 +1914,14 @@ namespace SpiritScoutDesktop
             Label title = new Label();
             title.Text = "已在浏览器里打开控制台";
             title.Font = new Font("Microsoft YaHei UI", 12.5f, FontStyle.Bold);
-            title.ForeColor = Color.FromArgb(31, 35, 40);     // --ink
+            title.ForeColor = cInk;
             title.AutoSize = true;
             title.Location = new Point(22, 20);
 
             Label lead = new Label();
             lead.Text = "窗口里的内嵌浏览器这次没起来，控制台交给系统浏览器打开了——就是那份页面，排版和样式跟窗口里完全一致。";
             lead.Font = new Font("Microsoft YaHei UI", 9.5f);
-            lead.ForeColor = Color.FromArgb(89, 99, 110);     // --ink-2
+            lead.ForeColor = cInk2;
             lead.AutoSize = false;
             lead.Size = new Size(card.Width > 120 ? card.Width - 44 : 420, 44);
             lead.Location = new Point(22, 56);
@@ -1905,7 +1930,7 @@ namespace SpiritScoutDesktop
             Label detail = new Label();
             detail.Text = reason;
             detail.Font = new Font("Consolas", 8.5f);
-            detail.ForeColor = Color.FromArgb(98, 107, 119);   // --ink-3（与 web 的 #626b77 一致）
+            detail.ForeColor = cInk3;
             detail.AutoSize = false;
             detail.Size = new Size(lead.Width, 58);
             detail.Location = new Point(22, 104);
