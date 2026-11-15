@@ -46,6 +46,7 @@ const ExperiencePage = (() => {
           <button class="btn" data-merge-toggle title="把极其相似的经验提炼成一条">二次提炼</button>
           <button class="btn" data-absorb-toggle title="交给 AI 判断能不能并进已有的某条经验（不删任何经验）">合并</button>
           <button class="btn" data-merged-toggle hidden title="显示被合并的原件">显示已合并</button>
+          <div class="exp-modes" data-exp-modes role="group" aria-label="按任务大类筛选"></div>
           <button class="btn" data-sync-pull title="从仓库远端把经验拉回本地：只补缺，不改也不删本地条目">拉取</button>
           <button class="btn" data-sync-push title="把本地经验导出到仓库并提交推送">提交</button>
           <button class="btn" type="button" data-exp-export title="把整个经验库存成一个 JSON 文件，可以发给别人或换机器">导出文件</button>
@@ -96,6 +97,22 @@ const ExperiencePage = (() => {
     el.querySelector("[data-more]").onclick = () => load(false, true);
   }
 
+  // 任务大类筛选：全部 / SRC 渗透 / CTF 解题 / 智能体竞赛，按钮带条数
+  function paintModes() {
+    const box = root()?.querySelector("[data-exp-modes]");
+    if (!box) return;
+    const order = ["", "src", "ctf", "competition"];
+    const labelOf = m => m ? (state.modeLabels[m] || m) : "全部";
+    const countOf = m => m ? (state.modeCounts[m] || 0) : (state.total || 0);
+    box.innerHTML = order.map(m =>
+      `<button class="btn sm exp-mode-btn${state.mode === m ? " on" : ""}" type="button"`
+      + ` data-exp-mode="${m}" aria-pressed="${state.mode === m}">${esc(labelOf(m))}`
+      + `<span class="exp-mode-count">${countOf(m)}</span></button>`).join("");
+    box.querySelectorAll("[data-exp-mode]").forEach(b => {
+      b.onclick = () => { state.mode = b.dataset.expMode; state.generation++; load(); };
+    });
+  }
+
   async function load(resetTags = false, append = false) {
     shell();
     if (resetTags) state.tag = "";
@@ -108,12 +125,16 @@ const ExperiencePage = (() => {
       if (state.q) params.q = state.q;
       if (state.tag) params.tag = state.tag;
       if (state.merged) params.include_merged = "true";
+      if (state.mode) params.mode = state.mode;      // 任务大类筛选
       const data = await api("/api/experience?" + new URLSearchParams(params));
       if (version !== state.generation) return;
       state.items = append ? [...state.items, ...(data.items || [])] : (data.items || []);
       state.offset = state.items.length;
       state.more = !!data.has_more;
       state.total = data.total || 0;
+      state.modeCounts = data.mode_counts || {};
+      state.modeLabels = data.mode_labels || {};
+      paintModes();
       state.mergedTotal = data.merged_total || 0;
       state.stats = data;
       status.textContent = state.total
@@ -284,6 +305,7 @@ const ExperiencePage = (() => {
     if (state.q) params.q = state.q;
     if (state.tag) params.tag = state.tag;
     if (state.merged) params.include_merged = "true";
+      if (state.mode) params.mode = state.mode;      // 任务大类筛选
     const out = [];
     let guard = 0;
     while (guard++ < 200) {
@@ -618,7 +640,7 @@ const ExperiencePage = (() => {
         ? `<button class="btn exp-restore" data-restore="${esc(String(item.merged_into))}" title="把这次合并还原，原件全部恢复">还原</button>`
         : "";
       return `<article class="exp-card${item.merged ? " merged" : ""}">
-        <div class="exp-card-tags">${tags || '<span class="exp-ins-tag muted">未打标签</span>'}${badge}</div>
+        <div class="exp-card-tags">${item.mode ? `<span class="exp-ins-tag exp-mode-tag">${esc(state.modeLabels[item.mode] || item.mode)}</span>` : ""}${tags || '<span class="exp-ins-tag muted">未打标签</span>'}${badge}</div>
         <p class="exp-insight">${esc(item.insight || "")}</p>
         ${item.context ? `<p class="exp-context">适用：${esc(item.context)}</p>` : ""}
         <footer>${source}<span class="exp-card-ops">
@@ -704,7 +726,8 @@ const ExperiencePage = (() => {
    提示词，结果照实显示（ok / empty / unparsed / error 各是各的）。 */
 const SessionExperience = (() => {
   const FRESH_MS = 20000;
-  const state = {session: "", items: [], history: [], view: null, at: 0, busy: false};
+  const state = {session: "", items: [], history: [], view: null, at: 0, busy: false,
+                 mode: "", modeCounts: {}, modeLabels: {}};
   const stamp = t => t ? new Date(t * 1000).toLocaleString("zh-CN", {hour12: false}) : "未记录";
   const root = () => $("#tab-experience");
 

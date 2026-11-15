@@ -284,7 +284,8 @@ def create_app(cfg: SystemConfig, models: list[ModelEntry], *,
     def experience_page(q: str = "", tag: str = "",
                         limit: int = Query(50, ge=1, le=500),
                         offset: int = Query(0, ge=0),
-                        include_merged: bool = False) -> dict[str, Any]:
+                        include_merged: bool = False,
+                        mode: str = Query("", max_length=20)) -> dict[str, Any]:
         """经验提炼页：自我进化的全部产出（可检索/按标签过滤）+ 提炼过程记录。
 
         history 从各会话审计尾段提取 experience.distill 事件——含失败与
@@ -297,7 +298,12 @@ def create_app(cfg: SystemConfig, models: list[ModelEntry], *,
         data = read_page(
             shared_db_path(cfg),
             q=q, tag=tag, limit=limit, offset=offset,
-            include_merged=include_merged)
+            include_merged=include_merged, mode=mode)
+        # 前端筛选按钮要的中文名（与首页三张卡一致）
+        from spiritscout.resources.skill_modes import MODE_LABELS
+
+        data["mode_labels"] = MODE_LABELS
+        data["mode"] = mode
         titles = {s.session_id: s.brief(include_summary=False)["title"]
                   for s in manager.list()}
         for item in data["items"]:

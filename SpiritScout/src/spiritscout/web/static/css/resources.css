@@ -94,3 +94,11 @@
   font: 10px var(--mono); color: var(--ink-2);
   border: 1px solid var(--line); border-radius: 4px; padding: 1px 6px;
 }
+
+/* 经验页的任务大类筛选：与技能页同一套视觉语言 */
+.exp-modes { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 10px; }
+.exp-mode-btn { display: inline-flex; align-items: center; gap: 6px; }
+.exp-mode-btn.on { border-color: var(--accent); color: var(--accent-ink); background: var(--accent-soft); }
+.exp-mode-count { font: 10px var(--mono); opacity: .75; }
+/* 经验卡片上的大类标签，比普通 tag 更显眼一点 */
+.exp-mode-tag { color: var(--accent-ink); border-color: var(--accent); }

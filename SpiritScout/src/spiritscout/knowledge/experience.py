@@ -239,9 +239,27 @@ def read_recent(db_path: str | Path, *, limit: int = 6,
     return {"total": int(total), "items": items}
 
 
+def _mode_counts(conn: sqlite3.Connection, active: str) -> dict[str, int]:
+    """各任务大类的条数；老库没补 mode 列时全部算默认大类。"""
+    if not _has_column(conn, "mode"):
+        try:
+            n = conn.execute(f"SELECT COUNT(*) FROM insights{active}").fetchone()[0]
+        except sqlite3.Error:
+            return {}
+        return {DEFAULT_MODE: int(n)} if n else {}
+    try:
+        rows = conn.execute(
+            f"SELECT COALESCE(mode, '{DEFAULT_MODE}') AS m, COUNT(*)"
+            f" FROM insights{active} GROUP BY m").fetchall()
+    except sqlite3.Error:
+        return {}
+    return {str(r[0] or DEFAULT_MODE): int(r[1]) for r in rows}
+
+
 def read_page(db_path: str | Path, *, q: str = "", tag: str = "",
               limit: int = 50, offset: int = 0,
-              include_merged: bool = False) -> dict[str, Any]:
+              include_merged: bool = False,
+              mode: str = "") -> dict[str, Any]:
     """经验提炼页数据：过滤分页 + 标签分布/来源统计（只读，坏库返回空态）。
 
     q 关键词命中 insight/context/tags 任意字段；tag 精确匹配一个标签
@@ -252,7 +270,7 @@ def read_page(db_path: str | Path, *, q: str = "", tag: str = "",
     """
     empty: dict[str, Any] = {"total": 0, "items": [], "has_more": False,
                              "tags": [], "sources": 0, "last_ts": None,
-                             "merged_total": 0}
+                             "merged_total": 0, "mode_counts": {}}
     path = Path(db_path)
     if not path.exists():
         return empty
@@ -270,6 +288,10 @@ def read_page(db_path: str | Path, *, q: str = "", tag: str = "",
             if tag.strip():
                 where.append("tags LIKE ?")
                 args += [f'%"{tag.strip()}"%']
+            if mode.strip():
+                # 大类过滤：老库没有 mode 列时按默认大类算
+                where.append("COALESCE(mode, ?) = ?")
+                args += [DEFAULT_MODE, mode.strip()]
             clause = f" WHERE {' AND '.join(where)}" if where else ""
             total = conn.execute(
                 f"SELECT COUNT(*) FROM insights{clause}", args).fetchone()[0]
@@ -288,6 +310,8 @@ def read_page(db_path: str | Path, *, q: str = "", tag: str = "",
                 "SELECT COUNT(*) FROM insights"
                 " WHERE COALESCE(merged_into, '') <> ''").fetchone()[0]
                 if has_merge else 0)
+            # 必须在这里算：下面 finally 会关连接，关掉后再查只会静默返回空
+            mode_counts = _mode_counts(conn, active)
         finally:
             conn.close()
     except sqlite3.Error:
@@ -310,6 +334,9 @@ def read_page(db_path: str | Path, *, q: str = "", tag: str = "",
                  sorted(counter.items(), key=lambda kv: (-kv[1], kv[0]))],
         "sources": int(src_row[0] or 0),
         "last_ts": float(src_row[1]) if src_row and src_row[1] else None,
+        # 各任务大类的条数（对有效经验全量统计，不受当前 mode 过滤影响）——
+        # 筛选按钮上的数字就取这里
+        "mode_counts": mode_counts,
     }
 
 
