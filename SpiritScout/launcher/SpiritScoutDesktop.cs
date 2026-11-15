@@ -1905,7 +1905,7 @@ namespace SpiritScoutDesktop
             Label detail = new Label();
             detail.Text = reason;
             detail.Font = new Font("Consolas", 8.5f);
-            detail.ForeColor = Color.FromArgb(129, 139, 152);  // --ink-3
+            detail.ForeColor = Color.FromArgb(98, 107, 119);   // --ink-3（与 web 的 #626b77 一致）
             detail.AutoSize = false;
             detail.Size = new Size(lead.Width, 58);
             detail.Location = new Point(22, 104);
