@@ -611,7 +611,7 @@ const ExperiencePage = (() => {
   function renderTiles(data) {
     const last = data.last_ts ? time(data.last_ts).slice(5, 16) : "—";
     root().querySelector("[data-tiles]").innerHTML = `
-      <div class="exp-tile"><span>经验</span><b>${Number(data.total || 0).toLocaleString("zh-CN")}</b><small>筛选结果</small></div>
+      <div class="exp-tile"><span>经验</span><b>${Number(data.all_total || data.total || 0).toLocaleString("zh-CN")}</b><small>${Number(data.total || 0) === Number(data.all_total || 0) ? "全部" : `筛选出 ${Number(data.total || 0).toLocaleString("zh-CN")} 条`}</small></div>
       <div class="exp-tile"><span>来源会话</span><b>${Number(data.sources || 0).toLocaleString("zh-CN")}</b></div>
       <div class="exp-tile"><span>标签</span><b>${(data.tags || []).length}</b></div>
       <div class="exp-tile"><span>最近提炼</span><b class="exp-tile-time">${esc(last)}</b></div>`;

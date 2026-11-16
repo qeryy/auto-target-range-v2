@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "kind": "spiritscout-experience-insights",
-  "generated_at": "2026-11-15T16:43:32+00:00",
+  "generated_at": "2026-11-16T04:01:17+00:00",
   "source": "SpiritScout/.spiritscout/experience.db -> table insights",
   "redaction": [
     "http/https 链接",
@@ -10,13 +10,13 @@
     "sk- / ghp_ / xox 形态密钥",
     "靶场主机名归一为 local-range"
   ],
-  "total": 560,
+  "total": 563,
   "tag_frequency": {
-    "ctf": 400,
+    "ctf": 403,
     "crypto": 98,
     "web": 63,
-    "misc": 57,
-    "flag": 56,
+    "misc": 59,
+    "flag": 57,
     "base64": 52,
     "判读": 35,
     "复盘": 35,
@@ -28,8 +28,8 @@
     "流程": 19,
     "CTF": 15,
     "validation": 15,
+    "workflow": 15,
     "reporting": 14,
-    "workflow": 13,
     "sqli": 12,
     "逆向": 12,
     "recon": 10,
@@ -150,6 +150,7 @@
     "log-poisoning": 2,
     "logic": 2,
     "login": 2,
+    "math": 2,
     "methodology": 2,
     "obfuscation": 2,
     "oracle": 2,
@@ -267,7 +268,6 @@
     "linear-complexity": 1,
     "logging": 1,
     "low-complexity": 1,
-    "math": 1,
     "maze": 1,
     "melting": 1,
     "memory-write": 1,
@@ -7563,6 +7563,42 @@
       ],
       "source_model": "master",
       "captured_at": "2026-11-15T16:42:08+00:00"
+    },
+    {
+      "id": "exp-752f9b75a790",
+      "insight": "在CTF misc类题目中，题目描述若指向确定性的数学运算或简单变换，flag形态常与运算结果直接对应，此时攻击面可收敛于该变换本身，额外探索通常不产出新信号。",
+      "context": "CTF misc/数学计算类题目",
+      "tags": [
+        "ctf",
+        "misc",
+        "math"
+      ],
+      "source_model": "master",
+      "captured_at": "2026-11-16T04:00:55+00:00"
+    },
+    {
+      "id": "exp-7eb56bc64c2b",
+      "insight": "战报中extracted计数大于0而submitted计数为0时，提示flag提取与提交环节存在状态脱节，这类信号在自动化流程复盘中值得检查提交流程是否被遗漏或未触发。",
+      "context": "CTF自动化/半自动化流程复盘",
+      "tags": [
+        "ctf",
+        "workflow",
+        "flag"
+      ],
+      "source_model": "master",
+      "captured_at": "2026-11-16T04:00:55+00:00"
+    },
+    {
+      "id": "exp-95307cd1eb61",
+      "insight": "单轮完成且findings总数为0的CTF任务，往往对应题面信息已足够直接推导结果的场景，计划项与任务记录数量接近是该类低探索路径的辅助信号。",
+      "context": "CTF任务复盘/低复杂度题面",
+      "tags": [
+        "ctf",
+        "misc",
+        "workflow"
+      ],
+      "source_model": "master",
+      "captured_at": "2026-11-16T04:00:55+00:00"
     }
   ]
 }
