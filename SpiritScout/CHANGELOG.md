@@ -1,7 +1,20 @@
 # 更新日志
 
-项目采用 `主版本.次版本.修订号`。当前版本为 **1.0.2**，版本唯一来源是
+项目采用 `主版本.次版本.修订号`。当前版本为 **1.0.3**，版本唯一来源是
 `src/spiritscout/__init__.py`；包构建、命令行、控制台及 MCP 握手共用该值。
+
+## [1.0.3] - 2026-11-16
+
+- **结构优化（第一批）**：`ctf/agents.py` 从 3477 行降到 3027 行，拆出三个模块——
+  `ctf/codec.py`（编解码链 / 凯撒 / 栅栏，86 行）、`ctf/observe.py`（页面与报错
+  摘要 12 个函数 + 7 个常量，280 行）、`ctf/outcome.py`（`_ToolOutcome` 与
+  回灌上限，29 行），外加 `ctf/tool_mixins.py`（3 个工具方法，129 行）。
+  全是纯搬移，调用点用 `import ... as _原名` 保持不变；`_ToolOutcome` 必须独
+  立出去，否则 `tool_mixins` 和 `agents` 会循环导入。
+- **桌面图标与 favicon 颜色对不上**：favicon 改蓝（`#2f81f7`）后没重新生成
+  `launcher/icon.ico`，仍是旧的黄底。用 `launcher/make-icon.py` 重新生成，
+  现底色 `(47,129,247)`、描边与圆角透明都对。
+- `tests/test_toolcall_repairs.py` 的导入跟着搬到 `ctf/observe`。
 
 ## [1.0.2] - 2026-11-16
 

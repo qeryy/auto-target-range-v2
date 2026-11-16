@@ -13,7 +13,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from spiritscout.config.settings import ModelEntry
-from spiritscout.ctf.agents import _html_digest
+from spiritscout.ctf.observe import _html_digest
 from spiritscout.gateway.backends import LiteLLMBackend
 from spiritscout.gateway.gateway import ModelGateway
 from spiritscout.gateway.registry import ModelRegistry
