@@ -1,7 +1,20 @@
 # 更新日志
 
-项目采用 `主版本.次版本.修订号`。当前版本为 **0.61.0**，版本唯一来源是
+项目采用 `主版本.次版本.修订号`。当前版本为 **0.61.1**，版本唯一来源是
 `src/spiritscout/__init__.py`；包构建、命令行、控制台及 MCP 握手共用该值。
+
+## [0.61.1] - 2026-11-16
+
+- **内置本地 MCP 起了但工具进不来**，两个原因叠在一起：
+  ① `sys.stdout` 在 Windows 默认 GBK，中文工具描述被写成 GBK 字节，MCP SDK
+  按 UTF-8 解就抛 `UnicodeDecodeError`，连接断在握手阶段，报错只有一句
+  「unhandled errors in a TaskGroup」，完全看不出跟编码有关——现在 stdin/stdout
+  都显式 `reconfigure(encoding="utf-8")`。
+  ② agent 的工具白名单里只有 `mcp__yakit__*` / `mcp__ida__*`，没有
+  `mcp__local-files__*`，`_AgentMcpView` 按白名单过滤时把它整批滤掉了——
+  现在五个 CTF 方向 agent 都加上了。
+  实测通了：`mcp_search` 返回 `mcp__local-files__list_dir`，`mcp_call` 能列出
+  目录、读出 `configs/system.yaml` 的真实内容。
 
 ## [0.61.0] - 2026-11-16
 

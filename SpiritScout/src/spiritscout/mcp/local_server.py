@@ -20,6 +20,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import hashlib
 import json
 import os
@@ -210,7 +211,18 @@ def handle(server: LocalServer, msg: dict[str, Any]) -> dict[str, Any] | None:
 
 
 def serve_stdio(root: Path) -> int:
-    """stdio 传输：按行读 JSON-RPC，按行写回。"""
+    """stdio 传输：按行读 JSON-RPC，按行写回。
+
+    **必须显式切 UTF-8**：Windows 上 `sys.stdout` 默认是 GBK（cp936），中文
+    描述会被写成 GBK 字节，对端（MCP SDK）按 UTF-8 解就抛 UnicodeDecodeError，
+    整条连接直接断——而且报错是「unhandled errors in a TaskGroup」，看不出跟
+    编码有关。这个坑踩过一次。
+    """
+    for stream in (sys.stdin, sys.stdout):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if callable(reconfigure):
+            with contextlib.suppress(ValueError, OSError):
+                reconfigure(encoding="utf-8")
     server = LocalServer(root)
     out = sys.stdout
     for line in sys.stdin:
