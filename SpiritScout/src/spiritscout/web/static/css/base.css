@@ -182,7 +182,10 @@ code, .mono { font-family: var(--mono); font-size: .92em; }
 .title-row { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .title-row h2 { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 #op-rename { border: 0; background: none; color: var(--ink-3); cursor: pointer;
-  font-size: 14px; padding: 2px 6px; border-radius: 6px; flex: none; }
+  font-size: 14px; padding: 0; border-radius: 6px; flex: none;
+  /* 标题行里的小图标：显式给尺寸，别再被 `button:not([class])` 撑成 32px 大方块 */
+  width: 22px; height: 22px; min-height: 0;
+  display: inline-grid; place-items: center; }
 #op-rename:hover { color: var(--ink); background: var(--surface-2); }
 .title-row input.rename { font: inherit; font-weight: 700; font-size: 19px;
   border: 1px solid var(--accent); border-radius: 8px; padding: 2px 10px;

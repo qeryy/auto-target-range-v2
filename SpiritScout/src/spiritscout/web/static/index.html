@@ -7,14 +7,14 @@
 <link rel="icon" type="image/svg+xml" href="/static/favicon.svg?v=20261029-icon">
 <meta name="theme-color" content="#f6f8fa" media="(prefers-color-scheme: light)">
 <meta name="theme-color" content="#0d1117" media="(prefers-color-scheme: dark)">
-<link rel="stylesheet" href="/static/css/base.css?v=20261102-statusbadge">
+<link rel="stylesheet" href="/static/css/base.css?v=20261116-rename">
 <link rel="stylesheet" href="/static/css/dashboard.css?v=20261026-scroll">
 <link rel="stylesheet" href="/static/css/views.css?v=20261111-usagefit">
 <link rel="stylesheet" href="/static/css/deliverables.css?v=20261026-scroll">
 <link rel="stylesheet" href="/static/css/resources.css?v=20261102-expdistill">
 <link rel="stylesheet" href="/static/css/projects.css?v=20261026-scroll">
 <link rel="stylesheet" href="/static/css/home.css?v=20261026-stacked">
-<link rel="stylesheet" href="/static/css/polish.css?v=20261112-pageless">
+<link rel="stylesheet" href="/static/css/polish.css?v=20261116-rename">
 </head>
 <body>
 <div id="app">
@@ -147,7 +147,7 @@
       <div class="sess-head">
         <div style="min-width:0">
           <div class="title-row"><h2 id="s-title"></h2>
-            <button id="op-rename" title="重命名会话" aria-label="重命名会话"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m16 3 5 5-12 12-6 1 1-6L16 3ZM14 5l5 5"/></svg></button></div>
+            <button id="op-rename" class="icon-btn" title="重命名会话" aria-label="重命名会话"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m16 3 5 5-12 12-6 1 1-6L16 3ZM14 5l5 5"/></svg></button></div>
           <div class="meta" id="s-meta"></div>
           <div id="s-challenge-progress" class="challenge-counter" role="status" hidden></div>
         </div>
@@ -485,7 +485,7 @@
 
 <script src="/static/js/count.js?v=20261110-kmbtep"></script>
 <script src="/static/js/polling.js?v=20261101-notify"></script>
-<script src="/static/js/core.js?v=20261102-statusbadge"></script>
+<script src="/static/js/core.js?v=20261116-rename"></script>
 <script src="/static/js/notify.js?v=20261101-notify"></script>
 <script src="/static/js/observer.js?v=20261026-scroll"></script>
 <script src="/static/js/deliverables.js?v=20261026-scroll"></script>
@@ -495,14 +495,14 @@
 <script src="/static/js/agent-workbench.js?v=20261101-priority"></script>
 <script src="/static/js/maintenance.js?v=20261101-cache"></script>
 <script src="/static/js/usage.js?v=20261111-usagefit"></script>
-<script src="/static/js/experience.js?v=20261116-enabled"></script>
+<script src="/static/js/experience.js?v=20261116-rename"></script>
 <script src="/static/js/projects.js?v=20261026-scroll"></script>
 <script src="/static/js/session-history.js?v=20261026-process"></script>
 <script src="/static/js/topology.js?v=20261026-scroll"></script>
 <script src="/static/js/task-trace.js?v=20261026-process"></script>
 <script src="/static/js/dashboard.js?v=20261026-scroll"></script>
 <script src="/static/js/writeup.js?v=20261110-wpsource"></script>
-<script src="/static/js/views.js?v=20261110-wptab"></script>
+<script src="/static/js/views.js?v=20261116-rename"></script>
 <script src="/static/js/console.js?v=20261101-notify"></script>
 <dialog id="resource-editor"><form method="dialog"><div class="resource-editor-head"><h3 id="resource-editor-title">资源配置</h3><button class="btn sm" aria-label="关闭" value="cancel">关闭</button></div></form>
 <label>标识<input id="resource-key" autocomplete="off" placeholder="唯一名称"></label>
@@ -511,7 +511,7 @@
 <div id="resource-secrets"><label>环境变量（JSON，可留空保持原值）<input id="resource-env" type="password" autocomplete="new-password" placeholder='{"API_KEY":"…"}'></label><label>请求头（JSON，可留空保持原值）<input id="resource-headers" type="password" autocomplete="new-password" placeholder='{"Authorization":"Bearer …"}'></label></div>
 <p class="muted">密钥只通过专用字段填写。聊天中不要粘贴密钥；保存的 MCP 接入对新会话生效。</p><div id="resource-save-error" role="alert"></div><button type="button" class="btn primary" id="resource-save">保存配置</button></dialog>
 <script src="/static/js/exa-settings.js?v=20261026-scroll"></script>
-<script src="/static/js/resources.js?v=20261116-enabled"></script>
+<script src="/static/js/resources.js?v=20261116-rename"></script>
 <script src="/static/js/local-tools.js?v=20261110-ltlayout"></script>
 </body>
 </html>
