@@ -12,7 +12,7 @@ import json
 import re
 import time
 import zlib
-from dataclasses import dataclass, field, replace
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, ClassVar
@@ -43,6 +43,8 @@ from spiritscout.ctf.observe import (
     _source_loops,
     _stderr_digest,
 )
+from spiritscout.ctf.outcome import _TOOL_RESULT_CAP, _ToolOutcome
+from spiritscout.ctf.tool_mixins import CTFToolMixin
 from spiritscout.gateway import world_state
 from spiritscout.gateway.context import (
     append_instruction_events,
@@ -83,7 +85,6 @@ def _load_sec_skills() -> list[dict[str, Any]]:
 # 对话字符预算：超出后从最旧消息开始折叠工具结果（长对话的上下文治理）
 _MSG_CHAR_BUDGET = 48000
 # 单条工具结果回灌上限
-_TOOL_RESULT_CAP = 6000
 # 已读地址记录回放的文本上限（与观察摘录同量级，别在回放时又掐掉页面文案）
 _FETCH_RECORD_CAP = 3600
 # 沙箱输出回灌模型的上限（头尾保留；完整输出已落盘，不丢过程）
@@ -240,20 +241,6 @@ def _challenge_instance_blocker(status: Any, text: str) -> str:
 
 
 
-@dataclass
-class _ToolOutcome:
-    """一次工具调用的结果：text 回灌模型，其余喂路线状态与前端轨迹。"""
-
-    ok: bool
-    text: str
-    value: float = 0.0
-    findings: list[dict[str, Any]] = field(default_factory=list)
-    note: str = ""
-    observation: dict[str, Any] | None = None
-    empty: bool = False        # 成功执行但无有效输出（喂空转感知，不做拦截）
-    stop: bool = False         # 平台已确认该得分目标完成：不再请求模型写收尾
-    metadata: dict[str, Any] = field(default_factory=dict)
-    final_text: str = ""       # stop=True 时的确定性短回执
 
 
 def _missing_exec_param(name: str, param: str, args: dict[str, Any]) -> str:
@@ -332,7 +319,7 @@ class _DeltaEmitter:
 
 
 
-class CTFBaseAgent(SubAgent):
+class CTFBaseAgent(CTFToolMixin, SubAgent):
     """CTF 专项子 Agent 基座：工具目录 + 结果流向 + 原生工具调用解题环。"""
 
     direction = "misc"
@@ -2165,48 +2152,6 @@ class CTFBaseAgent(SubAgent):
             note=f"{desc} → {status}",
             text=body_text)
 
-    async def _tool_local_tool(self, task: Task, route, state: dict[str, Any],
-                               args: dict[str, Any]) -> _ToolOutcome:
-        """本地工具：检索或运行用户设置目录里的工具。
-
-        运行由 `local_runner` 负责「复制→跑→对账→还原→删副本」，这里只把结果
-        折成观察：`clean=false`（没能还原）本身就是需要停手报告的异常，
-        不能当成普通执行成功继续往下推。
-        """
-        operation = str(args.get("operation") or "search").strip().lower()
-        payload = {
-            "operation": operation,
-            "query": str(args.get("query") or ""),
-            "name": str(args.get("name") or ""),
-            "args": [str(a) for a in (args.get("args") or [])] if isinstance(args.get("args"), list) else [],
-            "action": str(args.get("action") or "analysis"),
-        }
-        if args.get("timeout") not in (None, ""):
-            try:
-                payload["timeout"] = float(args["timeout"])
-            except (TypeError, ValueError):
-                return _ToolOutcome(ok=False, text="timeout 需要是秒数。")
-        res = await self.ctx.tools.call("local_tool", payload, **self._tool_ctx(task))
-        desc = f"local_tool {operation}"
-        if operation == "run":
-            clean = bool(res.parsed.get("clean"))
-            state["observations"].append({
-                "action": desc,
-                "result": (f"{res.parsed.get('tool')} 退出码 {res.parsed.get('exit_code')}"
-                           + ("（目录已还原）" if clean else "（未能还原，已中止）"))[:160]})
-            if not clean:
-                return _ToolOutcome(
-                    ok=False, note=f"{desc} → 目录未能还原",
-                    text=("本地工具运行后目录未能完全还原，已停止使用该工具。\n"
-                          + (res.stdout or res.error or "")[:1500]))
-            return _ToolOutcome(ok=res.ok, note=f"{desc} → 退出码 {res.parsed.get('exit_code')}",
-                                text=(res.stdout or res.error or "")[:4000],
-                                metadata=res.parsed)
-        state["observations"].append({"action": desc,
-                                      "result": (res.stdout or res.error or "")[:160]})
-        return _ToolOutcome(ok=res.ok, note=f"{desc} → {res.parsed.get('count', '')}".strip(),
-                            text=(res.stdout or res.error or "")[:4000],
-                            metadata=res.parsed)
 
     async def _tool_sandbox(self, task: Task, route, state: dict[str, Any],
                             name: str, args: dict[str, Any]) -> _ToolOutcome:
@@ -2317,21 +2262,6 @@ class CTFBaseAgent(SubAgent):
             note=f"{desc} → {status}；{evidence}",
             text="\n".join(lines), metadata={"output_file": out_file} if out_file else {})
 
-    async def _tool_analyze_text(self, task: Task) -> _ToolOutcome:
-        """题面文本取证：全部载荷字符串的编码串链式解码 + 零宽字符统计 + Flag 提取。"""
-        text = _challenge_text(self.challenge_of(task))
-        decoded_texts = _decode_blobs(text)
-        zw = len(re.findall(r"[\u200b\u200c\u200d\u2060]", text))
-        obs = {"action": "analyze_text",
-               "result": f"可解码串 {len(decoded_texts)} 个，零宽字符 {zw} 个"}
-        state_note = f"题面分析：{len(decoded_texts)} 个可解码串，零宽字符={zw}"
-        body = ("题面分析结果：可解码串 "
-                f"{len(decoded_texts)} 个，零宽字符 {zw} 个。\n"
-                + ("解码结果:\n" + "\n".join(d[:600] for d in decoded_texts[:6])
-                   if decoded_texts else "（无可解码串）"))
-        return _ToolOutcome(ok=True, value=0.15,
-                            findings=[],
-                            note=state_note, observation=obs, text=body)
 
     async def _ensure_attachments(self, task: Task) -> dict[str, dict[str, Any]]:
         """附件解析结果（缺则补跑 file_analyze）——方向工具的共同前置。"""
@@ -2369,47 +2299,6 @@ class CTFBaseAgent(SubAgent):
         except OSError:
             return []
 
-    async def _tool_analyze_attachments(self, task: Task) -> _ToolOutcome:
-        """对全部附件做魔数识别 + 字符串提取，文本进 Flag 提取。"""
-        attachments = self._attachments_of(task)
-        if not attachments:
-            return _ToolOutcome(ok=False, text="本题没有附件。")
-        findings: list[dict[str, Any]] = []
-        notes: list[str] = []
-        body_lines: list[str] = []
-        all_strings: list[str] = []
-        # 正文节选按总预算分配：多条附件时若每个都给满，拼起来会超过回灌上限，
-        # 被从头截断的恰恰是「正文」——模型于是继续认为没读到材料，转头又去问用户。
-        per_file = min(2400, max(800, 4800 // max(1, len(attachments))))
-        for path in attachments:
-            res = await self.ctx.tools.call(
-                "file_analyze", {"path": path, "text_excerpt_chars": per_file},
-                **self._tool_ctx(task))
-            if not res.ok:
-                notes.append(f"{path}: {res.error}")
-                body_lines.append(f"{path}: 解析失败 {str(res.error)[:120]}")
-                continue
-            parsed = res.parsed
-            notes.append(f"{path}: magic={parsed['magic']} size={parsed['size']}")
-            strings = parsed.get("strings", [])
-            all_strings.extend(strings)
-            findings.append({"type": "file", "path": path,
-                             "magic": parsed["magic"], "size": parsed["size"]})
-            self.cache.put(self.route_namespace, f"file|{path}", parsed)
-            head = (f"{path}: magic={parsed['magic']} size={parsed['size']} "
-                    f"is_elf={parsed.get('is_elf')}"
-                    + (f" lines={parsed.get('line_count')}" if parsed.get("line_count") else ""))
-            # 文本类附件（源码/配置/脚本）的正文排在字符串样本前面：解题材料就是它，
-            # 只给字符串样本等于让模型凭空猜算法，排在后面又会被回灌上限截掉。
-            excerpt = str(parsed.get("text_excerpt") or "")
-            if excerpt:
-                body_lines.append(head + f"\n  正文（{Path(str(path)).name}）:\n{excerpt}")
-                continue
-            body_lines.append(head + "\n  字符串样本: "
-                              + " | ".join(str(s)[:120] for s in strings[:20]))
-        return _ToolOutcome(ok=True, value=0.3,
-                            findings=findings, note="; ".join(notes),
-                            text="\n".join(body_lines)[:_TOOL_RESULT_CAP])
 
     async def _direction_tool(self, task: Task, route, state: dict[str, Any],
                               name: str, args: dict[str, Any]) -> _ToolOutcome | None:
