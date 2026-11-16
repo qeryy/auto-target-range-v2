@@ -6,17 +6,12 @@
 from __future__ import annotations
 
 import asyncio
-import base64
-import binascii
-import codecs
-import contextlib
 import copy
 import hashlib
 import html
 import json
 import re
 import time
-import urllib.parse
 import zlib
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -27,6 +22,15 @@ from spiritscout.agents.ring import attempt_key
 from spiritscout.agents.sub.base import RoutePlan, StepResult, SubAgent
 from spiritscout.core.ids import new_id
 from spiritscout.core.models import AgentType, BlackboardLayer, RunMode, Task
+from spiritscout.ctf.codec import (
+    caesar_brute as _caesar_brute,
+)
+from spiritscout.ctf.codec import (
+    decode_chain as _decode_chain,
+)
+from spiritscout.ctf.codec import (
+    rail_fence_brute as _rail_fence_brute,
+)
 from spiritscout.ctf.flags import FlagManager
 from spiritscout.gateway import world_state
 from spiritscout.gateway.context import (
@@ -3393,85 +3397,3 @@ class CTFPwnAgent(CTFBaseAgent):
             text="危险函数线索:\n" + "\n".join(leads))
 
 
-# ================================================================ 编码/古典密码工具
-
-
-def _decode_chain(text: str, max_depth: int = 4) -> str:
-    """编码变换链自动推理：Base64/Hex/URL/Rot13 逐层尝试（4.4.4 编码变换链）。
-
-    每层只接受「可打印且发生变化」的解码，避免指数爆炸。
-    """
-    current = text.strip()
-    for _ in range(max_depth):
-        next_text = _try_single_decode(current)
-        if next_text is None or next_text == current:
-            break
-        current = next_text
-    return current
-
-
-def _try_single_decode(text: str) -> str | None:
-    candidates: list[str] = []
-    # Base64（需合法字符集与长度）
-    if re.fullmatch(r"[A-Za-z0-9+/=]+", text) and len(text) % 4 == 0:
-        with contextlib.suppress(binascii.Error, UnicodeDecodeError, ValueError):
-            candidates.append(base64.b64decode(text, validate=True)
-                                .decode("utf-8", errors="strict"))
-    # Hex
-    if re.fullmatch(r"(?:[0-9a-fA-F]{2})+", text) and len(text) >= 4:
-        with contextlib.suppress(UnicodeDecodeError):
-            candidates.append(bytes.fromhex(text).decode("utf-8", errors="strict"))
-    # URL
-    if "%" in text:
-        decoded = urllib.parse.unquote(text)
-        if decoded != text:
-            candidates.append(decoded)
-    # Rot13（字母串）
-    if re.fullmatch(r"[A-Za-z]+", text):
-        candidates.append(codecs.decode(text, "rot_13"))
-    for cand in candidates:
-        if cand and all(ch.isprintable() or ch.isspace() for ch in cand):
-            return cand
-    return None
-
-
-def _caesar_brute(text: str) -> list[str]:
-    """凯撒全位移爆破（仅对纯字母密文），返回全部位移结果。"""
-    if not re.fullmatch(r"[A-Za-z]+", text.strip()):
-        return []
-    out = []
-    for shift in range(1, 26):
-        out.append("".join(
-            chr((ord(c) - base - shift) % 26 + base) if c.isalpha() else c
-            for c in text.strip()
-            for base in (ord('A') if c.isupper() else ord('a'),)
-        ))
-    return out
-
-
-def _rail_fence_brute(text: str, max_rails: int = 6) -> list[str]:
-    """栅栏密码定栏还原（W 型简化为之字形标准栅栏）。"""
-    cipher = text.strip()
-    if len(cipher) < 4 or not cipher.isalpha():
-        return []
-    results = []
-    for rails in range(2, min(max_rails, len(cipher) - 1) + 1):
-        # 计算每栏字符数
-        pattern = list(range(rails)) + list(range(rails - 2, 0, -1))
-        counts = [0] * rails
-        for i in range(len(cipher)):
-            counts[pattern[i % len(pattern)]] += 1
-        # 切分密文并按栏重排
-        rows: list[list[str]] = []
-        idx = 0
-        for count in counts:
-            rows.append(list(cipher[idx: idx + count]))
-            idx += count
-        pos = [0] * rails
-        plain = []
-        for i in range(len(cipher)):
-            rail = pattern[i % len(pattern)]
-            plain.append(rows[rail][pos[rail]])
-            pos[rail] += 1
-        results.append("".join(plain))
-    return results
