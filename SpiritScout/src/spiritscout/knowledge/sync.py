@@ -252,7 +252,20 @@ def _git(repo: Path, *args: str, timeout: float = 120.0) -> subprocess.Completed
 
 def _git_ok(result: subprocess.CompletedProcess, what: str) -> str:
     if result.returncode != 0:
-        detail = (result.stderr or result.stdout or "").strip().splitlines()
+        raw = (result.stderr or result.stdout or "").strip()
+        lowered = raw.lower()
+        # 被 .gitignore 挡住时，git 的 stderr 结尾是一句「Disable this message with
+        # git config set advice.addIgnoredFile false」——把这句话原样抛给用户，
+        # 只会让人以为要配凭证。真正该说的是「这个路径被忽略了，改规则或强加」。
+        if "ignored by one of your .gitignore" in lowered or "advice.addignoredfile" in lowered:
+            paths = [ln.strip() for ln in raw.splitlines()
+                     if ln.strip() and not ln.startswith("hint:")]
+            raise SpiritScoutError(
+                f"{what}失败：这些路径被 .gitignore 忽略了 —— "
+                + ("、".join(paths[:3]) or "（路径未在输出中）")
+                + "。投稿目录不该被忽略，检查 .gitignore 里是否误加了 "
+                "experience-export/inbox 这类规则。")
+        detail = raw.splitlines()
         raise SpiritScoutError(f"{what}失败: {detail[-1][:300] if detail else result.returncode}")
     return result.stdout.strip()
 

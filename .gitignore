@@ -113,10 +113,6 @@ _build-out/
 # 这两个目录只是 import 时的原料，删掉不影响功能。
 SpiritScout/skills/
 
-# 经验投稿收件箱：放进来等合并的一次性文件，合并进 experience-insights.json
-# 之后就没用了。目录保留（别人往上放投稿），内容不入库。
-experience-export/inbox/*.json
-
 # —— 与本地大模型相关的启动脚本：只留本机，不进仓库 ——
 # 这些脚本会拉起 llama-server / LM Studio（端口 1234）、指定量化模型与显存参数，
 # 属于「这台机器怎么跑」的私事；仓库里保留的是通用控制台启动器

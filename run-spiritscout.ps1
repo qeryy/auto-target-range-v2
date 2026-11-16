@@ -2,7 +2,7 @@
 [Console]::OutputEncoding = [Text.Encoding]::UTF8
 $OutputEncoding = [Text.Encoding]::UTF8
 $ErrorActionPreference = 'Continue'
-$Host.UI.RawUI.WindowTitle = 'SpiritScout console :8010 (local model qwen-coder-7b)'
+$Host.UI.RawUI.WindowTitle = 'SpiritScout console :8010'
 # 工作区用 configs/system.yaml 的 workspace.root（SpiritScout\.spiritscout）。
 # 之前用 SPIRITSCOUT_WORKSPACE__ROOT 指到 _work\agent-test\ws（8015 那套测试数据），
 # 结果经验/用量分成了两套库；现已合并回 .spiritscout，不再覆盖。

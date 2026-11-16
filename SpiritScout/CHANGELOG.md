@@ -1,7 +1,22 @@
 # 更新日志
 
-项目采用 `主版本.次版本.修订号`。当前版本为 **1.0.0**，版本唯一来源是
+项目采用 `主版本.次版本.修订号`。当前版本为 **1.0.1**，版本唯一来源是
 `src/spiritscout/__init__.py`；包构建、命令行、控制台及 MCP 握手共用该值。
+
+## [1.0.1] - 2026-11-16
+
+- **「提交经验」报 `git add 失败: hint: Disable this message…`**：不是凭证问题。
+  上一版我给 `.gitignore` 加过 `experience-export/inbox/*.json`（当时以为那是
+  合并完就没用的垃圾），可那正是「提交经验」写入的投稿目录——`git add` 被忽略
+  规则拒绝，返回码 1，而 git 的 stderr 结尾恰好是那句
+  「Disable this message with git config set advice.addIgnoredFile false」，
+  看上去很像要配 GitHub 凭证，实际是路径被自己挡住了。
+  两处修：删掉那条错误规则；`_git_ok` 识别「被 .gitignore 挡住」的情况，
+  直接说明是哪个路径被忽略、该去检查哪条规则，不再把 git 的 hint 抛给用户。
+- 本机删掉与本地大模型相关的 10 个脚本（`start-all` / `stop-all` / 两个 cmd /
+  赛场教程 / `ensure_llm` / `start_range` / `stop_range` / 两个 bat），
+  README 里对应的三行引用一并移除。`run-spiritscout.ps1` 的窗口标题去掉了
+  `local model qwen-coder-7b` 字样（它本来只起控制台）。
 
 ## [1.0.0] - 2026-11-16
 
