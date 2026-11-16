@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import unittest
 
-from spiritscout.ctf.agents import _stderr_digest
+from spiritscout.ctf.observe import _stderr_digest
 
 INDEX_CASE = """Traceback (most recent call last):
   File "C:\\ws\\run_1.py", line 17, in <module>

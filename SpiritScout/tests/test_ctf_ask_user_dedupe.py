@@ -5,7 +5,8 @@ import unittest
 from types import SimpleNamespace
 
 from spiritscout.core.models import AgentType
-from spiritscout.ctf.agents import ASK_USER_REPEAT_LIMIT, CTFBaseAgent
+from spiritscout.ctf.agents import CTFBaseAgent
+from spiritscout.ctf.limits import ASK_USER_REPEAT_LIMIT
 
 
 class _Audit:
