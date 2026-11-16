@@ -306,9 +306,26 @@ def submit(db_path: str | Path, *, repo: str = "", inbox: str = DEFAULT_INBOX,
     _git_ok(_git(root, "commit", "-m", text, "--", rel), "git commit ")
     push_out = _git(root, "push", "origin", f"HEAD:{branch}", timeout=300.0)
     if push_out.returncode != 0:
-        detail = (push_out.stderr or push_out.stdout or "").strip().splitlines()
+        raw = (push_out.stderr or push_out.stdout or "").strip()
+        detail = raw.splitlines()
+        tail = detail[-1][:300] if detail else str(push_out.returncode)
+        lowered = raw.lower()
+        # 凭证问题单独说清楚：这个功能跑在**使用者自己的机器**上，凭证也必须是
+        # 使用者自己的。仓库里不放任何 token，也不替谁保管。
+        auth_hints = ("authentication failed", "could not read username",
+                      "permission denied", "403", "401", "credentials")
+        if any(h in lowered for h in auth_hints):
+            raise SpiritScoutError(
+                "推送失败：这台机器还没有配置 GitHub 凭证。\n"
+                "  三种任选一种：\n"
+                "  1) 装 gh 并登录：`gh auth login`（推荐，凭据交给 git 的 credential helper）\n"
+                "  2) 用 SSH：`git remote set-url origin git@github.com:<你>/<仓库>.git`，"
+                "并确认 `ssh -T git@github.com` 通\n"
+                "  3) 用 PAT：`git config --local credential.helper store`，"
+                "下次 push 输用户名 + token（token 存本机，不入库）\n"
+                f"  git 原始输出：{tail}")
         raise SpiritScoutError(
-            "推送失败: " + (detail[-1][:300] if detail else str(push_out.returncode))
+            "推送失败: " + tail
             + "（没有写入权限时可以 fork 后往自己的分支提交，再提单合并）")
     if audit is not None:
         audit.log("experience.sync.submit", "user",
