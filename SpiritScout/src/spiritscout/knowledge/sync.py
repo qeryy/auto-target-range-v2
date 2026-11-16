@@ -243,31 +243,64 @@ def merge_payload(db_path: str | Path, payload: dict[str, Any], *,
 # ---------------------------------------------------------------- git 侧
 
 def _git(repo: Path, *args: str, timeout: float = 120.0) -> subprocess.CompletedProcess:
-    # core.quotepath=false：提交人名字里有中文时，git 默认会把路径转成 \346\235...
-    # 的转义形式，后面拿路径去 `git show` 就对不上了。
+    """跑一条 git 命令。
+
+    两个环境变量是必须的：
+
+    * ``core.quotepath=false`` —— 提交人名字里有中文时，git 默认把路径转成
+      ``\346\235...``，后面拿路径去 ``git show`` 就对不上。
+    * ``GIT_TERMINAL_PROMPT=0`` —— 没有凭证时立刻失败，而不是**停下来等输入**。
+      灵枢是后台服务，stdin 不接终端；不关掉交互，git 会一直等用户名密码直到
+      超时（120 秒），用户看到的是「点了提交之后卡住」，而不是「缺凭证」。
+      配合 ``stdin=DEVNULL`` 双保险。
+    """
+    env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
     return subprocess.run(["git", "-C", str(repo), "-c", "core.quotepath=false", *args],
                           capture_output=True, text=True, encoding="utf-8",
-                          errors="replace", timeout=timeout)
+                          errors="replace", timeout=timeout,
+                          env=env, stdin=subprocess.DEVNULL)
+
+
+#: 这些信号说明「这台机器还没配 git 凭证」，而不是仓库或网络有问题
+_AUTH_HINTS = ("authentication failed", "could not read username",
+               "permission denied", "terminal prompts disabled",
+               "invalid username or password", "403", "401")
+
+
+def _auth_help() -> str:
+    """缺凭证时的三条配法——部署到别人机器上看到的就是这段。"""
+    return (
+        "这台机器还没有配置 GitHub 凭证。三种任选一种：\n"
+        "  1) 装 gh 并登录：`gh auth login`（推荐，凭据交给 git 的 credential helper）\n"
+        "  2) 用 SSH：`git remote set-url origin git@github.com:<你>/<仓库>.git`，"
+        "并确认 `ssh -T git@github.com` 通\n"
+        "  3) 用 PAT：`git config --local credential.helper store`，"
+        "下次 push 输用户名 + token（token 存本机，不入库）"
+    )
 
 
 def _git_ok(result: subprocess.CompletedProcess, what: str) -> str:
-    if result.returncode != 0:
-        raw = (result.stderr or result.stdout or "").strip()
-        lowered = raw.lower()
-        # 被 .gitignore 挡住时，git 的 stderr 结尾是一句「Disable this message with
-        # git config set advice.addIgnoredFile false」——把这句话原样抛给用户，
-        # 只会让人以为要配凭证。真正该说的是「这个路径被忽略了，改规则或强加」。
-        if "ignored by one of your .gitignore" in lowered or "advice.addignoredfile" in lowered:
-            paths = [ln.strip() for ln in raw.splitlines()
-                     if ln.strip() and not ln.startswith("hint:")]
-            raise SpiritScoutError(
-                f"{what}失败：这些路径被 .gitignore 忽略了 —— "
-                + ("、".join(paths[:3]) or "（路径未在输出中）")
-                + "。投稿目录不该被忽略，检查 .gitignore 里是否误加了 "
-                "experience-export/inbox 这类规则。")
-        detail = raw.splitlines()
-        raise SpiritScoutError(f"{what}失败: {detail[-1][:300] if detail else result.returncode}")
-    return result.stdout.strip()
+    if result.returncode == 0:
+        return result.stdout.strip()
+    raw = (result.stderr or result.stdout or "").strip()
+    lowered = raw.lower()
+    # 被 .gitignore 挡住时，git 的 stderr 结尾是一句「Disable this message with
+    # git config set advice.addIgnoredFile false」——把这句话原样抛给用户，
+    # 只会让人以为要配凭证。真正该说的是「这个路径被忽略了，改规则或强加」。
+    if "ignored by one of your .gitignore" in lowered or "advice.addignoredfile" in lowered:
+        paths = [ln.strip() for ln in raw.splitlines()
+                 if ln.strip() and not ln.startswith("hint:")]
+        raise SpiritScoutError(
+            f"{what}失败：这些路径被 .gitignore 忽略了 —— "
+            + ("、".join(paths[:3]) or "（路径未在输出中）")
+            + "。投稿目录不该被忽略，检查 .gitignore 里是否误加了 "
+            "experience-export/inbox 这类规则。")
+    # 缺凭证单独说清楚：这个功能跑在**使用者自己的机器**上，凭证也必须是
+    # 使用者自己的；仓库里不放任何 token。
+    if any(h in lowered for h in _AUTH_HINTS):
+        raise SpiritScoutError(f"{what}失败：{_auth_help()}\n  git 原始输出：{raw[-300:]}")
+    detail = raw.splitlines()
+    raise SpiritScoutError(f"{what}失败: {detail[-1][:300] if detail else result.returncode}")
 
 
 def repo_path(repo: str = "") -> Path:
@@ -304,35 +337,15 @@ def submit(db_path: str | Path, *, repo: str = "", inbox: str = DEFAULT_INBOX,
     _git_ok(_git(root, "add", "--", rel), "git add ")
     text = message.strip() or f"chore(experience): {who} 提交 {payload['count']} 条经验（{stamp}）"
     _git_ok(_git(root, "commit", "-m", text, "--", rel), "git commit ")
-    push_out = _git(root, "push", "origin", f"HEAD:{branch}", timeout=300.0)
-    if push_out.returncode != 0:
-        raw = (push_out.stderr or push_out.stdout or "").strip()
-        detail = raw.splitlines()
-        tail = detail[-1][:300] if detail else str(push_out.returncode)
-        lowered = raw.lower()
-        # 凭证问题单独说清楚：这个功能跑在**使用者自己的机器**上，凭证也必须是
-        # 使用者自己的。仓库里不放任何 token，也不替谁保管。
-        auth_hints = ("authentication failed", "could not read username",
-                      "permission denied", "403", "401", "credentials")
-        if any(h in lowered for h in auth_hints):
-            raise SpiritScoutError(
-                "推送失败：这台机器还没有配置 GitHub 凭证。\n"
-                "  三种任选一种：\n"
-                "  1) 装 gh 并登录：`gh auth login`（推荐，凭据交给 git 的 credential helper）\n"
-                "  2) 用 SSH：`git remote set-url origin git@github.com:<你>/<仓库>.git`，"
-                "并确认 `ssh -T git@github.com` 通\n"
-                "  3) 用 PAT：`git config --local credential.helper store`，"
-                "下次 push 输用户名 + token（token 存本机，不入库）\n"
-                f"  git 原始输出：{tail}")
-        raise SpiritScoutError(
-            "推送失败: " + tail
-            + "（没有写入权限时可以 fork 后往自己的分支提交，再提单合并）")
+    # 认证失败、被忽略等情况都由 _git_ok 统一措辞（含三种配凭证方式）
+    push_stdout = _git_ok(
+        _git(root, "push", "origin", f"HEAD:{branch}", timeout=300.0), "推送")
     if audit is not None:
         audit.log("experience.sync.submit", "user",
                   {"count": payload["count"], "file": rel, "branch": branch, "who": who})
     return {"submitted": True, "committed": True, "count": payload["count"],
             "file": rel, "path": str(target), "who": who, "branch": branch,
-            "output": (push_out.stdout or "").strip()[-500:]}
+            "output": push_stdout[-500:]}
 
 
 def _git_user(root: Path) -> str:

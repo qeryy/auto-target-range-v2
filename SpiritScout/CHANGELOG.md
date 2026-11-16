@@ -1,7 +1,22 @@
 # 更新日志
 
-项目采用 `主版本.次版本.修订号`。当前版本为 **1.0.3**，版本唯一来源是
+项目采用 `主版本.次版本.修订号`。当前版本为 **1.0.4**，版本唯一来源是
 `src/spiritscout/__init__.py`；包构建、命令行、控制台及 MCP 握手共用该值。
+
+## [1.0.4] - 2026-11-16
+
+- **没配凭证时 git 会卡住而不是报错**：`_git` 没设 `GIT_TERMINAL_PROMPT=0`，
+  也没关 stdin。灵枢是后台服务，`git push` 需要凭证时 git 会停下来等用户名密码，
+  直到 120 秒超时——用户看到的是「点了提交之后卡住」，完全猜不到是缺凭证。
+  现在显式关掉交互并置 `stdin=DEVNULL`，缺凭证时**立刻失败**。
+- **认证失败的提示统一到 `_git_ok`**：之前只有 `submit()` 的 push 分支写了
+  「三种配凭证方式」，而 `git add` / `git commit` 走的是另一条路。现在任一条
+  git 命令遇到 `could not read Username` / `Authentication failed` / `403` /
+  `terminal prompts disabled` 都会给出同样三条命令（`gh auth login` / SSH /
+  PAT），并附 git 原文末尾 300 字。
+- 新增 `tests/test_sync_git_environment.py`（8 例）：确认 `GIT_TERMINAL_PROMPT=0`
+  确实传给了子进程、stdin 关掉、`core.quotepath=false` 还在、原有环境变量不被
+  冲掉；以及四种失败（缺用户名 / 认证失败 / 被 gitignore 挡 / 其他）各自的措辞。
 
 ## [1.0.3] - 2026-11-16
 
