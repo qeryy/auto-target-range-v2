@@ -131,6 +131,14 @@ mcp_servers:
     timeout: 180                  # 本地小模型出长文时留足余量
     default_risk: readonly        # 只问本机模型，不碰目标系统
     scope_enforcement: none       # 不触网：请求只发往 SPIRITSCOUT_LOCAL_LLM_URL
+  - name: local-files             # 内置本地 MCP：目录浏览 / 读写 / 哈希（零依赖，跟灵枢一起发）
+    enabled: false                # 默认关；控制台「MCP 接入」里点一下即可启用
+    transport: stdio
+    command: .venv\Scripts\python.exe
+    args: ["-m", "spiritscout.mcp.local_server", "--stdio", "--root", "."]
+    timeout: 120                  # 本地文件操作，秒级返回就够
+    default_risk: readonly        # 只读为主；write_file 由调用方声明 action
+    scope_enforcement: none       # 不触网，只在 --root 之内活动（越界直接报错）
 
 # —— idalib 装配（一次性，项目根执行；<IDA> 为 IDA Pro 安装目录）：
 #   .venv/bin/pip install <IDA>/idalib/python/idapro-*.whl

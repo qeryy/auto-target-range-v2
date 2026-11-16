@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "kind": "spiritscout-experience-insights",
-  "generated_at": "2026-11-16T04:09:16+00:00",
+  "generated_at": "2026-11-16T04:40:51+00:00",
   "source": "SpiritScout/.spiritscout/experience.db -> table insights",
   "redaction": [
     "http/https 链接",
@@ -10,12 +10,12 @@
     "sk- / ghp_ / xox 形态密钥",
     "靶场主机名归一为 local-range"
   ],
-  "total": 577,
+  "total": 581,
   "tag_frequency": {
-    "ctf": 411,
+    "ctf": 414,
     "crypto": 98,
     "web": 63,
-    "misc": 59,
+    "misc": 60,
     "flag": 57,
     "base64": 52,
     "判读": 41,
@@ -26,20 +26,20 @@
     "验证": 25,
     "编码": 20,
     "流程": 19,
+    "reporting": 16,
     "CTF": 15,
     "validation": 15,
     "workflow": 15,
-    "reporting": 14,
     "战报": 13,
     "逆向": 13,
     "sqli": 12,
+    "recon": 11,
     "重攻": 11,
-    "recon": 10,
+    "signal": 10,
     "度量": 10,
     "php": 9,
-    "signal": 9,
+    "verification": 9,
     "llm": 8,
-    "verification": 8,
     "附件分析": 8,
     "forensics": 7,
     "lfi": 7,
@@ -61,6 +61,7 @@
     "session": 5,
     "stego": 5,
     "telemetry": 5,
+    "triage": 5,
     "侦察": 5,
     "取证": 5,
     "固件": 5,
@@ -76,10 +77,11 @@
     "验收": 5,
     "analysis": 4,
     "auth": 4,
+    "evidence": 4,
     "flask": 4,
     "judgment": 4,
+    "platform": 4,
     "rce": 4,
-    "triage": 4,
     "信息收集": 4,
     "信息泄露": 4,
     "决策": 4,
@@ -93,13 +95,12 @@
     "barcode": 3,
     "bypass": 3,
     "decoding": 3,
-    "evidence": 3,
+    "environment": 3,
     "flag 提交": 3,
     "flag格式": 3,
     "lfsr": 3,
     "morse": 3,
     "offline": 3,
-    "platform": 3,
     "replay": 3,
     "retrospective": 3,
     "rsa": 3,
@@ -136,7 +137,6 @@
     "bruteforce": 2,
     "context": 2,
     "convergence": 2,
-    "environment": 2,
     "ephemeral": 2,
     "failure": 2,
     "filter": 2,
@@ -153,6 +153,7 @@
     "logic": 2,
     "login": 2,
     "math": 2,
+    "mcp": 2,
     "methodology": 2,
     "obfuscation": 2,
     "oracle": 2,
@@ -332,6 +333,7 @@
     "timeout": 1,
     "timing": 1,
     "token": 1,
+    "tool-discovery": 1,
     "trivia": 1,
     "unavailable": 1,
     "unclear_objectives": 1,
@@ -7794,6 +7796,58 @@
       ],
       "source_model": "master",
       "captured_at": "2026-11-16T04:07:51+00:00"
+    },
+    {
+      "id": "exp-ca06e6d9d3a6",
+      "insight": "当工具检索接口在多种查询方式下均返回空结果集与空服务列表时，通常表明当前运行环境未挂载或未暴露对应类别的 MCP 服务，而非查询语法错误；空服务列表本身可作为环境能力边界的判据。",
+      "context": "依赖 MCP 工具链进行本地文件探查的 CTF/MISC 或安全测试场景",
+      "tags": [
+        "mcp",
+        "tool-discovery",
+        "environment",
+        "ctf"
+      ],
+      "source_model": "master",
+      "captured_at": "2026-11-16T04:30:50+00:00"
+    },
+    {
+      "id": "exp-4defc09cd525",
+      "insight": "在 MISC 类任务中，“工具是否存在”与“目标目录内容”是两个可独立核验的能力断言；工具发现阶段确认无可用服务时，目录列举诉求的产出上限是能力边界确认而非文件内容获取。",
+      "context": "CTF-MISC 中需要借助外部工具服务完成侦察的任务",
+      "tags": [
+        "ctf",
+        "misc",
+        "verification",
+        "platform"
+      ],
+      "source_model": "master",
+      "captured_at": "2026-11-16T04:30:50+00:00"
+    },
+    {
+      "id": "exp-28f70e1345a4",
+      "insight": "提取、提交、接受计数均为零且发现集为空，并不必然等同于测试失败；停止原因为决策收敛且计划节点已完成时，应区分“任务诉求已核验”与“漏洞或 flag 已获取”，避免把零发现误读为未完成。",
+      "context": "安全测试或 CTF 收尾阶段的战报判读",
+      "tags": [
+        "reporting",
+        "signal",
+        "ctf",
+        "triage"
+      ],
+      "source_model": "master",
+      "captured_at": "2026-11-16T04:30:50+00:00"
+    },
+    {
+      "id": "exp-3803e0233ea6",
+      "insight": "单轮即收敛的测试若核心发现是环境不具备某类工具能力，其可复用价值在于空服务列表、空结果总数这类能力探测信号比具体查询内容更稳定，记录时应保留空结果的结构化证据而非仅记录查询动作。",
+      "context": "依赖外部工具服务的侦察任务与证据留存",
+      "tags": [
+        "mcp",
+        "evidence",
+        "reporting",
+        "recon"
+      ],
+      "source_model": "master",
+      "captured_at": "2026-11-16T04:30:50+00:00"
     }
   ]
 }

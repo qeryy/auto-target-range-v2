@@ -1,7 +1,23 @@
 # 更新日志
 
-项目采用 `主版本.次版本.修订号`。当前版本为 **0.60.0**，版本唯一来源是
+项目采用 `主版本.次版本.修订号`。当前版本为 **0.61.0**，版本唯一来源是
 `src/spiritscout/__init__.py`；包构建、命令行、控制台及 MCP 握手共用该值。
+
+## [0.61.0] - 2026-11-16
+
+- **内置本地 MCP 服务**：`spiritscout.mcp.local_server`，零依赖单文件（只用
+  标准库），跟着灵枢一起发。给四个工具：`list_dir` / `read_file` / `write_file`
+  / `file_hash`，stdio 传输，端点就在本机。所有路径都被 `--root` 限死，越界
+  直接报错不做静默钳制。刻意**不做**任意命令执行——那应该走灵枢自己的 sandbox
+  通道，那里有审批与审计。
+  为什么自己写：官方 `modelcontextprotocol/servers` 是 Node/TS，一个 filesystem
+  server 要拖几十 MB 的 node_modules，与「绿色、体积小」相反；而 MCP 的 stdio
+  传输本质就是 stdin/stdout 上的 JSON-RPC 2.0，标准库足够。
+  控制台「MCP 接入」里 `local-files` 默认关，点一下启用即可（实测握手、工具
+  列表、目录列举、越界防护全部正常）。
+- **MCP 页去掉 Exa 专属面板**：那块 Exa 搜索配置占了 MCP 页顶部，让人以为这个
+  页面只支持 Exa。删掉面板、`exa-settings.js` 及其引用；MCP 配置本来就是通用的
+  （stdio / http / sse 三种传输、任意 command 与 url），现在页面上只剩通用部分。
 
 ## [0.60.0] - 2026-11-16
 

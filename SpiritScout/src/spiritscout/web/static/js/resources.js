@@ -7,11 +7,9 @@ const ResourceConsole = (() => {
   function shell(kind) {
     const [title,description]=titles[kind],el=root(kind);if(el.dataset.ready)return;el.dataset.ready='yes';
     el.innerHTML=`<header class="resource-head"><div><h2>${title}</h2><p>${description}</p></div><div class="resource-head-actions">${kind==='skill'?'<button class="btn" data-skill-pull title="把仓库里 configs/skills.yaml 的技能同步进本地库：只增改，不删本地条目">拉取清单</button><button class="btn" data-skill-push title="把本地库里的自定义技能写回 configs/skills.yaml，之后用 git 提交推送">提交清单</button>':''}<button class="btn" data-refresh>刷新</button><button class="btn primary" data-new>手动添加</button></div></header>
-      ${kind==='mcp'?'<div data-exa-settings></div>':''}
-      <div class="resource-layout"><section class="resource-catalog" aria-label="${title}目录"><label class="resource-search">检索已配置资源<input type="search" data-search placeholder="输入关键词…" maxlength="200"></label>${kind==="skill"?"<div class=\"resource-modes\" data-modes role=\"group\" aria-label=\"按任务大类筛选\"></div>":""}<div class="resource-list-status" role="status"></div><div class="resource-list"></div><button class="btn resource-more" hidden>加载更多</button></section>
+            <div class="resource-layout"><section class="resource-catalog" aria-label="${title}目录"><label class="resource-search">检索已配置资源<input type="search" data-search placeholder="输入关键词…" maxlength="200"></label>${kind==="skill"?"<div class=\"resource-modes\" data-modes role=\"group\" aria-label=\"按任务大类筛选\"></div>":""}<div class="resource-list-status" role="status"></div><div class="resource-list"></div><button class="btn resource-more" hidden>加载更多</button></section>
       <section class="resource-chat" aria-label="${title}专属管理对话"><header><div><b>资源助手</b><small>变更需确认后执行</small></div></header><div class="resource-chat-log" aria-live="polite"></div><div class="resource-proposals"></div><form class="resource-chat-form"><label class="sr-only" for="resource-message-${kind}">向${title}助手描述需求</label><textarea id="resource-message-${kind}" placeholder="${kind==='mcp'?'例如：帮我配置一个只读浏览器 MCP，请先给出安装方案':'例如：添加一份关于接口权限边界的参考技能'}" rows="3" maxlength="16000"></textarea><div><small>请勿在聊天中粘贴密钥</small><button class="btn primary" type="submit">发送</button></div><p class="resource-chat-status" role="status"></p></form></section></div>`;
-    if(kind==='mcp')ExaSettings.mount(el.querySelector('[data-exa-settings]'));
-    el.querySelector('[data-refresh]').onclick=()=>{load(kind);loadChat(kind);if(kind==='mcp')ExaSettings.load();};
+    el.querySelector('[data-refresh]').onclick=()=>{load(kind);loadChat(kind);};
     if(kind==='skill'){
       el.querySelector('[data-skill-pull]').onclick=e=>skillSync(e.currentTarget,'sync','拉取');
       el.querySelector('[data-skill-push]').onclick=e=>skillSync(e.currentTarget,'export','提交');
@@ -138,7 +136,7 @@ const ResourceConsole = (() => {
   }
   async function loadChat(kind) {try{const data=await api(`/api/resources/${kind}/chat`);if(S.view===kind)renderChat(kind,data);}catch(e){root(kind).querySelector('.resource-chat-status').textContent=`管理对话读取失败：${e.message}`;}}
   async function send(kind,event) {event.preventDefault();const form=event.currentTarget,input=form.querySelector('textarea'),text=input.value.trim();if(!text)return;const button=form.querySelector('button');button.disabled=true;const status=form.querySelector('.resource-chat-status');status.textContent='正在处理…';try{const result=await api(`/api/resources/${kind}/chat`,{method:'POST',body:JSON.stringify({message:text})});if(input.value.trim()===text)input.value='';if(S.view===kind)renderChat(kind,result);status.textContent=result.usage?`本次 ${result.usage.input_tokens+result.usage.output_tokens} token · ${result.usage.model}`:'';}catch(e){status.textContent=`处理失败：${e.message}。输入已保留，可重试。`;loadChat(kind);}finally{button.disabled=false;}}
-  function open(kind) {clearInterval(poll);shell(kind);load(kind);loadChat(kind);if(kind==='mcp')ExaSettings.load();poll=setInterval(()=>{if(S.view!==kind){clearInterval(poll);return;}loadChat(kind);},2500);}
+  function open(kind) {clearInterval(poll);shell(kind);load(kind);loadChat(kind);poll=setInterval(()=>{if(S.view!==kind){clearInterval(poll);return;}loadChat(kind);},2500);}
   document.querySelectorAll('[data-resource]').forEach(button=>button.onclick=()=>{S.cur=null;show(button.dataset.resource);renderSessions();});
   $('#resource-save').onclick=save;
   $('#resource-editor').addEventListener('close',()=>{$('#resource-env').value='';$('#resource-headers').value='';});
