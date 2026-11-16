@@ -81,10 +81,11 @@ const ResourceConsole = (() => {
     list.innerHTML=s.items.map((item,i)=>{
       const d=kind==='mcp'?item.data:item;
       const title=kind==='mcp'?d.name:d.skill_id;
-      const badge=d.enabled?'已启用':'已停用';
+      // enabled 可能是 null（老条目没这字段），只有明确 false 才显示已停用
+      const badge=d.enabled===false?'已停用':'已启用';
       const subtitle=kind==='mcp'?`${d.transport} · ${d.command||d.url||'尚未配置地址'}`:d.description||'尚无描述';
       const modeTags = kind==='skill' ? (d.modes||[]).map(m=>`<span class="resource-mode">${esc(s.modeLabels[m]||m)}</span>`).join('') : '';
-      return `<article class="resource-item"><button class="resource-select" data-select="${i}"><span class="resource-badge">${esc(badge)}</span><strong>${esc(title)}</strong>${modeTags?`<span class="resource-modes-inline">${modeTags}</span>`:''}<p>${esc(subtitle)}</p><small>${esc(kind==='mcp'?`配置版本 ${item.version} · ${d.default_risk} · ${d.allowed_agents?.length?d.allowed_agents.join(', '):'沿用角色默认范围'}`:`${d.domain||'未分类'} · ${d.origin==='builtin'?'内置参考':'自定义'} · v${d.version}`)}</small></button><button class="btn sm resource-toggle" data-toggle="${i}">${d.enabled?'停用':'启用'}</button></article>`;
+      return `<article class="resource-item"><button class="resource-select" data-select="${i}"><span class="resource-badge">${esc(badge)}</span><strong>${esc(title)}</strong>${modeTags?`<span class="resource-modes-inline">${modeTags}</span>`:''}<p>${esc(subtitle)}</p><small>${esc(kind==='mcp'?`配置版本 ${item.version} · ${d.default_risk} · ${d.allowed_agents?.length?d.allowed_agents.join(', '):'沿用角色默认范围'}`:`${d.domain||'未分类'} · ${d.origin==='builtin'?'内置参考':'自定义'} · v${d.version}`)}</small></button><button class="btn sm resource-toggle" data-toggle="${i}">${d.enabled===false?'启用':'停用'}</button></article>`;
     }).join('')||`<div class="resource-empty">还没有匹配记录<p>可更换关键词，或从资源助手对话开始配置。</p></div>`;
     list.querySelectorAll('[data-select]').forEach(b=>b.onclick=()=>edit(kind,s.items[+b.dataset.select]));
     list.querySelectorAll('[data-toggle]').forEach(b=>b.onclick=async()=>{const item=s.items[+b.dataset.toggle],d=kind==='mcp'?item.data:item;b.disabled=true;try{await api(`/api/resources/${kind==='mcp'?'mcp':'skills'}/${encodeURIComponent(kind==='mcp'?item.id:d.skill_id)}`,{method:'PUT',body:JSON.stringify({data:{enabled:!d.enabled},expected_version:item.version??d.version})});load(kind);}catch(e){toast(e.message,true);b.disabled=false;}});

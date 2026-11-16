@@ -2115,10 +2115,21 @@ class CTFBaseAgent(SubAgent):
         # 打分排序。这里不再自己写一遍「任意词子串命中」的粗匹配——两套算法给出不
         # 一致的结果时，agent 从 kb_search 看到的是 A、从 reference_skills 看到的是 B。
         q_lower = query.lower()
+        # 当前任务大类：RunMode 的取值与 skill_modes 的 MODE_* 一一对应
+        from spiritscout.resources.skill_modes import filter_by_mode  # noqa: PLC0415
+
+        mode_key = str(getattr(getattr(self.ctx, "mode", None), "value", "") or "")
         resources = getattr(kb, "resources", None)
         if resources is not None:
-            skill_hits = [sk for sk in resources.skills(query, include_body=True, limit=3)
-                          if sk.get("enabled", True)]
+            # 多取一些再筛：先取 3 条再过滤，可能全被当前模式滤掉，等于没给技能。
+            # 之前这里**完全没走模式过滤**——模式分类只在下面的兜底分支生效，
+            # 而运行时 resources 一定存在，所以那条路从来没跑过。
+            # enabled 可能是 None（老条目没这个字段）——只有明确 False 才算停用。
+            # 之前写 `sk.get("enabled", True)`，键存在值为 None 时拿到 None，
+            # 当假值处理，整批技能全被滤掉，kb_search 永远返回空技能。
+            raw = [sk for sk in resources.skills(query, include_body=True, limit=12)
+                   if sk.get("enabled") is not False]
+            skill_hits = filter_by_mode(raw, mode_key)[:3]
         else:
             from spiritscout.resources.store import (
                 _skill_idf,
