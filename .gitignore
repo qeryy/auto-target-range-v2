@@ -117,3 +117,13 @@ SpiritScout/skills/
 # 之后就没用了。目录保留（别人往上放投稿），内容不入库。
 experience-export/inbox/*.json
 
+# —— 与本地大模型相关的启动脚本：只留本机，不进仓库 ——
+# 这些脚本会拉起 llama-server / LM Studio（端口 1234）、指定量化模型与显存参数，
+# 属于「这台机器怎么跑」的私事；仓库里保留的是通用控制台启动器
+# （run-spiritscout.ps1 / start-local.ps1），换台机器照样能用。
+start-all.ps1
+stop-all.ps1
+启动灵枢.cmd
+停止灵枢.cmd
+赛场使用教程.md
+
