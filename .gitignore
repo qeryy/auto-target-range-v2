@@ -123,3 +123,8 @@ stop-all.ps1
 停止灵枢.cmd
 赛场使用教程.md
 
+# 测试用 mkdtemp 留下的临时工作区（bb.db / experience.db / system.yaml 之类）。
+# 它们本该由临时目录机制自动回收，但有些测试用了 mkdtemp 且没清，几百个堆在
+# 包目录下。这里挡住，避免误提交；测试侧也改成自动回收（见 tests/conftest 说明）。
+/SpiritScout/tmp*/
+/tmp*/

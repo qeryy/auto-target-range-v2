@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+import contextlib
+import pathlib
 import sqlite3
 import tempfile
 import unittest
@@ -13,10 +15,33 @@ from pathlib import Path
 
 from spiritscout.knowledge import experience as E
 
+# —— 临时目录自动回收 ——
+# 现场：包目录下曾堆了 1323 个 tmpXXXXXXXX（mkdtemp 只建不删）。而且这台机器上
+# 系统临时目录对服务进程不可写时，tempfile 会回退到**当前工作目录**，于是全堆在
+# 包目录里。这里统一走 TemporaryDirectory，用完由 cleanup 删。
+_TMP_HOLDERS: list = []
+
+
+def _tmpdir():
+    td = tempfile.TemporaryDirectory(prefix="sc-test-")
+    _TMP_HOLDERS.append(td)
+    return pathlib.Path(td.name)
+
+
+def _cleanup_tmpdirs() -> None:
+    while _TMP_HOLDERS:
+        holder = _TMP_HOLDERS.pop()
+        with contextlib.suppress(OSError):
+            holder.cleanup()
+
+
+def tearDownModule() -> None:  # noqa: N802 —— unittest 约定
+    _cleanup_tmpdirs()
+
 
 def _old_lib(rows: list[tuple[str, str, float]]) -> Path:
     """模拟老库：只有最初的 7 列，没有 merged_into / mode。"""
-    d = Path(tempfile.mkdtemp())
+    d = _tmpdir()
     db = d / "experience.db"
     con = sqlite3.connect(db)
     con.execute(

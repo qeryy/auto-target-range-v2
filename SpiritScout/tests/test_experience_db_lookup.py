@@ -7,12 +7,37 @@ Path("") 变成 "."；② 就算拿到路径，kb.db 在 sessions/<id>/ 下，�
 
 from __future__ import annotations
 
+import contextlib
+import pathlib
 import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
 
 from spiritscout.knowledge.store import KnowledgeStore
+
+# —— 临时目录自动回收 ——
+# 现场：包目录下曾堆了 1323 个 tmpXXXXXXXX（mkdtemp 只建不删）。而且这台机器上
+# 系统临时目录对服务进程不可写时，tempfile 会回退到**当前工作目录**，于是全堆在
+# 包目录里。这里统一走 TemporaryDirectory，用完由 cleanup 删。
+_TMP_HOLDERS: list = []
+
+
+def _tmpdir():
+    td = tempfile.TemporaryDirectory(prefix="sc-test-")
+    _TMP_HOLDERS.append(td)
+    return pathlib.Path(td.name)
+
+
+def _cleanup_tmpdirs() -> None:
+    while _TMP_HOLDERS:
+        holder = _TMP_HOLDERS.pop()
+        with contextlib.suppress(OSError):
+            holder.cleanup()
+
+
+def tearDownModule() -> None:  # noqa: N802 —— unittest 约定
+    _cleanup_tmpdirs()
 
 
 def _make_experience_db(dir_: Path) -> Path:
@@ -45,7 +70,7 @@ def _locate(kb: KnowledgeStore) -> Path | None:
 
 class DbPathExposureTests(unittest.TestCase):
     def test_knowledge_store_exposes_db_path(self) -> None:
-        root = Path(tempfile.mkdtemp())
+        root = _tmpdir()
         kb = KnowledgeStore(root / "knowledge.db", auto_seed=False)
         try:
             self.assertTrue(getattr(kb, "db_path", ""), "必须暴露公开路径")
@@ -65,7 +90,7 @@ class DbPathExposureTests(unittest.TestCase):
 class AncestorSearchTests(unittest.TestCase):
     def test_finds_shared_db_from_session_level(self) -> None:
         """会话级 kb.db → 往上两级才是工作区的 .spiritscout。"""
-        root = Path(tempfile.mkdtemp())
+        root = _tmpdir()
         shared = root / ".spiritscout"
         _make_experience_db(shared)
         session_dir = shared / "sessions" / "sess-x"
@@ -79,7 +104,7 @@ class AncestorSearchTests(unittest.TestCase):
             kb.close()
 
     def test_returns_none_when_absent(self) -> None:
-        root = Path(tempfile.mkdtemp())
+        root = _tmpdir()
         kb = KnowledgeStore(root / "deep" / "kb.db", auto_seed=False)
         try:
             self.assertIsNone(_locate(kb))

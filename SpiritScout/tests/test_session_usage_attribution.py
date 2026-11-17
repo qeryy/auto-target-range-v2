@@ -6,12 +6,37 @@ summary 里写的 `used_tokens` 是**全工作区**的，而本会话审计里�
 
 from __future__ import annotations
 
+import contextlib
 import json
+import pathlib
 import tempfile
 import unittest
 from pathlib import Path
 
 from spiritscout.web.session_usage import session_usage
+
+# —— 临时目录自动回收 ——
+# 现场：包目录下曾堆了 1323 个 tmpXXXXXXXX（mkdtemp 只建不删）。而且这台机器上
+# 系统临时目录对服务进程不可写时，tempfile 会回退到**当前工作目录**，于是全堆在
+# 包目录里。这里统一走 TemporaryDirectory，用完由 cleanup 删。
+_TMP_HOLDERS: list = []
+
+
+def _tmpdir():
+    td = tempfile.TemporaryDirectory(prefix="sc-test-")
+    _TMP_HOLDERS.append(td)
+    return pathlib.Path(td.name)
+
+
+def _cleanup_tmpdirs() -> None:
+    while _TMP_HOLDERS:
+        holder = _TMP_HOLDERS.pop()
+        with contextlib.suppress(OSError):
+            holder.cleanup()
+
+
+def tearDownModule() -> None:  # noqa: N802 —— unittest 约定
+    _cleanup_tmpdirs()
 
 
 def _audit(path: Path, call_ids: list[str]) -> None:
@@ -31,7 +56,7 @@ def _fallback(rows: list[tuple[str, int]]) -> dict:
 
 class SessionUsageAttributionTests(unittest.TestCase):
     def _workspace(self) -> tuple[Path, Path]:
-        root = Path(tempfile.mkdtemp())
+        root = _tmpdir()
         ws = root / "sessions" / "sess-x"
         ws.mkdir(parents=True)
         return root, ws

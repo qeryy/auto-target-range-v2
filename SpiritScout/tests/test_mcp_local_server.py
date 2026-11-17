@@ -7,7 +7,9 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
+import pathlib
 import subprocess
 import sys
 import tempfile
@@ -15,6 +17,29 @@ import unittest
 from pathlib import Path
 
 from spiritscout.mcp.local_server import LocalServer, handle
+
+# —— 临时目录自动回收 ——
+# 现场：包目录下曾堆了 1323 个 tmpXXXXXXXX（mkdtemp 只建不删）。而且这台机器上
+# 系统临时目录对服务进程不可写时，tempfile 会回退到**当前工作目录**，于是全堆在
+# 包目录里。这里统一走 TemporaryDirectory，用完由 cleanup 删。
+_TMP_HOLDERS: list = []
+
+
+def _tmpdir():
+    td = tempfile.TemporaryDirectory(prefix="sc-test-")
+    _TMP_HOLDERS.append(td)
+    return pathlib.Path(td.name)
+
+
+def _cleanup_tmpdirs() -> None:
+    while _TMP_HOLDERS:
+        holder = _TMP_HOLDERS.pop()
+        with contextlib.suppress(OSError):
+            holder.cleanup()
+
+
+def tearDownModule() -> None:  # noqa: N802 —— unittest 约定
+    _cleanup_tmpdirs()
 
 
 def _rpc(stdin: str, root: Path) -> list[dict]:
@@ -36,7 +61,7 @@ def _line(**kw) -> str:
 
 class ProtocolTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.root = Path(tempfile.mkdtemp())
+        self.root = _tmpdir()
         (self.root / "hello.txt").write_text("你好 MCP", encoding="utf-8")
         (self.root / "sub").mkdir()
         (self.root / "sub" / "a.bin").write_bytes(b"\x00\x01\x02")
@@ -77,7 +102,7 @@ class ProtocolTests(unittest.TestCase):
 
 class GuardTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.root = Path(tempfile.mkdtemp())
+        self.root = _tmpdir()
         self.server = LocalServer(self.root)
 
     def test_escape_is_rejected(self) -> None:
@@ -96,18 +121,18 @@ class GuardTests(unittest.TestCase):
 
 class HandleTests(unittest.TestCase):
     def test_notification_gets_no_reply(self) -> None:
-        server = LocalServer(Path(tempfile.mkdtemp()))
+        server = LocalServer(_tmpdir())
         self.assertIsNone(handle(server, {
             "jsonrpc": "2.0", "method": "notifications/initialized"}))
 
     def test_unknown_method_returns_error(self) -> None:
-        server = LocalServer(Path(tempfile.mkdtemp()))
+        server = LocalServer(_tmpdir())
         reply = handle(server, {"jsonrpc": "2.0", "id": 9, "method": "no/such"})
         self.assertEqual(reply["error"]["code"], -32601)
 
     def test_tool_failure_is_a_result_not_a_crash(self) -> None:
         """工具内部报错要作为 isError 结果返回，不能把连接打崩。"""
-        server = LocalServer(Path(tempfile.mkdtemp()))
+        server = LocalServer(_tmpdir())
         reply = handle(server, {"jsonrpc": "2.0", "id": 1, "method": "tools/call",
                                 "params": {"name": "read_file",
                                            "arguments": {"path": "nope.txt"}}})

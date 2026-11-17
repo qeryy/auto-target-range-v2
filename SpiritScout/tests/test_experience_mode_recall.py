@@ -1,7 +1,9 @@
 """经验按任务大类排序：同类排前面，别的大类压后（不丢，只是顺序不同）。"""
 from __future__ import annotations
 
+import contextlib
 import json
+import pathlib
 import sqlite3
 import tempfile
 import unittest
@@ -9,10 +11,33 @@ from pathlib import Path
 
 from spiritscout.knowledge.experience import DEFAULT_MODE, read_recent
 
+# —— 临时目录自动回收 ——
+# 现场：包目录下曾堆了 1323 个 tmpXXXXXXXX（mkdtemp 只建不删）。而且这台机器上
+# 系统临时目录对服务进程不可写时，tempfile 会回退到**当前工作目录**，于是全堆在
+# 包目录里。这里统一走 TemporaryDirectory，用完由 cleanup 删。
+_TMP_HOLDERS: list = []
+
+
+def _tmpdir():
+    td = tempfile.TemporaryDirectory(prefix="sc-test-")
+    _TMP_HOLDERS.append(td)
+    return pathlib.Path(td.name)
+
+
+def _cleanup_tmpdirs() -> None:
+    while _TMP_HOLDERS:
+        holder = _TMP_HOLDERS.pop()
+        with contextlib.suppress(OSError):
+            holder.cleanup()
+
+
+def tearDownModule() -> None:  # noqa: N802 —— unittest 约定
+    _cleanup_tmpdirs()
+
 
 def _make_db(rows: list[tuple[str, str, str]]) -> Path:
     """建一个最小经验库：(insight_id, 正文, mode)。"""
-    d = Path(tempfile.mkdtemp())
+    d = _tmpdir()
     db = d / "experience.db"
     con = sqlite3.connect(db)
     con.execute(
@@ -69,7 +94,7 @@ class ModeOrderingTests(unittest.TestCase):
 
     def test_old_db_without_mode_column_still_reads(self) -> None:
         """老库没有 mode 列时，读出来的条目按默认 ctf 处理，不报错。"""
-        d = Path(tempfile.mkdtemp())
+        d = _tmpdir()
         db = d / "old.db"
         con = sqlite3.connect(db)
         con.execute(
@@ -84,7 +109,7 @@ class ModeOrderingTests(unittest.TestCase):
         self.assertEqual(items[0].get("mode"), DEFAULT_MODE)
 
     def test_missing_db_returns_empty(self) -> None:
-        got = read_recent(Path(tempfile.mkdtemp()) / "nope.db", mode="ctf")
+        got = read_recent(_tmpdir() / "nope.db", mode="ctf")
         self.assertEqual(got, {"total": 0, "items": []})
 
 

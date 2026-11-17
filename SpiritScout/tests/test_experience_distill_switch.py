@@ -1,6 +1,8 @@
 """经验提炼开关：关掉后解出 Flag / 收尾都不提炼，经验库原样不动。"""
 from __future__ import annotations
 
+import contextlib
+import pathlib
 import tempfile
 import unittest
 from pathlib import Path
@@ -9,6 +11,29 @@ from types import SimpleNamespace
 from spiritscout.config.settings import ExperienceConfig
 from spiritscout.runtime import _distill_allowed
 from spiritscout.web.app import _set_yaml_bool
+
+# —— 临时目录自动回收 ——
+# 现场：包目录下曾堆了 1323 个 tmpXXXXXXXX（mkdtemp 只建不删）。而且这台机器上
+# 系统临时目录对服务进程不可写时，tempfile 会回退到**当前工作目录**，于是全堆在
+# 包目录里。这里统一走 TemporaryDirectory，用完由 cleanup 删。
+_TMP_HOLDERS: list = []
+
+
+def _tmpdir():
+    td = tempfile.TemporaryDirectory(prefix="sc-test-")
+    _TMP_HOLDERS.append(td)
+    return pathlib.Path(td.name)
+
+
+def _cleanup_tmpdirs() -> None:
+    while _TMP_HOLDERS:
+        holder = _TMP_HOLDERS.pop()
+        with contextlib.suppress(OSError):
+            holder.cleanup()
+
+
+def tearDownModule() -> None:  # noqa: N802 —— unittest 约定
+    _cleanup_tmpdirs()
 
 
 class DistillSwitchTests(unittest.TestCase):
@@ -45,7 +70,7 @@ class YamlWriteBackTests(unittest.TestCase):
     )
 
     def _write(self, text: str) -> Path:
-        d = Path(tempfile.mkdtemp())
+        d = _tmpdir()
         p = d / "system.yaml"
         p.write_text(text, encoding="utf-8")
         return p
