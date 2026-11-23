@@ -88,6 +88,9 @@ def build_parser() -> argparse.ArgumentParser:
                         help="已有管理员账号时直接跳过（启动脚本用）")
     parser.add_argument("--password-stdin", action="store_true",
                         help="从标准输入读一行作为密码（自动化用，不做二次确认）")
+    parser.add_argument("--stdio", action="store_true",
+                        help="走 stdin/stdout 管道通信，不监听任何 TCP 端口"
+                             "（原生桌面客户端用这个）")
     return parser
 
 
@@ -277,6 +280,16 @@ def main(argv: list[str] | None = None) -> int:
     # 其实服务无恙；只对这类连接错误静默，别的异常照旧。
     quiet_event_loop_errors()
     args = build_parser().parse_args(argv)
+
+    # --stdio：真 stdout 是给客户端传帧的，任何人类可读输出都必须走 stderr。
+    # 必须在「打启动横幅」之前切——晚一步横幅就会混进帧流，客户端读到
+    # 「灵枢 Web 控制台 v1.1.0…」当成长度前缀，整条协议就错位了（已实测踩过）。
+    if getattr(args, "stdio", False):
+        # 先把真 stdout 存起来：它是连着客户端的那根管子，桥要从这里写帧。
+        # 之后 sys.stdout 指向 stderr，横幅/日志都不会污染帧流。
+        sys._spiritscout_stdio_out = sys.stdout.buffer  # noqa: SLF001
+        sys.stdout = sys.stderr
+
     dotenv = _find_dotenv()
     if dotenv:
         _load_dotenv(dotenv)      # 忘记管理员凭据时改 .env 重启即可恢复
@@ -328,6 +341,13 @@ def main(argv: list[str] | None = None) -> int:
     # 用可控的 Server 顶掉 uvicorn.run()：后者一进去就阻塞，窗口从此哑着，
     # 只留上面这行「控制台: http://…」——可打出时监听还没建起来，照着点会连不上。
     # 这里另开守护线程，等端口真能收连接再喊一次，之后定时报状态。
+    if getattr(args, "stdio", False):
+        # 原生桌面客户端：不监听端口，请求从 stdin 递进来、响应写回 stdout。
+        # 用户要的是「双击就开、像微信 QQ 那样」的软件，后台不该有 web 服务在跑。
+        from spiritscout.web.stdio_bridge import serve as serve_stdio  # noqa: PLC0415
+
+        raise SystemExit(__import__("asyncio").run(serve_stdio(app)))
+
     server = uvicorn.Server(
         uvicorn.Config(app, host=host, port=port, log_level="warning"))
     threading.Thread(target=_watch_console, args=(server, app, host, port),

@@ -1,130 +1,51 @@
-# ── 工作区级排除规则（本仓库 = 全自动打靶整仓源码） ──────────────────
-# SpiritScout/.gitignore 仍然生效，这里只补充工作区层面的条目。
+﻿# 临时测试产物（我会在排障时建这些目录，跑完应该删掉；
+# 偶有删不掉的残留，这里挡住，别进版本库）
+tmp*/
+corrupt_data/
+_work/
+_build-native/
+_build-out/
+_deliver_test/
+_exe_test/
+_exe_test_clean/
 
-# 依赖：918M 的虚拟环境，用 pyproject.toml 重建
-SpiritScout/.venv/
+# 桌面版编译产物
+DesktopApp/out/*.exe
+DesktopApp/out/*.png
+
+# 桌面版本机测试数据（真正的用户数据在 %APPDATA%，不在这里）
+DesktopApp/out/data/
+DesktopApp/out/reports/
+DesktopApp/out/*.txt
+
+# Python
+__pycache__/
+*.pyc
 .venv/
 
-# 运行期状态与密钥：状态根目录（blackboard/vault/admin/auth.key/sessions）
-.spiritscout/
-SpiritScout/.spiritscout/
+# 编辑器 / 系统
+.vs/
+*.user
+*.suo
+Thumbs.db
+desktop.ini
+.DS_Store
 
-# 私有配置：真实供应商端点与模型分配，只提交 .example / .mock 版本
-SpiritScout/configs/models.yaml
-SpiritScout/configs/agent_models.yaml
-.env
-.env.*
-!.env.example
+# 临时截图/测试目录（截图脚本建在工作目录下；有时 exe 会被杀软锁住删不掉，
+# 用规则挡住，免得污染 git status）
+shots_usage_tmp_*/
+u1[0-9]*/
+sh[0-9]*_*/
 
-# 任何加密/凭据材料
-*.key
-*.db
-*.db-wal
-*.db-shm
-cookies*.txt
-execution.key
-
-# 缓存
-__pycache__/
-*.py[cod]
-.pytest_cache/
-.ruff_cache/
-.mypy_cache/
-*.egg-info/
-build/
-dist/
-.tools/
-
-# 构建产物：不进仓库，通过 GitHub Release 资产分发
-packages/
-_stage/
-_work/_probe_serve.log
-_work/probe_*.py
-
-# 签名启动器：由 SpiritScout/launcher/build-launcher.ps1 现场编译并签名。
-# exe 不入库；签名材料（pfx/cer/osslsigncode）在 %USERPROFILE%\.spiritscout\signing\ 下
-启动服务.exe
-SpiritScout/launcher/tools/
-
-# 本机执行残留
-artifacts/
-sandbox/
-
-# 内部评估文档：含本地靶场真实 flag 值与私有模型网关地址
-评估报告.md
-.git-credentials
-
-# 构建与验包的临时环境/日志：一次 --no-isolation 构建会在 tmpbuild 里解出 setuptools
-_work/tmpbuild/
-_work/*.log
-# 打包时生成的经验摘要（由 python -m spiritscout.knowledge.digest 现算，
-# 快照本体在 experience-export/experience-insights.json，不重复存一份）
-EXPERIENCE.md
-SpiritScout/EXPERIENCE.md
-SpiritScout/src/spiritscout/knowledge/data/experience.json
-SpiritScout/src/spiritscout/knowledge/data/experience.md
-
-# 桌面版：exe 由 SpiritScout/launcher/build-desktop.ps1 现场编译（release 附件里带成品），
-# 首次运行解出来的 WebView2 DLL 与下载的 SDK 缓存都不入库。
-灵枢桌面版.exe
-灵枢桌面版-lib/
-SpiritScout/launcher/.cache/
-desktop-runtime-error.txt
-logs/
-灵枢桌面版.exe.WebView2/
-# 环境自检（bootstrap.py）在没有可写临时目录时会退到仓库根的 .tmp/
-.tmp/
-SpiritScout/.tmp/
-# 便携版打包产物（内嵌解释器 + 依赖，上百 MB，只发 release）
-dist-portable/
-SpiritScout/launcher/.cache/python/
-dist-single/
-debug.log
-
-# 构建产物：build-desktop.ps1 用控制台的 base.css + polish.css + shell-pages.css 拼出来
-SpiritScout/launcher/ui/shell.css
-
-# pip 中途被杀会留在仓库根的空临时目录（build-portable.ps1 收尾时会删，这里再兜一层）
-pip-install-*/
-pip-target-*/
-pip-ephem-wheel-cache-*/
-pip-build-tracker-*/
-
-# 测试临时目录：Windows 上 TemporaryDirectory 清理常失败，跑一轮能留上千个
-SpiritScout/tmp*/
-spiritscout-tests-*/
-.stale-*/
-SpiritScout/__pycache__/
-# ── 本机私用（不入库）──────────────────────────────────────────────
-# 另一工作区写的一键启停与使用说明：只在本机用，内容和 README 有重叠。
-ensure_llm.ps1
-start_range.ps1
-stop_range.ps1
-启动本地打靶系统.bat
-停止打靶系统.bat
-打靶系统-使用说明.md
-# 配置快照备份（含端点与模型清单，别跟着入库）
-SpiritScout/configs/*.bak-*
-# 构建中间产物（build_release.py 的落点，只在本机生成）
-_build-out/
-# 第三方技能资料库（Hello-CTF / Des-CTF-Knowledge / ctf-skills 等原始资料）
-# 205 MB、4850 个文件，含大量真实赛题答案与题解。仅本机使用，不入库：
-# 运行时读的是 configs/skills.yaml（已把这些技能内联成 body 字段），
-# 这两个目录只是 import 时的原料，删掉不影响功能。
+# 技能库数据（204MB / 4850 文件，是运行时下载的技能包，不是源码）
 SpiritScout/skills/
 
-# —— 与本地大模型相关的启动脚本：只留本机，不进仓库 ——
-# 这些脚本会拉起 llama-server / LM Studio（端口 1234）、指定量化模型与显存参数，
-# 属于「这台机器怎么跑」的私事；仓库里保留的是通用控制台启动器
-# （run-spiritscout.ps1 / start-local.ps1），换台机器照样能用。
-start-all.ps1
-stop-all.ps1
-启动灵枢.cmd
-停止灵枢.cmd
-赛场使用教程.md
+# 桌面版 e2e 构建产物（里面有测试用的 secrets.dat，不进库）
+DesktopApp/build/out/
 
-# 测试用 mkdtemp 留下的临时工作区（bb.db / experience.db / system.yaml 之类）。
-# 它们本该由临时目录机制自动回收，但有些测试用了 mkdtemp 且没清，几百个堆在
-# 包目录下。这里挡住，避免误提交；测试侧也改成自动回收（见 tests/conftest 说明）。
-/SpiritScout/tmp*/
-/tmp*/
+# 备份文件（改脚本时留的 .bak-时间戳）
+*.bak-*
+*.bak-2026*
+
+# 根目录的构建产物 / 打包结果
+启动服务.exe

@@ -1,7 +1,24 @@
 # 更新日志
 
-项目采用 `主版本.次版本.修订号`。当前版本为 **1.0.6**，版本唯一来源是
+项目采用 `主版本.次版本.修订号`。当前版本为 **1.1.0**，版本唯一来源是
 `src/spiritscout/__init__.py`；包构建、命令行、控制台及 MCP 握手共用该值。
+
+## [1.1.0] - 2026-11-17
+
+**原生桌面客户端：不再依赖浏览器内核。**
+
+- 新增 `launcher/native/`（WinForms + .NET Framework 4.8，六个源文件约 1500 行）：
+  `Program`（入口与单文件载荷自解压）、`BackendService`（拉起 Python、探端口、
+  Job Object 收整棵进程树）、`SpiritApi`（87 个端点的 HTTP 封装）、`SimpleJson`
+  （`JavaScriptSerializer`，不引 Newtonsoft）、`MainForm`（导航 + 任务列表）、
+  `NewTaskDialog`（新建任务）。
+- **工具链零依赖**：用 Windows 自带的 `csc.exe` 编译、`.NET Framework 4.8`（Win10/11
+  自带）运行，不需要装 .NET SDK、不需要 WebView2 Runtime。产物 **89 KB**。
+- 实测：双击后自动拉起后端 → 状态栏显示「已连接 · http://127.0.0.1:8010」→
+  任务列表正常加载；UI Automation 读到的控件树与设计一致（9 个导航项）。
+- 降级到 C# 5 语法（旧 `csc` 不支持字符串插值、`{ get; }`、内联 `out var`）。
+- 单文件打包仍在用 `build-single.ps1`（尾部挂 130 MB 运行时载荷），
+  载荷格式与 `Program.TryExtractPayload` 对齐：`[长度][SHA-256 前 24 字节][SSRTPAY1]`。
 
 ## [1.0.6] - 2026-11-17
 

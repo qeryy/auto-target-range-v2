@@ -1,0 +1,158 @@
+[13532:4028:1123/004911.714:WARNING:t_skinfilemap.cpp(61)] SGRenderLog:CheckUpdate newMem.OpenMem failed, szNewMem:Local\sgime_skin.v12.filemap.sogouime err:系统错误2: 系统找不到指定的文件。  
+打开Filemap失败: Local\sgime_skin.v12.filemap.sogouime6125daf7787
+[13532:4028:1123/004911.714:WARNING:t_skinfilemap.cpp(70)] SGRenderLog:CheckUpdate finish: old version:1
+[13532:4028:1123/004911.714:WARNING:t_skinfilemap.cpp(72)] SGRenderLog:CheckUpdate finish: new version:12
+[13532:4028:1123/004911.783:WARNING:t_skinfilemap.cpp(68)] SGRenderLog:CheckUpdate newMem.OpenMem Suc, szNewMem:Local\sgime_skin.Dpi144.v12.filemap.sogouime
+[13532:4028:1123/004911.783:WARNING:t_skinfilemap.cpp(70)] SGRenderLog:CheckUpdate finish: old version:12
+[13532:4028:1123/004911.784:WARNING:t_skinfilemap.cpp(72)] SGRenderLog:CheckUpdate finish: new version:12
+[31676:55360:1123/004923.781:WARNING:t_skinfilemap.cpp(61)] SGRenderLog:CheckUpdate newMem.OpenMem failed, szNewMem:Local\sgime_skin.v12.filemap.sogouime err:系统错误2: 系统找不到指定的文件。  
+打开Filemap失败: Local\sgime_skin.v12.filemap.sogouime6125daf7787
+[31676:55360:1123/004923.781:WARNING:t_skinfilemap.cpp(70)] SGRenderLog:CheckUpdate finish: old version:1
+[31676:55360:1123/004923.781:WARNING:t_skinfilemap.cpp(72)] SGRenderLog:CheckUpdate finish: new version:12
+[31676:55360:1123/004923.844:WARNING:t_skinfilemap.cpp(68)] SGRenderLog:CheckUpdate newMem.OpenMem Suc, szNewMem:Local\sgime_skin.Dpi144.v12.filemap.sogouime
+[31676:55360:1123/004923.844:WARNING:t_skinfilemap.cpp(70)] SGRenderLog:CheckUpdate finish: old version:12
+[31676:55360:1123/004923.844:WARNING:t_skinfilemap.cpp(72)] SGRenderLog:CheckUpdate finish: new version:12
+[552:29328:1123/004949.135:WARNING:t_skinfilemap.cpp(61)] SGRenderLog:CheckUpdate newMem.OpenMem failed, szNewMem:Local\sgime_skin.v12.filemap.sogouime err:系统错误2: 系统找不到指定的文件。  
+打开Filemap失败: Local\sgime_skin.v12.filemap.sogouime6125daf7787
+[552:29328:1123/004949.135:WARNING:t_skinfilemap.cpp(70)] SGRenderLog:CheckUpdate finish: old version:1
+[552:29328:1123/004949.135:WARNING:t_skinfilemap.cpp(72)] SGRenderLog:CheckUpdate finish: new version:12
+[552:29328:1123/004949.203:WARNING:t_skinfilemap.cpp(68)] SGRenderLog:CheckUpdate newMem.OpenMem Suc, szNewMem:Local\sgime_skin.Dpi144.v12.filemap.sogouime
+[552:29328:1123/004949.203:WARNING:t_skinfilemap.cpp(70)] SGRenderLog:CheckUpdate finish: old version:12
+[552:29328:1123/004949.203:WARNING:t_skinfilemap.cpp(72)] SGRenderLog:CheckUpdate finish: new version:12
+[40764:32576:1123/005443.014:WARNING:t_skinfilemap.cpp(61)] SGRenderLog:CheckUpdate newMem.OpenMem failed, szNewMem:Local\sgime_skin.v12.filemap.sogouime err:系统错误2: 系统找不到指定的文件。  
+打开Filemap失败: Local\sgime_skin.v12.filemap.sogouime6125daf7787
+[40764:32576:1123/005443.014:WARNING:t_skinfilemap.cpp(70)] SGRenderLog:CheckUpdate finish: old version:1
+[40764:32576:1123/005443.014:WARNING:t_skinfilemap.cpp(72)] SGRenderLog:CheckUpdate finish: new version:12
+[40764:32576:1123/005444.254:WARNING:t_skinfilemap.cpp(61)] SGRenderLog:CheckUpdate newMem.OpenMem failed, szNewMem:Local\sgime_skin.v12.filemap.sogouime err:系统错误2: 系统找不到指定的文件。  
+打开Filemap失败: Local\sgime_skin.v12.filemap.sogouime6125daf7787
+[40764:32576:1123/005444.254:WARNING:t_skinfilemap.cpp(70)] SGRenderLog:CheckUpdate finish: old version:1
+[40764:32576:1123/005444.254:WARNING:t_skinfilemap.cpp(72)] SGRenderLog:CheckUpdate finish: new version:12
+[40764:32576:1123/005444.304:WARNING:t_skinfilemap.cpp(105)] SGRenderLog:GetBasePtr_Direct m_mem uninit
+[40764:32576:1123/005445.524:WARNING:t_skinfilemap.cpp(61)] SGRenderLog:CheckUpdate newMem.OpenMem failed, szNewMem:Local\sgime_skin.v12.filemap.sogouime err:系统错误2: 系统找不到指定的文件。  
+打开Filemap失败: Local\sgime_skin.v12.filemap.sogouime6125daf7787
+[40764:32576:1123/005445.524:WARNING:t_skinfilemap.cpp(70)] SGRenderLog:CheckUpdate finish: old version:1
+[40764:32576:1123/005445.524:WARNING:t_skinfilemap.cpp(72)] SGRenderLog:CheckUpdate finish: new version:12
+[40764:32576:1123/005445.574:WARNING:t_skinfilemap.cpp(105)] SGRenderLog:GetBasePtr_Direct m_mem uninit
+[18960:19844:1123/005834.109:WARNING:t_skinfilemap.cpp(61)] SGRenderLog:CheckUpdate newMem.OpenMem failed, szNewMem:Local\sgime_skin.v12.filemap.sogouime err:系统错误2: 系统找不到指定的文件。  
+打开Filemap失败: Local\sgime_skin.v12.filemap.sogouime6125daf7787
+[18960:19844:1123/005834.109:WARNING:t_skinfilemap.cpp(70)] SGRenderLog:CheckUpdate finish: old version:1
+[18960:19844:1123/005834.109:WARNING:t_skinfilemap.cpp(72)] SGRenderLog:CheckUpdate finish: new version:12
+[18960:19844:1123/005834.219:WARNING:t_skinfilemap.cpp(68)] SGRenderLog:CheckUpdate newMem.OpenMem Suc, szNewMem:Local\sgime_skin.Dpi144.v12.filemap.sogouime
+[18960:19844:1123/005834.219:WARNING:t_skinfilemap.cpp(70)] SGRenderLog:CheckUpdate finish: old version:12
+[18960:19844:1123/005834.219:WARNING:t_skinfilemap.cpp(72)] SGRenderLog:CheckUpdate finish: new version:12
+[48868:8032:1123/005836.950:WARNING:t_skinfilemap.cpp(61)] SGRenderLog:CheckUpdate newMem.OpenMem failed, szNewMem:Local\sgime_skin.v12.filemap.sogouime err:系统错误2: 系统找不到指定的文件。  
+打开Filemap失败: Local\sgime_skin.v12.filemap.sogouime6125daf7787
+[48868:8032:1123/005836.950:WARNING:t_skinfilemap.cpp(70)] SGRenderLog:CheckUpdate finish: old version:1
+[48868:8032:1123/005836.950:WARNING:t_skinfilemap.cpp(72)] SGRenderLog:CheckUpdate finish: new version:12
+[48868:8032:1123/005837.022:WARNING:t_skinfilemap.cpp(68)] SGRenderLog:CheckUpdate newMem.OpenMem Suc, szNewMem:Local\sgime_skin.Dpi144.v12.filemap.sogouime
+[48868:8032:1123/005837.022:WARNING:t_skinfilemap.cpp(70)] SGRenderLog:CheckUpdate finish: old version:12
+[48868:8032:1123/005837.022:WARNING:t_skinfilemap.cpp(72)] SGRenderLog:CheckUpdate finish: new version:12
+[34844:45016:1123/005839.504:WARNING:t_skinfilemap.cpp(61)] SGRenderLog:CheckUpdate newMem.OpenMem failed, szNewMem:Local\sgime_skin.v12.filemap.sogouime err:系统错误2: 系统找不到指定的文件。  
+打开Filemap失败: Local\sgime_skin.v12.filemap.sogouime6125daf7787
+[34844:45016:1123/005839.504:WARNING:t_skinfilemap.cpp(70)] SGRenderLog:CheckUpdate finish: old version:1
+[34844:45016:1123/005839.504:WARNING:t_skinfilemap.cpp(72)] SGRenderLog:CheckUpdate finish: new version:12
+[34844:45016:1123/005839.583:WARNING:t_skinfilemap.cpp(68)] SGRenderLog:CheckUpdate newMem.OpenMem Suc, szNewMem:Local\sgime_skin.Dpi144.v12.filemap.sogouime
+[34844:45016:1123/005839.583:WARNING:t_skinfilemap.cpp(70)] SGRenderLog:CheckUpdate finish: old version:12
+[34844:45016:1123/005839.583:WARNING:t_skinfilemap.cpp(72)] SGRenderLog:CheckUpdate finish: new version:12
+[43420:16600:1123/005842.316:WARNING:t_skinfilemap.cpp(61)] SGRenderLog:CheckUpdate newMem.OpenMem failed, szNewMem:Local\sgime_skin.v12.filemap.sogouime err:系统错误2: 系统找不到指定的文件。  
+打开Filemap失败: Local\sgime_skin.v12.filemap.sogouime6125daf7787
+[43420:16600:1123/005842.316:WARNING:t_skinfilemap.cpp(70)] SGRenderLog:CheckUpdate finish: old version:1
+[43420:16600:1123/005842.316:WARNING:t_skinfilemap.cpp(72)] SGRenderLog:CheckUpdate finish: new version:12
+[43420:16600:1123/005842.387:WARNING:t_skinfilemap.cpp(68)] SGRenderLog:CheckUpdate newMem.OpenMem Suc, szNewMem:Local\sgime_skin.Dpi144.v12.filemap.sogouime
+[43420:16600:1123/005842.387:WARNING:t_skinfilemap.cpp(70)] SGRenderLog:CheckUpdate finish: old version:12
+[43420:16600:1123/005842.387:WARNING:t_skinfilemap.cpp(72)] SGRenderLog:CheckUpdate finish: new version:12
+[55736:29160:1123/010019.589:WARNING:t_skinfilemap.cpp(61)] SGRenderLog:CheckUpdate newMem.OpenMem failed, szNewMem:Local\sgime_skin.v12.filemap.sogouime err:系统错误2: 系统找不到指定的文件。  
+打开Filemap失败: Local\sgime_skin.v12.filemap.sogouime6125daf7787
+[55736:29160:1123/010019.590:WARNING:t_skinfilemap.cpp(70)] SGRenderLog:CheckUpdate finish: old version:1
+[55736:29160:1123/010019.590:WARNING:t_skinfilemap.cpp(72)] SGRenderLog:CheckUpdate finish: new version:12
+[55736:29160:1123/010020.772:WARNING:t_skinfilemap.cpp(61)] SGRenderLog:CheckUpdate newMem.OpenMem failed, szNewMem:Local\sgime_skin.v12.filemap.sogouime err:系统错误2: 系统找不到指定的文件。  
+打开Filemap失败: Local\sgime_skin.v12.filemap.sogouime6125daf7787
+[55736:29160:1123/010020.772:WARNING:t_skinfilemap.cpp(70)] SGRenderLog:CheckUpdate finish: old version:1
+[55736:29160:1123/010020.772:WARNING:t_skinfilemap.cpp(72)] SGRenderLog:CheckUpdate finish: new version:12
+[55736:29160:1123/010020.824:WARNING:t_skinfilemap.cpp(105)] SGRenderLog:GetBasePtr_Direct m_mem uninit
+[55736:29160:1123/010021.992:WARNING:t_skinfilemap.cpp(61)] SGRenderLog:CheckUpdate newMem.OpenMem failed, szNewMem:Local\sgime_skin.v12.filemap.sogouime err:系统错误2: 系统找不到指定的文件。  
+打开Filemap失败: Local\sgime_skin.v12.filemap.sogouime6125daf7787
+[55736:29160:1123/010021.992:WARNING:t_skinfilemap.cpp(70)] SGRenderLog:CheckUpdate finish: old version:1
+[55736:29160:1123/010021.992:WARNING:t_skinfilemap.cpp(72)] SGRenderLog:CheckUpdate finish: new version:12
+[55736:29160:1123/010022.043:WARNING:t_skinfilemap.cpp(105)] SGRenderLog:GetBasePtr_Direct m_mem uninit
+[39880:31692:1123/194548.739:WARNING:t_skinfilemap.cpp(61)] SGRenderLog:CheckUpdate newMem.OpenMem failed, szNewMem:Local\sgime_skin.v14.filemap.sogouime err:系统错误2: 系统找不到指定的文件。  
+打开Filemap失败: Local\sgime_skin.v14.filemap.sogouime6125daf7787
+[39880:31692:1123/194548.739:WARNING:t_skinfilemap.cpp(70)] SGRenderLog:CheckUpdate finish: old version:1
+[39880:31692:1123/194548.739:WARNING:t_skinfilemap.cpp(72)] SGRenderLog:CheckUpdate finish: new version:14
+[39880:31692:1123/194548.812:WARNING:t_skinfilemap.cpp(68)] SGRenderLog:CheckUpdate newMem.OpenMem Suc, szNewMem:Local\sgime_skin.Dpi144.v14.filemap.sogouime
+[39880:31692:1123/194548.812:WARNING:t_skinfilemap.cpp(70)] SGRenderLog:CheckUpdate finish: old version:14
+[39880:31692:1123/194548.812:WARNING:t_skinfilemap.cpp(72)] SGRenderLog:CheckUpdate finish: new version:14
+[62716:22328:1123/195009.230:WARNING:t_skinfilemap.cpp(61)] SGRenderLog:CheckUpdate newMem.OpenMem failed, szNewMem:Local\sgime_skin.v14.filemap.sogouime err:系统错误2: 系统找不到指定的文件。  
+打开Filemap失败: Local\sgime_skin.v14.filemap.sogouime6125daf7787
+[62716:22328:1123/195009.230:WARNING:t_skinfilemap.cpp(70)] SGRenderLog:CheckUpdate finish: old version:1
+[62716:22328:1123/195009.230:WARNING:t_skinfilemap.cpp(72)] SGRenderLog:CheckUpdate finish: new version:14
+[62716:22328:1123/195009.311:WARNING:t_skinfilemap.cpp(68)] SGRenderLog:CheckUpdate newMem.OpenMem Suc, szNewMem:Local\sgime_skin.Dpi144.v14.filemap.sogouime
+[62716:22328:1123/195009.311:WARNING:t_skinfilemap.cpp(70)] SGRenderLog:CheckUpdate finish: old version:14
+[62716:22328:1123/195009.311:WARNING:t_skinfilemap.cpp(72)] SGRenderLog:CheckUpdate finish: new version:14
+[25580:70772:1123/195012.014:WARNING:t_skinfilemap.cpp(61)] SGRenderLog:CheckUpdate newMem.OpenMem failed, szNewMem:Local\sgime_skin.v14.filemap.sogouime err:系统错误2: 系统找不到指定的文件。  
+打开Filemap失败: Local\sgime_skin.v14.filemap.sogouime6125daf7787
+[25580:70772:1123/195012.014:WARNING:t_skinfilemap.cpp(70)] SGRenderLog:CheckUpdate finish: old version:1
+[25580:70772:1123/195012.014:WARNING:t_skinfilemap.cpp(72)] SGRenderLog:CheckUpdate finish: new version:14
+[25580:70772:1123/195012.088:WARNING:t_skinfilemap.cpp(68)] SGRenderLog:CheckUpdate newMem.OpenMem Suc, szNewMem:Local\sgime_skin.Dpi144.v14.filemap.sogouime
+[25580:70772:1123/195012.088:WARNING:t_skinfilemap.cpp(70)] SGRenderLog:CheckUpdate finish: old version:14
+[25580:70772:1123/195012.088:WARNING:t_skinfilemap.cpp(72)] SGRenderLog:CheckUpdate finish: new version:14
+[65004:13380:1123/195014.675:WARNING:t_skinfilemap.cpp(61)] SGRenderLog:CheckUpdate newMem.OpenMem failed, szNewMem:Local\sgime_skin.v14.filemap.sogouime err:系统错误2: 系统找不到指定的文件。  
+打开Filemap失败: Local\sgime_skin.v14.filemap.sogouime6125daf7787
+[65004:13380:1123/195014.675:WARNING:t_skinfilemap.cpp(70)] SGRenderLog:CheckUpdate finish: old version:1
+[65004:13380:1123/195014.675:WARNING:t_skinfilemap.cpp(72)] SGRenderLog:CheckUpdate finish: new version:14
+[65004:13380:1123/195014.745:WARNING:t_skinfilemap.cpp(68)] SGRenderLog:CheckUpdate newMem.OpenMem Suc, szNewMem:Local\sgime_skin.Dpi144.v14.filemap.sogouime
+[65004:13380:1123/195014.745:WARNING:t_skinfilemap.cpp(70)] SGRenderLog:CheckUpdate finish: old version:14
+[65004:13380:1123/195014.745:WARNING:t_skinfilemap.cpp(72)] SGRenderLog:CheckUpdate finish: new version:14
+[62876:66712:1123/195019.506:WARNING:t_skinfilemap.cpp(61)] SGRenderLog:CheckUpdate newMem.OpenMem failed, szNewMem:Local\sgime_skin.v14.filemap.sogouime err:系统错误2: 系统找不到指定的文件。  
+打开Filemap失败: Local\sgime_skin.v14.filemap.sogouime6125daf7787
+[62876:66712:1123/195019.506:WARNING:t_skinfilemap.cpp(70)] SGRenderLog:CheckUpdate finish: old version:1
+[62876:66712:1123/195019.506:WARNING:t_skinfilemap.cpp(72)] SGRenderLog:CheckUpdate finish: new version:14
+[62876:66712:1123/195019.575:WARNING:t_skinfilemap.cpp(68)] SGRenderLog:CheckUpdate newMem.OpenMem Suc, szNewMem:Local\sgime_skin.Dpi144.v14.filemap.sogouime
+[62876:66712:1123/195019.575:WARNING:t_skinfilemap.cpp(70)] SGRenderLog:CheckUpdate finish: old version:14
+[62876:66712:1123/195019.575:WARNING:t_skinfilemap.cpp(72)] SGRenderLog:CheckUpdate finish: new version:14
+[71388:56072:1123/195048.388:WARNING:t_skinfilemap.cpp(61)] SGRenderLog:CheckUpdate newMem.OpenMem failed, szNewMem:Local\sgime_skin.v14.filemap.sogouime err:系统错误2: 系统找不到指定的文件。  
+打开Filemap失败: Local\sgime_skin.v14.filemap.sogouime6125daf7787
+[71388:56072:1123/195048.388:WARNING:t_skinfilemap.cpp(70)] SGRenderLog:CheckUpdate finish: old version:1
+[71388:56072:1123/195048.388:WARNING:t_skinfilemap.cpp(72)] SGRenderLog:CheckUpdate finish: new version:14
+[71388:56072:1123/195049.627:WARNING:t_skinfilemap.cpp(61)] SGRenderLog:CheckUpdate newMem.OpenMem failed, szNewMem:Local\sgime_skin.v14.filemap.sogouime err:系统错误2: 系统找不到指定的文件。  
+打开Filemap失败: Local\sgime_skin.v14.filemap.sogouime6125daf7787
+[71388:56072:1123/195049.627:WARNING:t_skinfilemap.cpp(70)] SGRenderLog:CheckUpdate finish: old version:1
+[71388:56072:1123/195049.627:WARNING:t_skinfilemap.cpp(72)] SGRenderLog:CheckUpdate finish: new version:14
+[71388:56072:1123/195049.676:WARNING:t_skinfilemap.cpp(105)] SGRenderLog:GetBasePtr_Direct m_mem uninit
+[71388:56072:1123/195050.872:WARNING:t_skinfilemap.cpp(61)] SGRenderLog:CheckUpdate newMem.OpenMem failed, szNewMem:Local\sgime_skin.v14.filemap.sogouime err:系统错误2: 系统找不到指定的文件。  
+打开Filemap失败: Local\sgime_skin.v14.filemap.sogouime6125daf7787
+[71388:56072:1123/195050.872:WARNING:t_skinfilemap.cpp(70)] SGRenderLog:CheckUpdate finish: old version:1
+[71388:56072:1123/195050.872:WARNING:t_skinfilemap.cpp(72)] SGRenderLog:CheckUpdate finish: new version:14
+[71388:56072:1123/195050.922:WARNING:t_skinfilemap.cpp(105)] SGRenderLog:GetBasePtr_Direct m_mem uninit
+[18316:64164:1123/195433.504:WARNING:t_skinfilemap.cpp(61)] SGRenderLog:CheckUpdate newMem.OpenMem failed, szNewMem:Local\sgime_skin.v14.filemap.sogouime err:系统错误2: 系统找不到指定的文件。  
+打开Filemap失败: Local\sgime_skin.v14.filemap.sogouime6125daf7787
+[18316:64164:1123/195433.504:WARNING:t_skinfilemap.cpp(70)] SGRenderLog:CheckUpdate finish: old version:1
+[18316:64164:1123/195433.504:WARNING:t_skinfilemap.cpp(72)] SGRenderLog:CheckUpdate finish: new version:14
+[18316:64164:1123/195433.579:WARNING:t_skinfilemap.cpp(68)] SGRenderLog:CheckUpdate newMem.OpenMem Suc, szNewMem:Local\sgime_skin.Dpi144.v14.filemap.sogouime
+[18316:64164:1123/195433.579:WARNING:t_skinfilemap.cpp(70)] SGRenderLog:CheckUpdate finish: old version:14
+[18316:64164:1123/195433.579:WARNING:t_skinfilemap.cpp(72)] SGRenderLog:CheckUpdate finish: new version:14
+[58856:26404:1123/195436.238:WARNING:t_skinfilemap.cpp(61)] SGRenderLog:CheckUpdate newMem.OpenMem failed, szNewMem:Local\sgime_skin.v14.filemap.sogouime err:系统错误2: 系统找不到指定的文件。  
+打开Filemap失败: Local\sgime_skin.v14.filemap.sogouime6125daf7787
+[58856:26404:1123/195436.238:WARNING:t_skinfilemap.cpp(70)] SGRenderLog:CheckUpdate finish: old version:1
+[58856:26404:1123/195436.238:WARNING:t_skinfilemap.cpp(72)] SGRenderLog:CheckUpdate finish: new version:14
+[58856:26404:1123/195436.311:WARNING:t_skinfilemap.cpp(68)] SGRenderLog:CheckUpdate newMem.OpenMem Suc, szNewMem:Local\sgime_skin.Dpi144.v14.filemap.sogouime
+[58856:26404:1123/195436.311:WARNING:t_skinfilemap.cpp(70)] SGRenderLog:CheckUpdate finish: old version:14
+[58856:26404:1123/195436.311:WARNING:t_skinfilemap.cpp(72)] SGRenderLog:CheckUpdate finish: new version:14
+[73888:67344:1123/195438.859:WARNING:t_skinfilemap.cpp(61)] SGRenderLog:CheckUpdate newMem.OpenMem failed, szNewMem:Local\sgime_skin.v14.filemap.sogouime err:系统错误2: 系统找不到指定的文件。  
+打开Filemap失败: Local\sgime_skin.v14.filemap.sogouime6125daf7787
+[73888:67344:1123/195438.859:WARNING:t_skinfilemap.cpp(70)] SGRenderLog:CheckUpdate finish: old version:1
+[73888:67344:1123/195438.859:WARNING:t_skinfilemap.cpp(72)] SGRenderLog:CheckUpdate finish: new version:14
+[73888:67344:1123/195438.926:WARNING:t_skinfilemap.cpp(68)] SGRenderLog:CheckUpdate newMem.OpenMem Suc, szNewMem:Local\sgime_skin.Dpi144.v14.filemap.sogouime
+[73888:67344:1123/195438.926:WARNING:t_skinfilemap.cpp(70)] SGRenderLog:CheckUpdate finish: old version:14
+[73888:67344:1123/195438.926:WARNING:t_skinfilemap.cpp(72)] SGRenderLog:CheckUpdate finish: new version:14
+[67496:63044:1123/195443.766:WARNING:t_skinfilemap.cpp(61)] SGRenderLog:CheckUpdate newMem.OpenMem failed, szNewMem:Local\sgime_skin.v14.filemap.sogouime err:系统错误2: 系统找不到指定的文件。  
+打开Filemap失败: Local\sgime_skin.v14.filemap.sogouime6125daf7787
+[67496:63044:1123/195443.766:WARNING:t_skinfilemap.cpp(70)] SGRenderLog:CheckUpdate finish: old version:1
+[67496:63044:1123/195443.766:WARNING:t_skinfilemap.cpp(72)] SGRenderLog:CheckUpdate finish: new version:14
+[67496:63044:1123/195443.837:WARNING:t_skinfilemap.cpp(68)] SGRenderLog:CheckUpdate newMem.OpenMem Suc, szNewMem:Local\sgime_skin.Dpi144.v14.filemap.sogouime
+[67496:63044:1123/195443.837:WARNING:t_skinfilemap.cpp(70)] SGRenderLog:CheckUpdate finish: old version:14
+[67496:63044:1123/195443.837:WARNING:t_skinfilemap.cpp(72)] SGRenderLog:CheckUpdate finish: new version:14
+[57660:59732:1123/195454.176:WARNING:t_skinfilemap.cpp(61)] SGRenderLog:CheckUpdate newMem.OpenMem failed, szNewMem:Local\sgime_skin.v14.filemap.sogouime err:系统错误2: 系统找不到指定的文件。  
+打开Filemap失败: Local\sgime_skin.v14.filemap.sogouime6125daf7787
+[57660:59732:1123/195454.176:WARNING:t_skinfilemap.cpp(70)] SGRenderLog:CheckUpdate finish: old version:1
+[57660:59732:1123/195454.176:WARNING:t_skinfilemap.cpp(72)] SGRenderLog:CheckUpdate finish: new version:14
