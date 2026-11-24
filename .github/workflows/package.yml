@@ -131,6 +131,12 @@ jobs:
           distribution: microsoft
           java-version: "21"
 
+      - name: 安装 Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.3"
+          cache-dependency-path: traffic-proxy/go.sum
+
       - name: 取 wheel
         uses: actions/download-artifact@v4
         with:

@@ -28,6 +28,8 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+$env:PYTHONUTF8 = '1'
+$env:PYTHONIOENCODING = 'utf-8'
 $root = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 $venvPy = Join-Path $root '.venv\Scripts\python.exe'
 $depsProbe = Join-Path $root 'scripts\probe_deps.py'

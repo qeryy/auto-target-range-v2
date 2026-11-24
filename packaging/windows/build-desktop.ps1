@@ -3,7 +3,8 @@
 param(
     [string]$RuntimeDir = '',
     [string]$OutputDir = '',
-    [string]$Wheel = ''
+    [string]$Wheel = '',
+    [string]$TrafficProxy = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -63,6 +64,14 @@ try {
     Pop-Location
 }
 
+if (-not $TrafficProxy) {
+    $trafficScript = Join-Path $packagingDir 'build-traffic-proxy.ps1'
+    & $trafficScript -OutputDir (Join-Path $repoRoot 'build\tools')
+    if ($LASTEXITCODE -ne 0) { throw "流量代理构建失败（退出码 $LASTEXITCODE）" }
+    $TrafficProxy = Join-Path $repoRoot 'build\tools\spiritscout-traffic-proxy.exe'
+}
+$TrafficProxy = (Resolve-Path -LiteralPath $TrafficProxy).Path
+
 $mainJar = Get-ChildItem (Join-Path $projectDir "build\desktop-input") -File -Filter "SpiritScoutDesktop-$version.jar" |
     Select-Object -First 1
 if (-not $mainJar) {
@@ -109,6 +118,7 @@ Copy-Item -LiteralPath (Join-Path $RuntimeDir 'configs') -Destination (Join-Path
 Copy-Item -LiteralPath (Join-Path $repoRoot 'docs\原生桌面端.md') -Destination (Join-Path $appDir 'README-Windows.md') -Force
 New-Item -ItemType Directory -Force -Path (Join-Path $appDir 'tools') | Out-Null
 Copy-Item -LiteralPath (Join-Path $repoRoot 'tools\experience-export') -Destination (Join-Path $appDir 'tools\experience-export') -Recurse -Force
+Copy-Item -LiteralPath $TrafficProxy -Destination (Join-Path $appDir 'tools\spiritscout-traffic-proxy.exe') -Force
 Get-ChildItem -LiteralPath (Join-Path $appDir 'tools') -Recurse -Directory -Filter '__pycache__' -ErrorAction SilentlyContinue |
     Remove-Item -Recurse -Force
 Get-ChildItem -LiteralPath (Join-Path $appDir 'tools') -Recurse -File -Filter '*.pyc' -ErrorAction SilentlyContinue |

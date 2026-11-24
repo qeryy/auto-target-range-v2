@@ -9,6 +9,8 @@ rem                      then start with:  scripts\windows\start-console.cmd --a
 rem To wipe stored credentials: --clear-admin-password
 setlocal
 cd /d "%~dp0..\.."
+set "PYTHONUTF8=1"
+set "PYTHONIOENCODING=utf-8"
 
 set "PROJECT_PYTHON=%CD%\.venv\Scripts\python.exe"
 if not exist "%PROJECT_PYTHON%" (

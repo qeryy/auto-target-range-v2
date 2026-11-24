@@ -12,6 +12,8 @@ class WindowsPackagingTests(unittest.TestCase):
     def test_builder_owns_the_python_runtime_step(self) -> None:
         script = (PACKAGE / "packaging" / "windows" / "build-desktop.ps1").read_text(encoding="utf-8")
         self.assertIn("build-backend-runtime.ps1", script)
+        self.assertIn("build-traffic-proxy.ps1", script)
+        self.assertIn("spiritscout-traffic-proxy.exe", script)
         self.assertIn("dist\\windows\\desktop", script)
         self.assertIn("SpiritScout-$version-windows-x64.zip", script)
         self.assertNotIn("build-portable.ps1", script)
@@ -34,6 +36,7 @@ class WindowsPackagingTests(unittest.TestCase):
             (PACKAGE / "desktop" / "src" / "main" / "resources" / "favicon.png").is_file()
         )
         self.assertTrue((PACKAGE / "packaging" / "windows" / "icon.ico").is_file())
+        self.assertTrue((PACKAGE / "packaging" / "windows" / "build-traffic-proxy.ps1").is_file())
 
     def test_gradle_uses_domestic_mirrors_with_official_fallbacks(self) -> None:
         settings = (PACKAGE / "desktop" / "settings.gradle.kts").read_text(encoding="utf-8")

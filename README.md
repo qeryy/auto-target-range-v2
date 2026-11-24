@@ -30,7 +30,7 @@
 | `src/` | Python 后端、Agent、Web API 与静态前端 |
 | `desktop/` | Kotlin Compose + SaltUI 原生 Windows 桌面端 |
 | `frontend/` | React 会话阅读器源码；构建产物写入 Web 静态资源目录 |
-| `traffic-proxy/` | Go 流量录制代理 |
+| `traffic-proxy/` | Go 流量录制代理；Windows 桌面包自动携带，无需用户安装 Go |
 | `packaging/windows/` | 完整桌面版、后端运行时和后端控制台打包入口 |
 | `scripts/windows/` | Windows 调试控制台启动入口 |
 | `scripts/linux/` | Linux/macOS 兼容启动与安装入口 |

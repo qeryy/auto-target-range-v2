@@ -54,6 +54,7 @@ class BackendHost {
             .directory(runtime.baseDirectory.toFile())
             .redirectErrorStream(false)
         builder.environment()["PYTHONUNBUFFERED"] = "1"
+        builder.environment()["PYTHONUTF8"] = "1"
         builder.environment()["PYTHONIOENCODING"] = "utf-8"
         builder.environment()["SPIRITSCOUT_DESKTOP"] = "1"
         val started = builder.start()

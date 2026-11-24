@@ -1,6 +1,8 @@
 ﻿# Windows 原生控制台。完整工具沙箱请使用 python deploy.py up。
 # 用法：.\scripts\windows\start-console.ps1 --port 8000；Ctrl+C 停止。
 $ErrorActionPreference = 'Stop'
+$env:PYTHONUTF8 = '1'
+$env:PYTHONIOENCODING = 'utf-8'
 $appArguments = $args
 $repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 $projectPython = Join-Path $repoRoot '.venv\Scripts\python.exe'
