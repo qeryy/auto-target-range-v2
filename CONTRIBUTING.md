@@ -75,6 +75,15 @@ Dockerfile、Compose 和通用部署代码仍正常维护、提交。
 .venv/bin/python -m unittest discover -s tests -v
 ```
 
+Windows 或需要快速定向回归时，按模块隔离并行运行；默认使用逻辑 CPU 的一半，最多 12 个进程：
+
+```powershell
+.venv\Scripts\python.exe scripts\test_parallel.py --workers 12
+.venv\Scripts\python.exe scripts\test_parallel.py --workers 12 test_web_auth test_audit_repairs
+```
+
+每个模块在独立进程中运行，避免 SQLite 连接、临时目录和全局状态互相污染。全量结果只作为跨模块变更后的最终门禁；局部修改优先只跑受影响模块。
+
 前端没有构建步骤，使用 Node.js 22+ 检查语法并运行回归：
 
 ```bash

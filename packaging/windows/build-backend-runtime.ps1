@@ -187,19 +187,27 @@ if (-not $SkipInstall) {
             if (Test-Path -LiteralPath $download) {
                 Remove-Item -LiteralPath $download -Force
             }
-            $getPipUrl = if ($env:SPIRITSCOUT_GET_PIP_URL) {
-                $env:SPIRITSCOUT_GET_PIP_URL
-            } else {
+            $getPipUrls = @()
+            if ($env:SPIRITSCOUT_GET_PIP_URL) {
+                $getPipUrls += $env:SPIRITSCOUT_GET_PIP_URL
+            }
+            $getPipUrls += @(
+                'https://mirrors.aliyun.com/pypi/get-pip.py',
                 'https://bootstrap.pypa.io/get-pip.py'
-            }
-            if (Invoke-Download $getPipUrl $download) {
-                Move-Item -LiteralPath $download -Destination $GetPip -Force
-            }
-            else {
+            )
+            $downloaded = $false
+            foreach ($getPipUrl in $getPipUrls) {
+                if (Invoke-Download $getPipUrl $download) {
+                    Move-Item -LiteralPath $download -Destination $GetPip -Force
+                    $downloaded = $true
+                    break
+                }
                 if (Test-Path -LiteralPath $download) {
                     Remove-Item -LiteralPath $download -Force
                 }
-                throw "get-pip.py download failed: $getPipUrl"
+            }
+            if (-not $downloaded) {
+                throw "get-pip.py download failed: $($getPipUrls -join ', ')"
             }
         }
     }

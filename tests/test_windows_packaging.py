@@ -89,6 +89,13 @@ class WindowsPackagingTests(unittest.TestCase):
         }
         self.assertEqual(workflows, {"ci.yml", "package.yml"})
 
+    def test_package_workflow_checks_a_shipped_frontend_asset(self) -> None:
+        workflow = (PACKAGE / ".github" / "workflows" / "package.yml").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("web/static/app/session.js", workflow)
+        self.assertNotIn("web/static/js/count.js", workflow)
+
 
 if __name__ == "__main__":
     unittest.main()

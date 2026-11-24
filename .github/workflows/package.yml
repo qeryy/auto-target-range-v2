@@ -94,7 +94,7 @@ jobs:
           import pathlib, spiritscout
           root = pathlib.Path(spiritscout.__file__).parent
           print("版本", spiritscout.__version__)
-          for rel in ("web/static/js/count.js",
+          for rel in ("web/static/app/session.js",
                       "knowledge/data/experience.json",
                       "knowledge/data/experience.md"):
               assert (root / rel).is_file(), f"wheel 里缺 {rel}"
