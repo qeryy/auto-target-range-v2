@@ -1,7 +1,6 @@
 ﻿#Requires -Version 5.1
 [CmdletBinding()]
 param(
-    [Alias('PortableDir')]
     [string]$RuntimeDir = '',
     [string]$OutputDir = '',
     [string]$Wheel = ''
@@ -12,22 +11,22 @@ $ErrorActionPreference = 'Stop'
 function Write-Step([string]$Text) { Write-Host "[>] $Text" -ForegroundColor Cyan }
 function Write-Ok([string]$Text) { Write-Host "[+] $Text" -ForegroundColor Green }
 
-$launcherDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-$repoRoot = Split-Path -Parent $launcherDir
+$packagingDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+$repoRoot = Split-Path -Parent (Split-Path -Parent $packagingDir)
 $workspaceRoot = Split-Path -Parent $repoRoot
-$projectDir = Join-Path $repoRoot 'desktop\SpiritScoutCompose'
+$projectDir = Join-Path $repoRoot 'desktop'
 $versionFile = Join-Path $repoRoot 'src\spiritscout\__init__.py'
 $version = (Select-String -Path $versionFile -Pattern '__version__\s*=\s*"([^"]+)"').Matches[0].Groups[1].Value
 
 if (-not $OutputDir) {
-    $OutputDir = Join-Path $workspaceRoot 'dist-native'
+    $OutputDir = Join-Path $workspaceRoot 'dist\windows\desktop'
 }
 $OutputDir = [System.IO.Path]::GetFullPath($OutputDir)
 
 if (-not $RuntimeDir) {
-    $RuntimeDir = Join-Path $projectDir 'build\python-runtime'
+    $RuntimeDir = Join-Path $repoRoot 'build\backend-runtime'
     Write-Step '准备 Python 运行时'
-    $runtimeScript = Join-Path $launcherDir 'build-python-runtime.ps1'
+    $runtimeScript = Join-Path $packagingDir 'build-backend-runtime.ps1'
     if ($Wheel) {
         & $runtimeScript -OutDir $RuntimeDir -Wheel $Wheel
     }
@@ -71,8 +70,10 @@ if (-not $mainJar) {
     throw "没有找到桌面主 JAR：SpiritScoutDesktop-$version.jar"
 }
 
-$packageRoot = Join-Path $projectDir 'build\native-package'
-$allowedRoot = (Resolve-Path (Join-Path $projectDir 'build')).Path
+$packageRoot = Join-Path $repoRoot 'build\windows-desktop\package'
+$buildRoot = Join-Path $repoRoot 'build'
+New-Item -ItemType Directory -Force -Path $buildRoot | Out-Null
+$allowedRoot = (Resolve-Path $buildRoot).Path
 $resolvedPackageRoot = [System.IO.Path]::GetFullPath($packageRoot)
 if (-not $resolvedPackageRoot.StartsWith($allowedRoot, [StringComparison]::OrdinalIgnoreCase)) {
     throw "拒绝清理构建目录之外的路径：$resolvedPackageRoot"
@@ -92,7 +93,7 @@ $jpackage = Join-Path $jdkHome 'bin\jpackage.exe'
     --main-jar $mainJar.Name `
     --main-class com.spiritscout.desktop.MainKt `
     --runtime-image (Join-Path $projectDir 'build\compose\tmp\main\runtime') `
-    --icon (Join-Path $launcherDir 'icon.ico') `
+    --icon (Join-Path $packagingDir 'icon.ico') `
     --app-version $version `
     --java-options '-Dfile.encoding=UTF-8' `
     --java-options '-Dsun.java2d.uiScale.enabled=true'
@@ -106,12 +107,12 @@ if (-not (Test-Path -LiteralPath (Join-Path $appDir 'SpiritScout.exe'))) {
 Write-Step '加入 Python 运行时与说明'
 Copy-Item -LiteralPath (Join-Path $RuntimeDir 'py') -Destination (Join-Path $appDir 'py') -Recurse -Force
 Copy-Item -LiteralPath (Join-Path $RuntimeDir 'configs') -Destination (Join-Path $appDir 'configs') -Recurse -Force
-Copy-Item -LiteralPath (Join-Path $repoRoot 'docs\原生桌面端.md') -Destination (Join-Path $appDir 'README-桌面版.md') -Force
+Copy-Item -LiteralPath (Join-Path $repoRoot 'docs\原生桌面端.md') -Destination (Join-Path $appDir 'README-Windows.md') -Force
 Copy-Item -LiteralPath (Join-Path $repoRoot 'desktop\THIRD_PARTY_NOTICES.md') -Destination (Join-Path $appDir 'THIRD_PARTY_NOTICES.md') -Force
 Copy-Item -LiteralPath (Join-Path $repoRoot 'desktop\THIRD_PARTY\SaltUI-LICENSE.txt') -Destination (Join-Path $appDir 'SaltUI-LICENSE.txt') -Force
 
 New-Item -ItemType Directory -Force -Path $OutputDir | Out-Null
-$zipPath = Join-Path $OutputDir "spiritscout-$version-native-win64.zip"
+$zipPath = Join-Path $OutputDir "SpiritScout-$version-windows-x64.zip"
 $tar = Join-Path $env:SystemRoot 'System32\tar.exe'
 if (Test-Path -LiteralPath $tar) {
     & $tar -a -cf $zipPath -C $resolvedPackageRoot 'SpiritScout'

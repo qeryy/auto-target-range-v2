@@ -31,4 +31,3 @@ SpiritScout/skills/
 # 根目录的构建产物 / 打包结果
 /logs/
 /dist/
-/dist-*/

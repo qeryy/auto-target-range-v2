@@ -5,12 +5,12 @@
 
 用法（只在改了 favicon.svg 之后需要跑）：
 
-    python launcher/make-icon.py
+    python packaging/windows/make-icon.py
 
 做法：不拉浏览器，直接按 SVG 里的几何（圆角方块 + 三条连线 + 四个圆点）
 用 Pillow 画，放大 8 倍画完再缩下来，边缘比直接画干净。SVG 里出现这个
 小程序读不懂的写法时会直接报错，提醒你同步改这里——不会悄悄画歪。
-产物 launcher/icon.ico 要提交进仓库；build-native.ps1 直接用，日常构建
+产物 packaging/windows/icon.ico 要提交进仓库；build-desktop.ps1 直接用，日常构建
 不需要 Pillow。
 """
 
@@ -20,7 +20,7 @@ import re
 import sys
 from pathlib import Path
 
-SVG = Path(__file__).resolve().parents[1] / "src" / "spiritscout" / "web" / "static" / "favicon.svg"
+SVG = Path(__file__).resolve().parents[2] / "src" / "spiritscout" / "web" / "static" / "favicon.svg"
 ICO = Path(__file__).resolve().parent / "icon.ico"
 SIZES = [(16, 16), (24, 24), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)]
 

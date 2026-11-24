@@ -67,7 +67,7 @@ def _copy_if_missing(source: Path, target: Path) -> bool:
     return True
 
 
-def _prepare_portable_runtime() -> None:
+def _prepare_frozen_runtime() -> None:
     """冻结构建使用可写运行目录；默认程序旁，也支持 SPIRITSCOUT_DATA_HOME。
 
     解包资源保持只读，配置仅在缺失时生成，不覆盖已有用户文件。
@@ -147,7 +147,7 @@ def main(argv: list[str] | None = None) -> int:
     display.start()
     display.phase("读取配置")
     try:
-        _prepare_portable_runtime()
+        _prepare_frozen_runtime()
     except OSError as exc:
         display.failed(f"无法初始化运行目录：{exc}")
         return 2

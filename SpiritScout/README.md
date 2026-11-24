@@ -180,7 +180,7 @@ launch.cmd
 
 **Windows 原生桌面版（SaltUI）**
 
-桌面主界面位于 `desktop/SpiritScoutCompose/`，使用 Kotlin Compose Desktop +
+桌面主界面位于 `desktop/`，使用 Kotlin Compose Desktop +
 [SaltUI 3.0.0](https://github.com/Moriafly/SaltUI) 原生窗口与控件。它不嵌入 WebView2，
 不依赖浏览器标签页，任务、仪表盘、资源管理和设置都在桌面窗口中完成。
 
@@ -188,13 +188,13 @@ launch.cmd
 
 ```powershell
 $env:JAVA_HOME = 'C:\Program Files\Microsoft\jdk-21.0.12.101-hotspot'
-.\SpiritScout\desktop\SpiritScoutCompose\gradlew.bat -p .\SpiritScout\desktop\SpiritScoutCompose run
+.\SpiritScout\desktop\gradlew.bat -p .\SpiritScout\desktop run
 ```
 
 生成完整 Windows 桌面包：
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File SpiritScout\launcher\build-native.ps1
+powershell -ExecutionPolicy Bypass -File SpiritScout\packaging\windows\build-desktop.ps1
 ```
 
 产物是带内嵌 JRE 和 Python 运行时的应用目录及 zip，解压后双击
@@ -258,11 +258,11 @@ shell / Python 沙箱需要 Linux + bubblewrap；Windows 与 macOS 原生控制�
 `SpiritScout.exe`、精简 JRE、Python embeddable 运行时和配置模板放在同一目录：
 
 ```powershell
-python -m build --outdir dist SpiritScout
-powershell -ExecutionPolicy Bypass -File SpiritScout\launcher\build-native.ps1
+python -m build --outdir dist\python SpiritScout
+powershell -ExecutionPolicy Bypass -File SpiritScout\packaging\windows\build-desktop.ps1
 ```
 
-产物在 `dist-native\spiritscout-<版本>-native-win64.zip`，解压后双击
+产物在 `dist\windows\desktop\SpiritScout-<版本>-windows-x64.zip`，解压后双击
 `SpiritScout.exe`。目标机器不需要安装 Java、Python 或 WebView2；模型和外部工具仍需按
 各自文档配置。旧的单文件尾载荷和 `desktop.json` 兼容流程不再维护。
 
@@ -276,9 +276,9 @@ powershell -ExecutionPolicy Bypass -File SpiritScout\launcher\build-native.ps1
 | --- | --- |
 | `spiritscout-1.3.0-py3-none-any.whl` | `pip install` 用：前端静态页面、知识库种子、报告模板、内置安全技能与经验摘要 |
 | `spiritscout-1.3.0.tar.gz` | sdist：整份源码 + 技能文本素材 + 配置模板 + 经验 |
-| `spiritscout-1.3.0.zip` | 整仓源码：代码、`skills/`、`configs/`、`experience-export/`、`EXPERIENCE.md` |
-| `spiritscout-1.3.0-native-win64.zip` | **Windows 原生桌面版**：SaltUI/Compose Desktop，内嵌 JRE 与 Python 运行时 |
-| `spiritscout-1.3.0-portable-win64.zip` | 纯 Python/Web 后端便携包，给不需要原生窗口的兼容场景 |
+| `SpiritScout-1.3.0-source.zip` | 整仓源码：代码、`skills/`、`configs/`、`experience-export/`、`EXPERIENCE.md` |
+| `SpiritScout-1.3.0-windows-x64.zip` | **Windows 原生桌面完整版**：SaltUI/Compose Desktop，内嵌 JRE 与 Python 运行时 |
+| `SpiritScout-1.3.0-windows-x64-backend.zip` | 纯 Python/Web 后端兼容包 |
 | `SHA256SUMS` | 上面几个包的校验和，装前先对一遍 |
 
 ```bash
@@ -296,8 +296,8 @@ python -m spiritscout.resources.skill_sync import skills   # 从解开的 zip / 
 核对 tag 与 `__version__` 是否一致（不一致直接失败）、用
 `python -m spiritscout.knowledge.digest` 现算一份经验摘要、`python -m build` 出
 wheel 与 sdist、`git archive` 打整仓 zip 并把摘要塞进去、再装进干净 venv 验证
-`web/static/js/count.js` 和 `knowledge/data/experience.json` 真在包里。桌面版 exe
-在另一个 Windows 任务里用系统自带 `csc.exe` 编（不需要 .NET SDK），两边产物汇到
+`web/static/js/count.js` 和 `knowledge/data/experience.json` 真在包里。完整桌面版
+在 Windows 任务里通过 Compose/jpackage 打包，两边产物汇到
 最后一并算 `SHA256SUMS` 再附到同名 Release。没打 tag 也能出包：Actions 页面选
 「打包并发布」→ Run workflow，填一个已存在的 tag 即可。
 

@@ -45,7 +45,7 @@ nats = ["nats-py>=2.6"]
 chroma = ["chromadb>=1.0"]
 report = ["weasyprint>=62", "python-docx>=1.1"]
 test = ["ruff==0.16.10"]
-build = ["pyinstaller>=6.11"]   # scripts/build-exe.ps1 (Windows single-file console)
+build = ["pyinstaller>=6.11"]   # packaging/windows/build-backend-console.ps1
 dev = ["pytest>=8.0", "ruff==0.16.10"]
 
 [project.scripts]

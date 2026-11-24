@@ -1,4 +1,4 @@
-"""冻结构建首次启动的配置生成回归；不启动真实服务。"""
+"""Frozen-build first-run configuration regression tests."""
 from __future__ import annotations
 
 import os
@@ -11,7 +11,7 @@ from unittest import mock
 from spiritscout import __main__ as entry
 
 
-class PortableRuntimeTests(unittest.TestCase):
+class FrozenRuntimeTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory(prefix='spiritscout portable ')
         self.addCleanup(self.temp.cleanup)
@@ -38,7 +38,7 @@ class PortableRuntimeTests(unittest.TestCase):
 
     def test_first_run_creates_editable_configs_next_to_executable(self) -> None:
         with self._frozen():
-            entry._prepare_portable_runtime()
+            entry._prepare_frozen_runtime()
         self.assertEqual(Path.cwd(), self.app)
         configs = self.app / 'configs'
         self.assertEqual((configs / 'system.yaml').read_text(encoding='utf-8'),
@@ -53,14 +53,14 @@ class PortableRuntimeTests(unittest.TestCase):
         (configs / 'system.yaml').write_text('mode: ctf\n', encoding='utf-8')
         (self.app / '.env.example').write_text('B=2\n', encoding='utf-8')
         with self._frozen():
-            entry._prepare_portable_runtime()
+            entry._prepare_frozen_runtime()
         self.assertEqual((configs / 'system.yaml').read_text(encoding='utf-8'),
                          'mode: ctf\n')
         self.assertEqual((self.app / '.env.example').read_text(encoding='utf-8'),
                          'B=2\n')
 
     def test_source_run_does_not_create_files(self) -> None:
-        entry._prepare_portable_runtime()
+        entry._prepare_frozen_runtime()
         self.assertFalse((self.app / 'configs').exists())
 
 

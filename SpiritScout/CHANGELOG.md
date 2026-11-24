@@ -7,7 +7,7 @@
 
 **SaltUI 原生桌面端。**
 
-- 新增 `desktop/SpiritScoutCompose/`：Kotlin Compose Desktop + SaltUI 3.0.0，
+- 新增 `desktop/`：Kotlin Compose Desktop + SaltUI 3.0.0，
   使用原生 Skia 窗口、SaltWindow 标题栏和桌面控件，不包含 WebView2，也不依赖浏览器承载主界面。
 - 桌面端覆盖原生仪表盘、任务列表、新建任务与附件上传、任务工作区、暂停/继续/结束、
   管理员登录、资产、项目、编队、模型、MCP、Skill、本地工具、资产情报、代理、浏览器账号、
@@ -22,12 +22,15 @@
 - Skill、资产和经验资源按 `limit=100` 自动翻页；Skill 当前 298 条，不再停在接口默认的 40 条。
 - 后端使用随机回环端口和 Kotlin 进程树管理，窗口关闭时清理 Python 子进程；
   桌面日志写入 `%LOCALAPPDATA%\SpiritScout\desktop-logs`。
-- 新增 `launcher/build-native.ps1`：Gradle staging + 精简 JRE + Python 便携运行时 +
+- 新增 `packaging/windows/build-desktop.ps1`：Gradle staging + 精简 JRE + Python 后端运行时 +
   jpackage app-image，输出可直接解压运行的 Windows 原生桌面包。
-- 新增独立的 `launcher/build-python-runtime.ps1`，原生打包不再依赖旧 WebView2
+- 新增独立的 `packaging/windows/build-backend-runtime.ps1`，原生打包不再依赖旧 WebView2
   便携目录；同时移除旧 `DesktopApp/`、WebView2 壳、单文件尾载荷脚本和过时测试。
 - 修复 jpackage 依赖同步时同名 Lifecycle JAR 被覆盖的问题，确保
   `androidx.lifecycle.LifecycleOwner` 进入发布类路径。
+- 统一 Windows 发布命名：桌面源码直接位于 `desktop/`，打包入口集中在
+  `packaging/windows/`，完整桌面包固定输出到
+  `dist/windows/desktop/SpiritScout-<版本>-windows-x64.zip`。
 
 ## [1.2.0] - 2026-11-24
 

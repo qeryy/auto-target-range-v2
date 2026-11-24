@@ -117,13 +117,13 @@ LiteLLM 固定为 `1.102.0`，MCP SDK 使用 `>=1.28.1,<2`。较新的 LiteLLM M
 
 ### 打包可执行文件
 
-`scripts/build-exe.ps1` 使用 PyInstaller 生成单文件控制台，
-配置在 `scripts/spiritscout.spec`。构建使用 Python 3.11–3.14；有 uv 时脚本自动获取
+`packaging/windows/build-backend-console.ps1` 使用 PyInstaller 生成 Windows 后端控制台，
+配置在 `packaging/windows/backend-console.spec`。构建使用 Python 3.11–3.14；有 uv 时脚本自动获取
 指定版本并创建隔离的 `.venv-build`，没有 uv 时退回系统兼容 Python 与 pip。
 
 ```powershell
-.\scripts\build-exe.ps1                 # dist\SpiritScout.exe
-.\scripts\build-exe.ps1 -PythonVersion 3.12
+.\packaging\windows\build-backend-console.ps1                 # Windows 后端控制台
+.\packaging\windows\build-backend-console.ps1 -PythonVersion 3.12
 ```
 
 构建脚本最后会执行 `dist/... --version`。修改打包资源、依赖或启动路径后，至少运行一次

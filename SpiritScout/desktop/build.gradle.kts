@@ -9,7 +9,7 @@ plugins {
 }
 
 group = "com.spiritscout"
-val versionSource = project.file("../../src/spiritscout/__init__.py")
+val versionSource = project.file("../src/spiritscout/__init__.py")
 val appVersion = Regex("""__version__\s*=\s*"([^"]+)"""")
     .find(versionSource.readText())
     ?.groupValues
@@ -80,7 +80,7 @@ compose.desktop {
                 "jdk.unsupported"
             )
             windows {
-                iconFile.set(project.file("../../launcher/icon.ico"))
+                iconFile.set(project.file("../packaging/windows/icon.ico"))
                 menu = true
                 shortcut = true
                 dirChooser = true

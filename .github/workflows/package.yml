@@ -54,8 +54,8 @@ jobs:
         run: |
           set -euo pipefail
           python -m pip install --upgrade build
-          python -m build --outdir dist SpiritScout
-          ls -lh dist
+          python -m build --outdir dist/python SpiritScout
+          ls -lh dist/python
 
       - name: 打整仓 zip（附 EXPERIENCE.md）
         shell: bash
@@ -67,8 +67,9 @@ jobs:
           print(re.search(r'__version__\s*=\s*"([^"]+)"', text).group(1))
           PY
           )
-          prefix="spiritscout-$version/"
-          zip="dist/spiritscout-$version.zip"
+          prefix="SpiritScout-$version/"
+          mkdir -p dist/source
+          zip="dist/source/SpiritScout-$version-source.zip"
           git archive --format=zip --prefix="$prefix" -o "$zip" HEAD
           python - "$zip" "$prefix" <<'PY'
           import sys, zipfile
@@ -88,7 +89,7 @@ jobs:
         run: |
           set -euo pipefail
           python -m venv smoke
-          ./smoke/bin/python -m pip install --quiet --no-deps dist/*.whl
+          ./smoke/bin/python -m pip install --quiet --no-deps dist/python/*.whl
           ./smoke/bin/python - <<'PY'
           import pathlib, spiritscout
           root = pathlib.Path(spiritscout.__file__).parent
@@ -103,8 +104,10 @@ jobs:
       - name: 交出源码包
         uses: actions/upload-artifact@v4
         with:
-          name: source-dist
-          path: dist/*
+          name: python-source
+          path: |
+            dist/python/*
+            dist/source/*
           if-no-files-found: error
 
   native-desktop:
@@ -131,22 +134,22 @@ jobs:
       - name: 取 wheel
         uses: actions/download-artifact@v4
         with:
-          name: source-dist
+          name: python-source
           path: downloaded
 
       - name: 编译原生桌面包
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force dist | Out-Null
+          New-Item -ItemType Directory -Force dist\python | Out-Null
           $wheel = Get-ChildItem downloaded -Recurse -Filter 'spiritscout-*.whl' | Select-Object -First 1
           if (-not $wheel) { throw '没有找到 wheel 产物' }
-          Copy-Item $wheel.FullName dist -Force
-          ./SpiritScout/launcher/build-native.ps1 -OutputDir dist-native
+          Copy-Item $wheel.FullName dist\python -Force
+          ./SpiritScout/packaging/windows/build-desktop.ps1 -OutputDir dist\windows\desktop
 
       - name: 核对产物
         shell: pwsh
         run: |
-          $zip = Get-ChildItem dist-native -Filter 'spiritscout-*-native-win64.zip' | Select-Object -First 1
+          $zip = Get-ChildItem dist\windows\desktop -Filter 'SpiritScout-*-windows-x64.zip' | Select-Object -First 1
           if (-not $zip) { throw '没有生成原生桌面包' }
           if ($zip.Length -lt 50MB) { throw "原生桌面包只有 $([math]::Round($zip.Length/1MB)) MB，像是编残了" }
           Write-Host "产物：$($zip.FullName)（$([math]::Round($zip.Length/1MB)) MB）"
@@ -154,8 +157,8 @@ jobs:
       - name: 交出原生桌面包
         uses: actions/upload-artifact@v4
         with:
-          name: native-desktop
-          path: dist-native/*.zip
+          name: windows-desktop
+          path: dist/windows/desktop/*.zip
           if-no-files-found: error
 
   release:

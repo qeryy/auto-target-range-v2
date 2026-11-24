@@ -11,11 +11,11 @@
             configs\  editable configuration copied from the repository templates
 
     It intentionally does not create a desktop executable. The Compose desktop
-    application is packaged by build-native.ps1; this script is the Python layer
+    application is packaged by build-desktop.ps1; this script is the Python layer
     shared by local builds and release builds.
 
 .EXAMPLE
-    powershell -ExecutionPolicy Bypass -File SpiritScout\launcher\build-python-runtime.ps1
+    powershell -ExecutionPolicy Bypass -File SpiritScout\packaging\windows\build-backend-runtime.ps1
 
 .EXAMPLE
     ... -Wheel D:\artifacts\spiritscout-1.3.0-py3-none-any.whl -OutDir D:\runtime
@@ -49,13 +49,13 @@ function Test-ZipArchive([string]$Path) {
     }
 }
 
-$launcherDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-$repoRoot = Split-Path -Parent $launcherDir
+$packagingDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+$repoRoot = Split-Path -Parent (Split-Path -Parent $packagingDir)
 $workspaceRoot = Split-Path -Parent $repoRoot
 $versionFile = Join-Path $repoRoot 'src\spiritscout\__init__.py'
 
 if (-not (Test-Path -LiteralPath (Join-Path $repoRoot 'pyproject.toml'))) {
-    throw "Cannot find SpiritScout\pyproject.toml. Run this script from SpiritScout\launcher."
+    throw "Cannot find SpiritScout\pyproject.toml. Run this script from SpiritScout\packaging\windows."
 }
 
 $version = (Select-String -Path $versionFile -Pattern '__version__\s*=\s*"([^"]+)"').Matches[0].Groups[1].Value
@@ -64,13 +64,13 @@ if (-not $version) {
 }
 
 if (-not $OutDir) {
-    $OutDir = Join-Path $repoRoot 'build\python-runtime'
+    $OutDir = Join-Path $repoRoot 'build\backend-runtime'
 }
 $OutDir = [System.IO.Path]::GetFullPath($OutDir)
 
 if (-not $Wheel) {
     $candidates = @()
-    foreach ($dir in @((Join-Path $workspaceRoot 'dist'), (Join-Path $repoRoot 'dist'))) {
+    foreach ($dir in @((Join-Path $workspaceRoot 'dist\python'), (Join-Path $workspaceRoot 'dist'))) {
         if (Test-Path -LiteralPath $dir) {
             $candidates += @(Get-ChildItem -LiteralPath $dir -File -Filter 'spiritscout-*.whl' -ErrorAction SilentlyContinue)
         }
@@ -83,7 +83,7 @@ if (-not $Wheel) {
 }
 $Wheel = (Resolve-Path -LiteralPath $Wheel).Path
 
-$pyCache = Join-Path $launcherDir '.cache\python'
+$pyCache = Join-Path $repoRoot 'build\download-cache\python'
 New-Item -ItemType Directory -Force -Path $pyCache | Out-Null
 New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
 

@@ -248,10 +248,18 @@ def binary_asset(
         if platform.startswith("linux")
         else "macos"
     )
-    # 发布约定：平台和架构必须明确，不能猜测一个没有架构信息的二进制。
-    expected = f"spiritscout-{system}-{arch}" + (".exe" if platform == "win32" else "")
+    # Windows 发布使用带版本和后端标记的文件名；Linux 仅保留旧命名的兼容读取。
+    tag = str(release.get("tag_name", "")).strip().lstrip("v")
+    if platform == "win32":
+        windows_arch = "x64" if arch == "x86_64" else arch
+        candidates = {
+            f"spiritscout-{tag}-windows-{windows_arch}-backend.exe",
+            f"spiritscout-windows-{arch}.exe",
+        }
+    else:
+        candidates = {f"spiritscout-{system}-{arch}"}
     assets = release.get("assets", [])
-    matches = [a for a in assets if a.get("name", "").lower() == expected]
+    matches = [a for a in assets if a.get("name", "").lower() in candidates]
     if len(matches) != 1 or not str(matches[0].get("digest", "")).startswith("sha256:"):
         return None
     value = matches[0]

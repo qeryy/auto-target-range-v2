@@ -88,7 +88,7 @@ jobs:
             core.setOutput('release', 'true');
 
   windows:
-    name: Windows x86_64
+    name: Windows x64
     needs: prepare
     if: needs.prepare.outputs.release == 'true'
     runs-on: windows-latest
@@ -106,13 +106,15 @@ jobs:
           enable-cache: true
       - name: Build executable
         shell: pwsh
-        run: ./scripts/build-exe.ps1
+        run: ./SpiritScout/packaging/windows/build-backend-console.ps1 -OutputDir dist/windows/backend-console
       - name: Verify first startup
         shell: pwsh
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
         run: |
           $env:SPIRITSCOUT_DATA_HOME = Join-Path $env:RUNNER_TEMP 'spiritscout-smoke'
           New-Item -ItemType Directory -Force $env:SPIRITSCOUT_DATA_HOME | Out-Null
-          $app = Start-Process -FilePath (Resolve-Path dist/SpiritScout.exe) -ArgumentList '--host','127.0.0.1','--port','18001' -PassThru
+          $app = Start-Process -FilePath (Resolve-Path "dist/windows/backend-console/SpiritScout-$env:VERSION-windows-x64-backend.exe") -ArgumentList '--host','127.0.0.1','--port','18001' -PassThru
           try {
             $ready = $false
             for ($i = 0; $i -lt 60; $i++) {
@@ -132,17 +134,17 @@ jobs:
         env:
           VERSION: ${{ needs.prepare.outputs.version }}
         run: |
-          $archive = "dist/SpiritScout-v$env:VERSION-windows-x86_64.zip"
-          Compress-Archive -Path dist/SpiritScout.exe,LICENSE -DestinationPath $archive
+          $archive = "dist/windows/backend-console/SpiritScout-v$env:VERSION-windows-x64-backend.zip"
+          Compress-Archive -Path "dist/windows/backend-console/SpiritScout-$env:VERSION-windows-x64-backend.exe",LICENSE -DestinationPath $archive
           $name = Split-Path $archive -Leaf
           $hash = (Get-FileHash $archive -Algorithm SHA256).Hash.ToLower()
-          "$hash  $name" | Set-Content dist/SHA256SUMS-windows-x86_64 -Encoding ascii
+          "$hash  $name" | Set-Content dist/windows/backend-console/SHA256SUMS-windows-x64 -Encoding ascii
       - uses: actions/upload-artifact@v4
         with:
-          name: spiritscout-release-windows-x86_64
+          name: spiritscout-release-windows-x64
           path: |
-            dist/SpiritScout-v${{ needs.prepare.outputs.version }}-windows-x86_64.zip
-            dist/SHA256SUMS-windows-x86_64
+            dist/windows/backend-console/SpiritScout-v${{ needs.prepare.outputs.version }}-windows-x64-backend.zip
+            dist/windows/backend-console/SHA256SUMS-windows-x64
           if-no-files-found: error
           retention-days: 1
 

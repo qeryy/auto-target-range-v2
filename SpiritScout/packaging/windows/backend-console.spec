@@ -1,13 +1,12 @@
 # -*- mode: python ; coding: utf-8 -*-
 """PyInstaller 单文件打包：内置前端、知识数据、报告模板与首启配置模板。
 
-源码运行时不使用本文件；Windows 构建入口见 scripts/build-exe.ps1。
+源码运行时不使用本文件；Windows 构建入口见 packaging/windows/build-backend-console.ps1。
 运行期只读资源随包解压，配置与工作区由
 spiritscout.__main__ 在可执行文件旁生成。
 """
 
 import os
-import sys
 import tempfile
 from pathlib import Path
 
@@ -16,7 +15,7 @@ from PyInstaller.utils.hooks import collect_all, collect_submodules, copy_metada
 # 收集 LiteLLM 子模块时会导入包；强制使用内置价格表，避免构建期访问 GitHub。
 os.environ.setdefault("LITELLM_LOCAL_MODEL_COST_MAP", "True")
 
-ROOT = Path(SPECPATH).resolve().parent
+ROOT = Path(SPECPATH).resolve().parents[2]
 PKG = ROOT / "src" / "spiritscout"
 
 # 运行期按 __file__ 相对路径读取的资产，缺一不可。
@@ -66,7 +65,7 @@ for package in ("litellm", "mcp", "fastapi", "uvicorn", "pydantic", "tiktoken", 
     datas += copy_metadata(package)
 
 a = Analysis(
-    [str(ROOT / "scripts" / "pyinstaller_entry.py")],
+    [str(ROOT / "packaging" / "windows" / "backend-console-entry.py")],
     pathex=[str(ROOT / "src")],
     binaries=binaries,
     datas=datas,
@@ -84,7 +83,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name="SpiritScout" if sys.platform == "win32" else "spiritscout",
+    name="SpiritScout",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

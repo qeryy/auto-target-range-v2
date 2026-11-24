@@ -5,14 +5,15 @@ recursive-include scripts *.py
 global-exclude *.pyc *.pyo
 # 原生桌面端：Kotlin Compose 源码、图标与 Windows 打包脚本进 sdist。
 # 编好的 app-image / zip 作为 release 附件单独发，不塞进 Python 包。
-graft desktop/SpiritScoutCompose
-prune desktop/SpiritScoutCompose/build
-prune desktop/SpiritScoutCompose/.gradle
+graft desktop
+prune desktop/build
+prune desktop/.gradle
+prune desktop/.kotlin
+prune desktop/SpiritScoutCompose
 include desktop/THIRD_PARTY_NOTICES.md
 include desktop/THIRD_PARTY/SaltUI-LICENSE.txt
-include launcher/build-native.ps1 launcher/build-python-runtime.ps1
-include launcher/icon.ico launcher/make-icon.py
-prune launcher/.cache
+graft packaging/windows
+prune packaging/windows/.cache
 # 源码分发包的补充清单。
 # setuptools 默认只收测试目录里的 *.py，前端那套 node 测试（tests/test_*.js）
 # 一直没进 sdist——从源码包构建的人因此跑不了 AGENTS 要求的 `node tests/test_*.js`。

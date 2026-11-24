@@ -154,6 +154,20 @@ class SourceTests(unittest.TestCase):
             )
         )
 
+    def test_windows_backend_asset_uses_versioned_name(self):
+        asset = {
+            "name": "SpiritScout-9.0.0-windows-x64-backend.exe",
+            "digest": "sha256:" + "a" * 64,
+            "browser_download_url": (
+                "https://github.com/FLIAZ/SpiritScout/releases/download/"
+                "v9.0.0/SpiritScout-9.0.0-windows-x64-backend.exe"
+            ),
+        }
+        release = {"tag_name": "v9.0.0", "assets": [asset]}
+        self.assertEqual(
+            source.binary_asset(release, "win32", "AMD64"), asset
+        )
+
     def test_bootstrap_rejects_outside_runtime_and_does_not_redirect_twice(self):
         state = self.root / ".spiritscout-updates"
         with patch.dict(os.environ, {"SPIRITSCOUT_UPDATE_STATE": str(state)}):

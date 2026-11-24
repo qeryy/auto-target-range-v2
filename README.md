@@ -2,12 +2,12 @@
 
 > ## 原生桌面端
 >
-> `SpiritScout/desktop/SpiritScoutCompose` 是当前唯一的桌面实现：Kotlin Compose
+> `SpiritScout/desktop` 是当前唯一的桌面实现：Kotlin Compose
 > Desktop + SaltUI，直接运行后端进程，不使用 WebView2，也不把浏览器标签页当成
 > 产品界面。旧的 `DesktopApp/`、WebView2 壳和单文件兼容流程已移除。
 >
-> 当前源码版本为 `1.3.0`。打包产物放在 `dist-native/`、`dist-portable/` 和
-> `dist/`，这些目录不进入 Git，发布时作为 Release 附件上传。
+> 当前源码版本为 `1.3.0`。打包产物按用途放在 `dist/windows/desktop/`、
+> `dist/windows/backend/` 和 `dist/python/`，这些目录不进入 Git。
 
 > 上游项目：**[FLIAZ/SpiritScout](https://github.com/FLIAZ/SpiritScout)**（灵枢，多智能体渗透/CTF 系统）。
 > 本仓库是它的工作区级超集：上游源码 + 本机免 Docker 启动器 + 便携包构建脚本 + 运行期经验沉淀导出。
@@ -21,10 +21,9 @@
 `start-local.ps1` | 本机启动器（不走 Docker）：环境与依赖自检（缺运行依赖自动 `pip install`，缺 venv/pip/解释器版本只给命令不动手）→ 导出执行后端与模型 key 环境变量 → 前台起 Web 控制台。首次启动会先让你设管理员密码（输两遍、不回显，只存 scrypt 哈希进 `admin.db`）。`-NoInstall` 只报告不装；装依赖默认走**清华 PyPI 镜像**，`-PipIndex official` 换官方源
 `启动服务.cmd` | 双击入口，包一层 `start-local.ps1 -Port 8010`
 `experience-export/` | 运行期经验沉淀的**脱敏快照**（`experience-insights.json`，条数见文件里的 `total`）：`export_experience.py` 从 `SpiritScout/.spiritscout/experience.db` 导出，pre-commit 钩子保证每次提交都把它一起带上。装钩子：`python experience-export/install_hook.py`。细节见该目录 README
-`SpiritScout/desktop/SpiritScoutCompose/` | Kotlin Compose + SaltUI 原生桌面端源码
-`SpiritScout/launcher/build-native.ps1` | 生成内嵌 JRE、Python 运行时和原生桌面 zip 的主打包入口
-`SpiritScout/launcher/build-python-runtime.ps1` | 单独构建 Python embeddable 运行时，供原生打包和排障复用
-`dist/`、`dist-native/`、`dist-portable/` | 本地/Release 产物，保留在工作区但不提交
+`SpiritScout/desktop/` | Kotlin Compose + SaltUI 原生桌面端源码
+`SpiritScout/packaging/windows/` | 所有 Windows 桌面、后端运行时和后端控制台打包入口
+`dist/windows/desktop/`、`dist/windows/backend/`、`dist/python/` | 分区后的本地/Release 产物，不提交
 [`PUSH-POLICY.md`](PUSH-POLICY.md) | **什么进仓库、什么只留本机**：源码/测试/文档/配置模板推，运行数据/密钥/构建产物/本机私用脚本不推。含推送前三十秒自检清单
 
 ## 三十秒跑起来
@@ -148,7 +147,7 @@ lms server start; lms load qwen3.5-9b --context-length 16384 --parallel 1
 
 ## 原生桌面端：当前唯一桌面实现
 
-`SpiritScout/desktop/SpiritScoutCompose/` 使用 Kotlin Compose Desktop + SaltUI 3.0.0，
+`SpiritScout/desktop/` 使用 Kotlin Compose Desktop + SaltUI 3.0.0，
 直接在原生窗口里完成导航、任务、资产、编队、模型、Skill、MCP、代理、流量和设置等操作。
 它启动一个随机回环端口的 Python 后端，关闭窗口时结束整棵进程树；不使用 WebView2，
 也不会跳到外部浏览器完成主流程。
@@ -157,16 +156,16 @@ lms server start; lms load qwen3.5-9b --context-length 16384 --parallel 1
 
 ```powershell
 $env:JAVA_HOME = 'C:\Program Files\Microsoft\jdk-21.0.12.101-hotspot'
-.\SpiritScout\desktop\SpiritScoutCompose\gradlew.bat -p .\SpiritScout\desktop\SpiritScoutCompose run
+.\SpiritScout\desktop\gradlew.bat -p .\SpiritScout\desktop run
 ```
 
 生成可分发的完整桌面包：
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File SpiritScout\launcher\build-native.ps1
+powershell -ExecutionPolicy Bypass -File SpiritScout\packaging\windows\build-desktop.ps1
 ```
 
-产物在 `dist-native\spiritscout-<版本>-native-win64.zip`。包内已带精简 JRE、Python
+产物在 `dist\windows\desktop\SpiritScout-<版本>-windows-x64.zip`。包内已带精简 JRE、Python
 embeddable 运行时、依赖和配置模板；目标机器不需要安装 Python、Java 或 WebView2。
 Windows SmartScreen 对未签名程序仍可能显示“发布者未知”，这需要 Authenticode 证书，
 不是换 UI 框架能解决的问题。
@@ -198,17 +197,17 @@ Release 上按需取：
 
 | 附件 | 给谁用 |
 | --- | --- |
-| `spiritscout-<版本>-native-win64.zip` | **Windows 原生桌面版**：SaltUI/Compose 窗口，内嵌 JRE 与 Python 运行时，目标机不需要额外环境 |
-| `spiritscout-<版本>-portable-win64.zip` | 兼容性命令行/Web 便携运行时包，保留给需要直接运行后端的场景 |
+| `SpiritScout-<版本>-windows-x64.zip` | **Windows 原生桌面完整版**：SaltUI/Compose 窗口，内嵌 JRE 与 Python 运行时 |
+| `SpiritScout-<版本>-windows-x64-backend.zip` | 兼容性后端运行时包，仅用于不能启用原生桌面的场景 |
 | `spiritscout-<版本>-py3-none-any.whl` | `pip install` 用。带 CTF 工具箱要写成 `pip install "spiritscout[toolkit] @ file:///…whl"`——写成 `xxx.whl[toolkit]` 会被 pip **静默丢弃 extras**，一个工具箱依赖都不装还不报错 |
 | `spiritscout-<版本>.tar.gz` | sdist：源码 + `scripts/` + `skills/` 文本素材 + 配置模板 |
-| `spiritscout-<版本>.zip` | 整仓源码，解开就能跑 |
+| `SpiritScout-<版本>-source.zip` | 整仓源码，解开就能看/构建 |
 | `SHA256SUMS` | 上面几个的校验和 |
 
-**原生桌面包怎么来的**：`python -m build --outdir dist SpiritScout` 出 wheel，
-`build-native.ps1` 再调用 `build-python-runtime.ps1` 生成 `py\` 与 `configs\`，
+**原生桌面包怎么来的**：`python -m build --outdir dist\python SpiritScout` 出 wheel，
+`build-desktop.ps1` 再调用 `build-backend-runtime.ps1` 生成 `py\` 与 `configs\`，
 用 Gradle staging 和 JDK 21 `jpackage` 生成 `SpiritScout.exe`，最后压成
-`dist-native\spiritscout-<版本>-native-win64.zip`。细节见
+`dist\windows\desktop\SpiritScout-<版本>-windows-x64.zip`。细节见
 [`SpiritScout/docs/原生桌面端.md`](SpiritScout/docs/原生桌面端.md)。
 
 直接运行后端时用 `python -m spiritscout --port 8010`；`--config` 与模型注册表按当前工作目录

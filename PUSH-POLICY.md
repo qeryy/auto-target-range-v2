@@ -21,7 +21,7 @@
 | 文档 | `README.md`、`README_EN.md`、`SpiritScout/docs/**`、`CHANGELOG.md` | 含实测经验与能力边界 |
 | 配置**模板** | `configs/models.example.yaml`、`models.mock.yaml`、`system.example.yaml` | 带注释的最小可用模板 |
 | 配置**本体** | `configs/system.yaml`、`configs/skills.yaml` | 已脱敏且跑通过，clone 下来直接能起 |
-| 启动器与打包 | `start-local.ps1`、`启动服务.cmd`、`SpiritScout/launcher/build-native.ps1`、`build-python-runtime.ps1` | 别人复现的入口 |
+| 启动器与打包 | `start-local.ps1`、`启动服务.cmd`、`SpiritScout/packaging/windows/build-desktop.ps1`、`build-backend-runtime.ps1` | 别人复现的入口 |
 | 知识库种子 | `src/spiritscout/knowledge/data/security_skills.json` | 内置技能，属于产品内容 |
 | 经验导出快照 | `experience-export/experience-insights.json` | 脱敏后的结论文本 |
 | CI | `.github/workflows/**` | |
@@ -36,7 +36,7 @@
 | **本机模型清单** | `configs/models.yaml`、`configs/agent_models.yaml`、`configs/*.bak-*` | 含真实端点地址、密钥引用、模型选择；仓库只留 `.example` / `.mock` |
 | **运行期状态** | `.spiritscout/`（会话、审计、经验库、用量、vault） | 私有数据；膨胀后单库到过 16 GB |
 | **虚拟环境与工具** | `.venv/`、`.tools/` | 977 MB + 79 MB，用 `pyproject.toml` 重建即可 |
-| **构建产物** | `dist/`、`dist-native/`、`dist-portable/`、`SpiritScout/desktop/SpiritScoutCompose/build/`、`.gradle/`、`*.exe` | 上百 MB，走 GitHub Release 分发 |
+| **构建产物** | `dist/windows/`、`dist/python/`、`SpiritScout/build/`、`SpiritScout/desktop/build/`、`.gradle/`、`*.exe` | 上百 MB，走 GitHub Release 分发 |
 | **缓存** | `__pycache__/`、`*.py[cod]`、`.pytest_cache/`、`.ruff_cache/`、`.mypy_cache/` | 纯噪音 |
 | **测试临时目录** | `SpiritScout/tmp*/`、`spiritscout-tests-*/`、`pip-*/`、`.stale-*/` | Windows 上 `TemporaryDirectory` 清理常失败，一轮能留上千个 |
 | **日志** | `*.log`、`runsrv.log`、`debug.log` | |

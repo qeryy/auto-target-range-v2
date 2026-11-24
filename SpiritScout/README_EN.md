@@ -175,15 +175,15 @@ Open <http://127.0.0.1:8000>, stop with `Ctrl+C`. Change the port with `./launch
 
 **Windows native desktop build**
 
-The desktop client is `desktop/SpiritScoutCompose/`, built with Kotlin Compose Desktop
+The desktop client is `desktop/`, built with Kotlin Compose Desktop
 and SaltUI 3.0.0. It runs in a native Skia window and starts the Python backend on a
 random loopback port. It does not use WebView2 or an external browser tab.
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File SpiritScout\launcher\build-native.ps1
+powershell -ExecutionPolicy Bypass -File SpiritScout\packaging\windows\build-desktop.ps1
 ```
 
-The build produces `dist-native\spiritscout-<version>-native-win64.zip`, with a trimmed
+The build produces `dist\windows\desktop\SpiritScout-<version>-windows-x64.zip`, with a trimmed
 JRE, embedded Python runtime and configuration templates. The target machine needs no
 Python, Java or WebView2 installation. Closing the window terminates the Python process
 tree. SmartScreen may still show “unknown publisher” until the executable is signed with
@@ -221,11 +221,11 @@ Build the wheel first, then let the native packager create the embedded Python r
 Compose app image and zip:
 
 ```powershell
-python -m build --outdir dist SpiritScout
-powershell -ExecutionPolicy Bypass -File SpiritScout\launcher\build-native.ps1
+python -m build --outdir dist\python SpiritScout
+powershell -ExecutionPolicy Bypass -File SpiritScout\packaging\windows\build-desktop.ps1
 ```
 
-The result is `dist-native\spiritscout-<version>-native-win64.zip`. Unzip it and run
+The result is `dist\windows\desktop\SpiritScout-<version>-windows-x64.zip`. Unzip it and run
 `SpiritScout.exe`. The old single-file trailer and `desktop.json` compatibility path are
 no longer maintained.
 
@@ -248,9 +248,9 @@ Prefer a ready-made package over a source checkout? All three artifacts carry th
 | --- | --- |
 | `spiritscout-1.3.0-py3-none-any.whl` | installable console, bundled skills and experience digest |
 | `spiritscout-1.3.0.tar.gz` | source distribution with skill text, config templates and experience |
-| `spiritscout-1.3.0.zip` | full repository source |
-| `spiritscout-1.3.0-native-win64.zip` | native Windows desktop client with embedded JRE and Python |
-| `spiritscout-1.3.0-portable-win64.zip` | Python/Web backend portable runtime for compatibility use |
+| `SpiritScout-1.3.0-source.zip` | full repository source |
+| `SpiritScout-1.3.0-windows-x64.zip` | native Windows desktop client with embedded JRE and Python |
+| `SpiritScout-1.3.0-windows-x64-backend.zip` | Python/Web backend portable runtime for compatibility use |
 | `SHA256SUMS` | checksums for the release files above |
 
 ```bash
