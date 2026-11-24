@@ -6,7 +6,6 @@ import unittest
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
-
 ROOT = Path(__file__).resolve().parents[1]
 LINK = re.compile(r"!?\[[^\]]*\]\(([^)]+)\)")
 EXTERNAL_SCHEMES = {"http", "https", "mailto", "data", "codex"}
