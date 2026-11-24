@@ -6,7 +6,6 @@ import json
 import sqlite3
 import tempfile
 import unittest
-from contextlib import closing
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
@@ -15,7 +14,7 @@ import httpx
 
 from spiritscout.agents.recon.agent import ReconAgent
 from spiritscout.config.settings import SearchConfig
-from spiritscout.core.models import AgentType
+from spiritscout.core.models import AgentType, RunMode
 from spiritscout.tools.registry import ToolRegistry
 from spiritscout.tools.web_search import (
     SEARCH_SCHEMA,
@@ -27,7 +26,7 @@ from spiritscout.tools.web_search import (
 
 class SearchTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
-        self.tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        self.tmp = tempfile.TemporaryDirectory()
         self.path = Path(self.tmp.name) / 'search.sqlite3'
         self.calls: list[dict] = []
         self.status = 200
@@ -62,9 +61,8 @@ class SearchTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_expired_and_explicit_refresh_fetch_again(self) -> None:
         await self.service.search(paid=True, blocker="模拟明确阻塞，现有与免费资料不足",query='q', reason='查证')
-        with closing(sqlite3.connect(self.path)) as db:
+        with sqlite3.connect(self.path) as db:
             db.execute('UPDATE search_cache SET created=0')
-            db.commit()
         expired = await self.service.search(paid=True, blocker="模拟明确阻塞，现有与免费资料不足",query='q', reason='查证')
         self.assertFalse(expired.parsed['search_cache_hit'])
         fresh = await self.service.search(paid=True, blocker="模拟明确阻塞，现有与免费资料不足",query='q', reason='公告已更新', refresh=True)
@@ -105,15 +103,25 @@ class SearchTests(unittest.IsolatedAsyncioTestCase):
         registry = ToolRegistry(SimpleNamespace(), max_retries=5)
         registry.register_builtin('web_search', web_search, SEARCH_SPEC)
         self.status = 429
-        result = await registry.call('web_search', {'query': 'q', 'reason': '查证', 'paid': True, 'blocker': '模拟明确阻塞，免费资料不足'}, search=self.service)
+        result = await registry.call('web_search', {'query': 'q', 'reason': '查证', 'paid': True, 'blocker': '模拟明确阻塞，免费资料不足'}, _search=self.service)
         self.assertFalse(result.ok)
         self.assertEqual(result.attempts, 1)
         self.assertEqual(len(self.calls), 1)
         self.status = 200
-        result = await registry.call('web_search', {'query': 'q', 'reason': '查证', 'paid': True, 'blocker': '模拟明确阻塞，免费资料不足'}, search=self.service)
+        result = await registry.call('web_search', {'query': 'q', 'reason': '查证', 'paid': True, 'blocker': '模拟明确阻塞，免费资料不足'}, _search=self.service)
         self.assertTrue(result.ok)
         self.assertFalse(result.parsed['search_cache_hit'])
         self.assertEqual(len(self.calls), 2)
+
+    async def test_ambient_run_mode_still_gates_competition_search(self) -> None:
+        # 环境键改保留名后，智能体模式的搜索禁令依旧经 registry 分发生效
+        registry = ToolRegistry(SimpleNamespace(), max_retries=0)
+        registry.register_builtin('web_search', web_search, SEARCH_SPEC)
+        result = await registry.call('web_search', {'query': 'q', 'reason': '查证'},
+                                     _search=self.service, _run_mode=RunMode.COMPETITION)
+        self.assertFalse(result.ok)
+        self.assertIn('智能体模式禁止', result.error)
+        self.assertEqual(self.calls, [])
 
     async def test_parameter_errors_do_not_send_network_requests(self) -> None:
         for change in ({'query': ''}, {'num_results': True}, {'refresh': 'false'},
@@ -128,7 +136,7 @@ class SearchTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(result.ok)
         self.assertIn('未启用', result.error)
         self.service.api_key = ''
-        result = await web_search(query='q', reason='查证', paid=True, blocker='模拟明确阻塞', search=self.service)
+        result = await web_search(query='q', reason='查证', paid=True, blocker='模拟明确阻塞', _search=self.service)
         self.assertFalse(result.ok)
         self.assertIn('密钥', result.error)
         self.assertEqual(self.calls, [])
@@ -158,7 +166,7 @@ class SearchTests(unittest.IsolatedAsyncioTestCase):
         registry = ToolRegistry(SimpleNamespace())
         registry.register_builtin('web_search', web_search, SEARCH_SPEC)
         agent.ctx = SimpleNamespace(audit=Mock(), ring=None, blackboard=None, gateway=gateway,
-                                    tools=registry, builtin_ctx={'search': self.service})
+                                    tools=registry, builtin_ctx={'_search': self.service})
         result = await agent._llm_chat_json('path_planner', {'issue': '版本差异'}, _allow_ask=False)
         self.assertEqual(result['rationale'], '已核对版本资料')
         self.assertEqual(len(self.calls), 1)
@@ -172,7 +180,7 @@ class SearchTests(unittest.IsolatedAsyncioTestCase):
 
 class FreeFirstSearchTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
-        self.tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        self.tmp = tempfile.TemporaryDirectory()
         self.service = SearchService(SearchConfig(enabled=True), Path(self.tmp.name) / 'cache.db', api_key='fixture')
         self.body = json.dumps({'provider': 'free-fixture', 'results': [{'title': '资料', 'url': 'https://docs.test'}]})
         self.service._fetch = AsyncMock(return_value=self.body.replace('free-fixture', 'paid-fixture'))
@@ -297,7 +305,7 @@ class SearchCleaningTests(unittest.TestCase):
         self.assertTrue(all(len(row['snippet']) <= 480 for row in parsed['results']))
 
     def test_old_paid_cache_is_cleaned_locally_without_new_request_or_changed_time(self) -> None:
-        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        with tempfile.TemporaryDirectory() as tmp:
             service = SearchService(SearchConfig(enabled=True), Path(tmp) / 'cache.db', api_key='fixture')
             original = {'schema': 'web-search-v1', 'provider': 'exa', 'query': 'q',
                         'fetched_at': '2026-10-22T00:00:00Z', 'results': [{

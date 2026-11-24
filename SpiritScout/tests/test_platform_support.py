@@ -17,11 +17,6 @@ from spiritscout.core.exceptions import ConfigurationError
 from spiritscout.platform_support import chrome_executable, node_cli_command
 from spiritscout.tools.run_lock import ExecutionRunLock
 
-try:                              # discover 把 tests/ 直接挂在 sys.path 上
-    from tests.process_budget import budget, reap_window
-except ImportError:               # 直接跑 `-m unittest test_platform_support` 时
-    from process_budget import budget, reap_window
-
 
 class PlatformLockTests(unittest.TestCase):
     def test_database_alias_lock_does_not_block_sqlite_or_grow_file(self):
@@ -131,12 +126,9 @@ class PlatformProcessTests(unittest.IsolatedAsyncioTestCase):
             marker = Path(temporary) / "unwanted descendant output.txt"
             child = "import time,sys; from pathlib import Path; time.sleep(2); Path(sys.argv[1]).write_text('leaked')"
             parent = "import subprocess,sys,time; subprocess.Popen([sys.executable,'-c',sys.argv[1],sys.argv[2]]); print('started',flush=True); time.sleep(60)"
-            # 0.7 秒是「超时该有多短」的意图，不是「启动该有多快」的预算：
-            # 机器被占满时裸启动就要好几秒，写死会把没启动完当成挂死。
-            spec = ToolSpec(name="timeout-fixture", kind=ToolKind.CLI,
-                            timeout_seconds=budget(0.7))
+            spec = ToolSpec(name="timeout-fixture", kind=ToolKind.CLI, timeout_seconds=0.7)
             result = await LocalExecutor().run_argv(spec, [sys.executable, "-c", parent, child, str(marker)])
             self.assertTrue(result.timed_out)
             self.assertIn("started", result.stdout)
-            await asyncio.sleep(reap_window(2.0))
+            await asyncio.sleep(2.1)
             self.assertFalse(marker.exists(), "工具超时后不能留下继续写入的后代进程")

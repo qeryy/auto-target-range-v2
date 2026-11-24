@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import json
+import os
 import sqlite3
+from datetime import date
 from pathlib import Path
 from typing import Any, Literal
 
@@ -17,15 +20,11 @@ from pydantic import (
     ValidationError,
 )
 
-from spiritscout.core.audit import AuditLogger
 from spiritscout.core.exceptions import SpiritScoutError
+from spiritscout.resources.archives import MAX_UPLOAD, parse_skill_archive
 from spiritscout.resources.assistant import ResourceAssistant, validate_skill
+from spiritscout.resources.catalog import mcp_catalog, skill_catalog
 from spiritscout.resources.store import ResourceStore, redact_credentials, validate_mcp
-
-
-class SkillExportPayload(BaseModel):
-    """导出载荷（目前无参数；留着方便以后加「只导出某类」）。"""
-    mode: str = ""
 
 
 class ResourceChange(BaseModel):
@@ -34,11 +33,36 @@ class ResourceChange(BaseModel):
     expected_version: int = Field(default=0, ge=0)
 
 
+class SkillFileChange(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    path: str = Field(min_length=1, max_length=1024)
+    content: str = Field(max_length=100_000)
+    expected_version: int = Field(ge=0)
+
+
 class ExaSettingsChange(BaseModel):
     model_config = ConfigDict(extra="forbid")
     api_key_value: SecretStr | None = None
     enabled: StrictBool = True
     clear_key: StrictBool = False
+    expected_version: int = Field(default=0, ge=0)
+
+
+class FofaSettingsChange(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    email: SecretStr | None = None
+    api_key_value: SecretStr | None = None
+    enabled: StrictBool = False
+    clear_credentials: StrictBool = False
+    expected_version: int = Field(default=0, ge=0)
+
+
+class AssetProviderSettingsChange(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    enabled: StrictBool = False
+    api_key_value: SecretStr | None = None
+    cookie_value: SecretStr | None = None
+    clear_credentials: StrictBool = False
     expected_version: int = Field(default=0, ge=0)
 
 
@@ -101,6 +125,78 @@ def mount_resources(
                 "allowed_modes": ["src", "ctf"], "competition_allowed": False,
                 "billing_policy": "free_first_paid_only_for_blockers"}
 
+    def fofa_settings_view() -> dict[str, Any]:
+        from spiritscout.web import vault
+
+        row = next((item for item in store.settings("asset_provider")
+                    if item["id"] == "fofa"), None)
+        saved = vault.get_key(cfg.asset_intelligence.fofa.vault_key_name)
+        try:
+            saved_data = json.loads(saved) if saved else {}
+        except (TypeError, ValueError):
+            saved_data = {}
+        environment = bool(os.environ.get(cfg.asset_intelligence.fofa.email_env, "").strip()
+                           and os.environ.get(cfg.asset_intelligence.fofa.api_key_env, "").strip())
+        stored = bool(saved_data.get("email") and saved_data.get("key"))
+        enabled = bool((row or {}).get("data", {}).get(
+            "enabled", cfg.asset_intelligence.fofa.enabled))
+        return {
+            "version": row["version"] if row else 0,
+            "enabled": enabled,
+            "key_configured": stored or environment,
+            "stored_credentials": stored,
+            "key_source": "saved" if stored else "environment" if environment else "none",
+            "provider": "fofa",
+            "candidate_policy": "external_candidates_require_scope_dns_http_verification",
+            "scope_policy": {
+                "explicit_targets": "closed_scope_no_domain_expansion",
+                "wildcard_targets": "subdomains_only_excludes_apex",
+                "organization_queries": "only_without_explicit_network_targets",
+                "ownership_rules": "candidate_evidence_requires_verification",
+            },
+        }
+
+    def api_provider_view(provider: str) -> dict[str, Any]:
+        from spiritscout.web import vault
+
+        config = getattr(cfg.asset_intelligence, provider)
+        row = store.setting("asset_provider", provider)
+        stored = vault.has_key(config.vault_key_name)
+        environment = bool(os.environ.get(config.api_key_env, "").strip())
+        enabled = bool((row or {}).get("data", {}).get("enabled", config.enabled))
+        return {
+            "provider": provider, "category": "cyberspace", "version": row["version"] if row else 0,
+            "enabled": enabled, "key_configured": stored or environment,
+            "stored_credentials": stored,
+            "key_source": "saved" if stored else "environment" if environment else "none",
+            "candidate_policy": "closed_scope_filter_then_dns_http_verification",
+            "scope_policy": fofa_settings_view()["scope_policy"],
+        }
+
+    def enterprise_provider_view(provider: str) -> dict[str, Any]:
+        from spiritscout.web import vault
+
+        config = getattr(cfg.asset_intelligence, provider)
+        row = store.setting("asset_provider", provider)
+        stored = vault.has_key(config.vault_key_name)
+        environment = bool(os.environ.get(config.cookie_env, "").strip())
+        return {
+            "provider": provider, "category": "enterprise",
+            "version": row["version"] if row else 0,
+            "enabled": bool((row or {}).get("data", {}).get("enabled", config.enabled)),
+            "key_configured": stored or environment,
+            "stored_credentials": stored,
+            "key_source": "saved" if stored else "environment" if environment else "none",
+            "capabilities": ["company_search", "ownership_evidence", "icp_domain_candidates"],
+            "candidate_policy": "organization_only_candidate_evidence_no_automatic_authorization",
+            "scope_policy": fofa_settings_view()["scope_policy"],
+        }
+
+    def asset_provider_views() -> list[dict[str, Any]]:
+        fofa = {**fofa_settings_view(), "category": "cyberspace"}
+        return [fofa, *(api_provider_view(name) for name in ("hunter", "quake", "zoomeye")),
+                *(enterprise_provider_view(name) for name in ("aiqicha", "qichacha"))]
+
     @app.get("/api/resources/search/exa")
     def exa_settings() -> dict[str, Any]:
         return exa_settings_view()
@@ -127,35 +223,150 @@ def mount_resources(
         except (ValueError, TypeError, SpiritScoutError) as exc:
             raise fail(exc) from exc
 
+    @app.get("/api/resources/assets/fofa")
+    def fofa_settings() -> dict[str, Any]:
+        return fofa_settings_view()
+
+    @app.put("/api/resources/assets/fofa")
+    async def save_fofa_settings(request: Request) -> dict[str, Any]:
+        import json
+
+        from spiritscout.web import vault
+
+        try:
+            payload = FofaSettingsChange.model_validate(await request.json())
+            email = payload.email.get_secret_value().strip() if payload.email else ""
+            key = (payload.api_key_value.get_secret_value().strip()
+                   if payload.api_key_value else "")
+            if any(ord(char) < 32 for char in email + key) or len(email) > 320 or len(key) > 4096:
+                raise ValueError("FOFA 凭据格式不正确")
+            if payload.clear_credentials and (email or key):
+                raise ValueError("清除凭据时不能同时填写新凭据")
+            if bool(email) != bool(key):
+                raise ValueError("FOFA 邮箱与 API Key 必须同时填写")
+            row = next((item for item in store.settings("asset_provider")
+                        if item["id"] == "fofa"), None)
+            data = dict(row["data"] if row else {})
+            data["enabled"] = payload.enabled
+            store.save("asset_provider", "fofa", data, payload.expected_version)
+            if payload.clear_credentials:
+                vault.drop_key(cfg.asset_intelligence.fofa.vault_key_name)
+            elif email and key:
+                vault.set_key(cfg.asset_intelligence.fofa.vault_key_name,
+                              json.dumps({"email": email, "key": key}, allow_nan=False))
+            cfg.asset_intelligence.fofa.enabled = payload.enabled
+            return fofa_settings_view()
+        except (ValueError, TypeError, SpiritScoutError) as exc:
+            raise fail(exc) from exc
+
+    @app.get("/api/resources/assets/providers")
+    def asset_providers() -> dict[str, Any]:
+        return {"providers": asset_provider_views()}
+
+    @app.get("/api/resources/assets/providers/{provider}")
+    def asset_provider(provider: str) -> dict[str, Any]:
+        if provider == "fofa":
+            return {**fofa_settings_view(), "category": "cyberspace"}
+        if provider in {"hunter", "quake", "zoomeye"}:
+            return api_provider_view(provider)
+        if provider in {"aiqicha", "qichacha"}:
+            return enterprise_provider_view(provider)
+        raise HTTPException(404, "资产情报 Provider 不存在")
+
+    @app.put("/api/resources/assets/providers/{provider}")
+    async def save_asset_provider(provider: str, request: Request) -> dict[str, Any]:
+        from spiritscout.web import vault
+
+        if provider not in {"hunter", "quake", "zoomeye", "aiqicha", "qichacha"}:
+            raise HTTPException(404, "资产情报 Provider 不存在")
+        try:
+            payload = AssetProviderSettingsChange.model_validate(await request.json())
+            api_key = (payload.api_key_value.get_secret_value().strip()
+                       if payload.api_key_value else "")
+            cookie = (payload.cookie_value.get_secret_value().strip()
+                      if payload.cookie_value else "")
+            if any(ord(char) < 32 and char not in "\t" for char in api_key + cookie):
+                raise ValueError("凭据包含无效控制字符")
+            if len(api_key) > 4096 or len(cookie) > 32768:
+                raise ValueError("凭据长度超出限制")
+            if payload.clear_credentials and (api_key or cookie):
+                raise ValueError("清除凭据时不能同时填写新凭据")
+            row = store.setting("asset_provider", provider)
+            data = dict(row["data"] if row else {})
+            data["enabled"] = payload.enabled
+            if provider in {"aiqicha", "qichacha"} and api_key:
+                raise ValueError("企业信息 Provider 使用 Cookie，不接受 API Key")
+            if provider in {"hunter", "quake", "zoomeye"} and cookie:
+                raise ValueError("空间测绘 Provider 使用 API Key，不接受 Cookie")
+            # 先完成版本化配置写入，再修改 Vault；旧页面的 stale 提交不能覆盖新凭据。
+            store.save("asset_provider", provider, data, payload.expected_version)
+            if provider in {"aiqicha", "qichacha"}:
+                config = getattr(cfg.asset_intelligence, provider)
+                if payload.clear_credentials:
+                    vault.drop_key(config.vault_key_name)
+                elif cookie:
+                    vault.set_key(config.vault_key_name, cookie)
+            else:
+                config = getattr(cfg.asset_intelligence, provider)
+                if payload.clear_credentials:
+                    vault.drop_key(config.vault_key_name)
+                elif api_key:
+                    vault.set_key(config.vault_key_name, api_key)
+            return (enterprise_provider_view(provider) if provider in {"aiqicha", "qichacha"}
+                    else api_provider_view(provider))
+        except (ValueError, TypeError, SpiritScoutError) as exc:
+            raise fail(exc) from exc
+
     @app.get("/api/resources/mcp")
-    def mcp_list() -> dict[str, Any]:
+    def mcp_list(
+        q: str = Query("", max_length=200), enabled: bool | None = None,
+        transport: Literal["", "stdio", "http", "sse"] = "",
+        source: Literal["", "config", "managed"] = "",
+        risk: Literal["", "readonly", "intrusive", "destructive"] = "",
+        agent: str = Query("", max_length=100),
+        added_from: date | None = None, added_to: date | None = None,
+        date_state: Literal["all", "known", "unknown"] = "all",
+        sort: Literal["added_desc", "added_asc", "name_asc", "updated_desc"] = "added_desc",
+        offset: int = Query(0, ge=0), limit: int = Query(40, ge=1, le=100),
+    ) -> dict[str, Any]:
         overrides = {row["id"]: row for row in store.settings("mcp")}
-        return {
-            "items": [
-                public_mcp(
-                    item,
-                    overrides.get(item.name, {}).get("version", 0),
-                    "managed" if item.name in overrides else "config",
-                )
-                for item in store.effective_mcp(cfg.mcp_servers)
-            ],
-            "activation": "新启动会话生效；不会热替换正在执行的 MCP 连接",
-        }
+        configured = {item.name for item in cfg.mcp_servers}
+        items = []
+        for item in store.effective_mcp(cfg.mcp_servers):
+            row = overrides.get(item.name, {})
+            items.append({**public_mcp(item, row.get("version", 0),
+                                      "managed" if row else "config"),
+                          "created_at": (None if item.name in configured else
+                                         row.get("data", {}).get("created_at")),
+                          "updated_at": row.get("updated_at")})
+        try:
+            result = mcp_catalog(items, q=q, enabled=enabled, transport=transport,
+                                 source=source, risk=risk, agent=agent, added_from=added_from,
+                                 added_to=added_to, date_state=date_state, sort=sort,
+                                 offset=offset, limit=limit)
+        except ValueError as exc:
+            raise fail(exc) from exc
+        return {**result, "activation": "新启动会话生效；不会热替换正在执行的 MCP 连接"}
 
-    @app.get("/api/resources/mcp/presets")
-    def mcp_presets() -> dict[str, Any]:
-        """本地 MCP 的接入模板。
+    @app.get("/api/resources/mcp/{name}/config")
+    def mcp_detail(name: str) -> dict[str, Any]:
+        config = next((item for item in store.effective_mcp(cfg.mcp_servers)
+                       if item.name == name), None)
+        if config is None:
+            raise HTTPException(404, "MCP 不存在或已删除")
+        row = next((item for item in store.settings("mcp") if item["id"] == name), {})
+        return public_mcp(config, row.get("version", 0), "managed" if row else "config")
 
-        「添加」时先选一个模板，command/args 直接填好——本地服务器都是 stdio
-        子进程，少一个 ``-y`` 或者漏了根目录参数，只有真正调工具时才报错。
-        ``available`` 表示本机有没有对应的 ``npx``/``uvx``，没有就别让人白填。
-        """
-        from spiritscout.web.mcp_presets import list_presets
-
-        return {
-            "items": list_presets(),
-            "note": "本地 MCP 走 stdio 子进程；密钥请填在「环境变量」字段，不进配置文件。",
-        }
+    @app.delete("/api/resources/mcp/{name}")
+    def mcp_delete(name: str, expected_version: int = Query(..., ge=0)) -> dict[str, Any]:
+        try:
+            store.delete_mcp(name, expected_version,
+                             configured=any(item.name == name for item in cfg.mcp_servers))
+            return {"id": name, "deleted": True}
+        except KeyError as exc:
+            raise HTTPException(404, "MCP 不存在或已删除") from exc
+        except SpiritScoutError as exc:
+            raise fail(exc) from exc
 
     @app.put("/api/resources/mcp/{name}")
     def mcp_save(name: str, payload: ResourceChange) -> dict[str, Any]:
@@ -184,104 +395,114 @@ def mount_resources(
     @app.get("/api/resources/skills")
     def skill_list(
         q: str = Query("", max_length=200),
+        enabled: bool | None = None,
+        domain: str = Query("", max_length=100),
+        tier: Literal["", "core", "domain", "reference"] = "",
+        source: Literal["", "builtin", "archive", "manual"] = "",
+        added_from: date | None = None,
+        added_to: date | None = None,
+        date_state: Literal["all", "known", "unknown"] = "all",
+        sort: Literal["relevance", "added_desc", "added_asc", "name_asc", "updated_desc"] = "relevance",
         offset: int = Query(0, ge=0),
         limit: int = Query(40, ge=1, le=100),
-        mode: str = Query("", max_length=20),
     ) -> dict[str, Any]:
-        """技能目录：可按任务大类（src / ctf / competition）筛选。
-
-        每条带 ``modes`` 字段，前端据此显示分类标签；``mode_counts`` 给筛选
-        按钮上的数字——三类各自能拿到多少条，一眼看得见。
-        """
-        from spiritscout.resources.skill_modes import (
-            MODE_LABELS,
-            filter_by_mode,
-            modes_for,
-            summary,
-        )
-
-        all_items = store.skills(q)
-        counts = summary(all_items)
-        picked = filter_by_mode(all_items, mode) if mode else all_items
-        all_total = len(filter_by_mode(all_items, ""))   # 未筛选的总数，固定不变
-        # 就地补 modes：条目来自资源库，不一定带 domain，modes_for 会按 id 前缀猜
-        page = []
-        for it in picked[offset : offset + limit]:
-            page.append({**it, "modes": modes_for(it)})
-        return {
-            "items": page,
-            "total": len(picked),
-            "has_more": offset + limit < len(picked),
-            "mode": mode,
-            "all_total": all_total,
-            "mode_counts": counts,
-            "mode_labels": MODE_LABELS,
-        }
-
-    @app.post("/api/resources/skills/sync")
-    def skill_sync_pull() -> dict[str, Any]:
-        """拉取：把仓库里的 ``configs/skills.yaml`` 同步进本地资源库。
-
-        只增改不删——清单里没有的条目留在库里，避免一次手滑就从页面消失。
-        """
-        from spiritscout.resources.skill_sync import sync_skills
-
-        path = Path(cfg.models_config_path).parent / "skills.yaml"
-        if not path.exists():
-            raise HTTPException(404, f"清单不存在：{path.name}")
         try:
-            stats = sync_skills(store, path)
-        except (OSError, ValueError, SpiritScoutError) as exc:
-            raise HTTPException(400, str(exc)) from exc
-        AuditLogger(cfg.audit_log_path).log("skills.sync", "user", stats)
-        return {"ok": True, **stats}
+            return skill_catalog(store.skills(), q=q, enabled=enabled, domain=domain, tier=tier,
+                                 source=source, added_from=added_from, added_to=added_to,
+                                 date_state=date_state, sort=sort, offset=offset, limit=limit)
+        except ValueError as exc:
+            raise fail(exc) from exc
 
-    @app.post("/api/resources/skills/export")
-    def skill_sync_push(payload: SkillExportPayload | None = None) -> dict[str, Any]:
-        """提交：把库里的自定义技能写回 ``configs/skills.yaml``。
+    @app.post("/api/resources/skills/import")
+    async def skill_import(request: Request) -> dict[str, Any]:
+        # 流式限制请求体，避免先把任意大的上传整体读入内存。
+        content = bytearray()
+        async for chunk in request.stream():
+            if len(content) + len(chunk) > MAX_UPLOAD:
+                raise HTTPException(413, "压缩包不得超过 20 MiB")
+            content.extend(chunk)
 
-        只写文件，不碰 git——服务端替用户提交有风险（可能在别人的分支、
-        可能带上未审的改动）。前端随后提示该跑哪条命令。
-        """
-        from spiritscout.resources.skill_sync import export_skills, write_skills
+        def import_archive() -> dict[str, Any]:
+            items, warnings = parse_skill_archive(bytes(content))
+            return {"items": store.import_skills(items), "warnings": warnings}
 
-        path = Path(cfg.models_config_path).parent / "skills.yaml"
         try:
-            items = export_skills(store)
-            # 按 skill_id 排序再写回：库里的顺序随写入时间变，排序后 yaml 的 diff
-            # 只反映真实增删，不会因为顺序抖动整篇变红。
-            items.sort(key=lambda x: str(x.get("skill_id") or ""))
-            write_skills(path, items)
-        except (OSError, ValueError, SpiritScoutError) as exc:
-            raise HTTPException(400, str(exc)) from exc
-        AuditLogger(cfg.audit_log_path).log("skills.export", "user",
-                                             {"total": len(items)})
-        return {"ok": True, "total": len(items),
-                "path": str(path), "hint": "git add configs/skills.yaml && git commit && git push"}
+            return await run_in_threadpool(import_archive)
+        except (ValueError, SpiritScoutError) as exc:
+            raise fail(exc) from exc
 
     @app.get("/api/resources/skills/{key}")
     def skill_detail(key: str) -> dict[str, Any]:
-        # 按主键精确取，不走检索：skills(key) 会把 key 切词打分，
-        # "custom-reference" 未必还排在里面
-        item = store.skill(key, include_body=True)
+        item = next(
+            (
+                row
+                for row in store.skills(key, include_body=True)
+                if row["skill_id"] == key
+            ),
+            None,
+        )
         if not item:
             raise HTTPException(404, "Skill 不存在")
-        return item
+        from spiritscout.resources.skill_search import metadata
+
+        return {**item, **metadata(item)}
 
     @app.put("/api/resources/skills/{key}")
     def skill_save(key: str, payload: ResourceChange) -> dict[str, Any]:
         try:
-            original = store.skill(key, include_body=True) or {}
+            original = next(
+                (
+                    row
+                    for row in store.skills(key, include_body=True)
+                    if row["skill_id"] == key
+                ),
+                {},
+            )
             data = {
                 k: v
                 for k, v in {**original, **payload.data, "skill_id": key}.items()
-                if k not in {"version", "origin"}
+                if k not in {"version", "origin", "created_at", "updated_at", "source_kind"}
             }
             validate_skill(data)
             version = store.save("skill", key, data, payload.expected_version)
             return {"version": version, "skill_id": key}
         except (ValueError, SpiritScoutError) as exc:
             raise fail(exc) from exc
+
+    @app.put("/api/resources/skills/{key}/file")
+    def skill_file_save(key: str, payload: SkillFileChange) -> dict[str, Any]:
+        original = skill_detail(key)
+        try:
+            if payload.expected_version != original["version"]:
+                raise SpiritScoutError("Skill 已被其他操作更新，请保留草稿并重新读取后再保存")
+            files = dict(original.get("files") or {"SKILL.md": original["body"]})
+            if payload.path not in files:
+                raise HTTPException(404, "文件不在该 Skill 的目录内")
+            files[payload.path] = payload.content
+            data = {k: v for k, v in original.items()
+                    if k not in {"version", "origin", "created_at", "updated_at", "source_kind"}}
+            data["files"] = files
+            validate_skill(data)
+            version = store.save("skill", key, data, payload.expected_version)
+            return {"skill_id": key, "path": payload.path, "version": version}
+        except (ValueError, SpiritScoutError) as exc:
+            raise fail(exc) from exc
+
+    @app.delete("/api/resources/skills/{key}")
+    def skill_delete(key: str, expected_version: int = Query(..., ge=0)) -> dict[str, Any]:
+        try:
+            store.delete_skill(key, expected_version)
+            return {"deleted": key}
+        except KeyError as exc:
+            raise HTTPException(404, "Skill 不存在") from exc
+        except SpiritScoutError as exc:
+            raise fail(exc) from exc
+
+    @app.get("/api/resources/vulnerability-taxonomy")
+    def vulnerability_taxonomy() -> dict[str, Any]:
+        from spiritscout.knowledge.vulnerability_taxonomy import catalog
+
+        return catalog()
 
     @app.get("/api/assets")
     def assets(
@@ -290,15 +511,20 @@ def mount_resources(
         project: str = Query("", max_length=64),
         unclassified: int = Query(0, ge=0, le=1),
         kind: str = Query("", max_length=16),
+        category: str = Query("", max_length=80),
         offset: int = Query(0, ge=0),
         limit: int = Query(40, ge=1, le=100),
     ) -> dict[str, Any]:
+        from spiritscout.knowledge.vulnerability_taxonomy import known_taxonomy_id
+
         if project and unclassified:
             raise HTTPException(422, "project 与 unclassified 互斥")
         if kind not in {"", "asset", "finding"}:
             raise HTTPException(422, "kind 只能是空、asset 或 finding")
+        if category and (kind != "finding" or not known_taxonomy_id(category)):
+            raise HTTPException(422, "漏洞分类仅用于查询发现，须为已知分类")
         return store.assets(q, offset, limit, host=host, project=project,
-                            unclassified=bool(unclassified), kind=kind)
+                            unclassified=bool(unclassified), kind=kind, category=category)
 
     @app.get("/api/assets/{key}/history")
     def asset_history(key: str, offset: int = Query(0, ge=0)) -> dict[str, Any]:

@@ -2,17 +2,98 @@
 
 from __future__ import annotations
 
+import json
+import tempfile
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 from spiritscout.agents.business.agent import BusinessContextAgent
+from spiritscout.blackboard import Blackboard, ConvergenceEngine
+from spiritscout.blackboard.hypotheses import summary as hypothesis_summary
 from spiritscout.core.audit import NullAuditLogger
-from spiritscout.core.models import AgentType, Task
+from spiritscout.core.exceptions import SpiritScoutError
+from spiritscout.core.models import AgentType, Asset, BlackboardLayer, Task, TaskStatus
 from spiritscout.tools.spec import ToolResult
 
 
 class BusinessToolTests(unittest.IsolatedAsyncioTestCase):
+    async def test_model_failure_after_tool_turn_does_not_complete_business_task(self):
+        from spiritscout.agents.sub.base import RoutePlan
+
+        self.agent.ctx.ring = None
+        self.agent.ctx.pause_gate = None
+        self.agent.ctx.blackboard = None
+        self.agent._world_state = lambda: {}
+        self.agent._system_prompt = lambda: "业务走访"
+        self.agent._explore_brief = lambda task: "核对状态转换"
+        self.agent._tool_schemas = lambda **kwargs: []
+        self.agent._run_tool_call = AsyncMock(return_value="已记录页面观察")
+        self.agent.health_mgr = Mock()
+        self.agent.cache = SimpleNamespace(stats=lambda: {})
+        self.agent._report = AsyncMock()
+        self.agent._live_report = AsyncMock()
+        self.agent.plan_routes = AsyncMock(return_value=[RoutePlan(
+            name="explore", strategy="", steps=[{"action": "explore"}])])
+        self.agent.ctx.gateway = SimpleNamespace(chat=AsyncMock(side_effect=[
+            SimpleNamespace(content="", tool_calls=[{
+                "id": "read", "name": "http_probe", "arguments": {}}]),
+            SpiritScoutError("Upstream dependency unavailable"),
+        ]))
+
+        summary = await self.agent._run_task(self.task)
+
+        self.assertEqual(self.task.status, TaskStatus.FAILED)
+        self.assertEqual(summary["status"], "failed")
+        self.assertEqual(summary["routes_done"], 0)
+        self.assertEqual(summary["routes_failed"], 1)
+        self.assertEqual(summary["handoff"]["blockers"][0]["type"], "model_unavailable")
+        self.assertEqual(self.agent.ctx.gateway.chat.await_count, 2)
+        self.agent._run_tool_call.assert_awaited_once()
+
+    async def test_exploration_streams_public_scene_with_semantics_on_existing_tool_turn(self):
+        from spiritscout.agents.sub.base import RoutePlan
+        from spiritscout.gateway.progress import (
+            EXPLORATION_PROGRESS_GUIDANCE,
+            FORMAT_GUIDANCE,
+        )
+
+        self.agent.ctx.ring = None
+        self.agent.ctx.blackboard = None
+        self.agent.ctx.audit = Mock()
+        self.agent._world_state = lambda: {}
+        self.agent._system_prompt = lambda: '业务走访夹具'
+        self.agent._explore_brief = lambda task: '核实用户给定站点的实际业务场景'
+        self.agent._tool_schemas = lambda **kwargs: []
+        self.agent._run_tool_call = AsyncMock(return_value='页面观察')
+        text = json.dumps({'progress': '当前仅有站点地址，先读取页面确认业务场景。',
+                          'exploration': {'intent': '理解实际业务', 'attempt': '读取页面', 'state': 'running'}},
+                          ensure_ascii=False)
+
+        async def chat(messages, **kwargs):
+            self.assertEqual(messages[-1]['content'], FORMAT_GUIDANCE)
+            self.assertIn(EXPLORATION_PROGRESS_GUIDANCE, [m.get('content') for m in messages])
+            kwargs['on_delta']('text', text)
+            return SimpleNamespace(content=text, tool_calls=[{'id': 'read', 'name': 'http_probe', 'arguments': {}}])
+
+        self.agent.ctx.gateway = SimpleNamespace(chat=AsyncMock(side_effect=chat))
+        route = SimpleNamespace(name='explore', route_id='business-route')
+        result = await self.agent._explore_turn(self.task, route, RoutePlan(name='explore', strategy='', steps=[]))
+        self.assertTrue(result.ok)
+        self.agent.ctx.gateway.chat.assert_awaited_once()
+        first = self.agent.ctx.gateway.chat.call_args.args[0]
+        await self.agent._explore_turn(self.task, route, RoutePlan(name='explore', strategy='', steps=[]))
+        second = self.agent.ctx.gateway.chat.call_args.args[0]
+        self.assertEqual(second[:len(first)], first)
+        self.assertEqual(self.agent.ctx.gateway.chat.await_count, 2)
+        events = [(c.args[0], c.args[2]) for c in self.agent.ctx.audit.log.call_args_list]
+        progress = next(d for kind, d in events if kind == 'agent.progress')
+        self.assertEqual(progress['exploration']['intent'], '理解实际业务')
+        self.assertTrue(progress['streamed'])
+        self.assertTrue(any(kind == 'agent.delta' and d['task_id'] == self.task.task_id
+                            and d['route_id'] == route.route_id for kind, d in events))
+
     def setUp(self) -> None:
         self.agent = object.__new__(BusinessContextAgent)
         self.agent.agent_id = "business-test"
@@ -41,10 +122,158 @@ class BusinessToolTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(nav["description"], "Navigate to a URL")
         self.assertEqual(schemas["mcp__playwright__browser_tabs"]["parameters"]["properties"]["action"]["enum"][0], "list")
 
+    def test_business_world_state_omits_dynamic_investigation_indexes(self) -> None:
+        self.agent.ctx.policy = SimpleNamespace(guard=None)
+        records = {
+            (BlackboardLayer.TARGET_AUTH, "user-context"): {
+                "mission": "只验证公开业务流程",
+            },
+            (BlackboardLayer.TOPOLOGY, "project-memory"): {
+                "description": "禁止触发真实支付",
+            },
+        }
+        self.agent.ctx.blackboard = SimpleNamespace(
+            read=lambda layer, key: records.get((layer, key)),
+            query=lambda layer, **kwargs: ([{"record_id": "a", "version": 1,
+                "updated_at": "now", "data": {"asset_type": "url", "value": "https://a.test"}}]
+                if layer == BlackboardLayer.ASSET else []),
+        )
+        state = self.agent._world_state()
+        self.assertEqual(state["user_context"]["mission"], "只验证公开业务流程")
+        self.assertEqual(state["project_rules"], "禁止触发真实支付")
+        self.assertNotIn("intelligence_summary", state)
+        self.assertNotIn("investigation_frontier", state)
+        self.assertNotIn("asset_intelligence", state)
+
+    async def test_missing_required_arguments_are_rejected_before_tool_execution(self) -> None:
+        for name, expected in (("http_probe", "url"), ("asset_memory_lookup", "host"),
+                               ("mcp_call", "name"), ("blackboard_read", "layer"),
+                               ("graph_read", "graph"), ("record_endpoint", "url")):
+            with self.subTest(name=name):
+                text = await self.agent._run_tool_call_inner(
+                    self.task, {"id": f"bad-{name}", "name": name, "arguments": {}})
+                self.assertIn("工具参数无效", text)
+                self.assertIn(expected, text)
+        self.agent.ctx.tools.call.assert_not_awaited()
+
     def test_ask_user_is_exposed_to_explorer_tool_loop(self) -> None:
         schemas = {s["function"]["name"]: s["function"] for s in self.agent._tool_schemas()}
         self.assertIn("ask_user", schemas)
         self.assertEqual(schemas["ask_user"]["parameters"]["required"], ["question"])
+
+    def test_business_context_validates_structured_surface_assessment(self) -> None:
+        context = self.agent._validated_context({
+            "surface_assessment": {
+                "type": "content_portal", "business_complexity": "low",
+                "rationale": "公开内容为主", "evidence_refs": ["E1", "unknown"],
+            },
+            "roles": [], "objects": [], "workflows": [], "trust_boundaries": [],
+            "facts": [], "hypotheses": [], "unknowns": [],
+            "blockers": [{
+                "type": "sso_required", "description": "需企业单点登录",
+                "prerequisite": "测试账号或登录后请求记录", "user_resolvable": True,
+                "alternative_capabilities": ["script_and_api_extraction", "invalid"],
+                "evidence_refs": ["E1", "unknown"],
+            }],
+        }, {"E1"})
+
+        self.assertEqual(context["surface_assessment"], {
+            "type": "content_portal", "business_complexity": "low",
+            "rationale": "公开内容为主", "evidence_refs": ["E1"],
+        })
+        self.assertEqual(context["blockers"], [{
+            "type": "sso_required", "description": "需企业单点登录",
+            "prerequisite": "测试账号或登录后请求记录", "user_resolvable": True,
+            "alternative_capabilities": ["script_and_api_extraction"],
+            "evidence_refs": ["E1"],
+        }])
+
+    async def test_business_context_writes_only_evidence_backed_versioned_hypotheses(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            bb = Blackboard(Path(tmp) / "bb.db")
+            self.addCleanup(bb.close)
+            convergence = ConvergenceEngine(bb)
+            asset_id, _created = convergence.merge_asset(Asset(
+                asset_id="endpoint-orders", asset_type="endpoint",
+                value="https://example.test/api/orders/42",
+                attrs={"method": "GET", "params": ["id"], "source": "model_observed"},
+                source_agent="business-test",
+            ), AgentType.BUSINESS_CONTEXT)
+            agent = object.__new__(BusinessContextAgent)
+            agent.agent_id = "business-test"
+            agent.agent_type = AgentType.BUSINESS_CONTEXT
+            agent.ctx = SimpleNamespace(blackboard=bb)
+            agent._llm_chat_json = AsyncMock(return_value={
+                "surface_assessment": {"type": "account_workflow", "business_complexity": "medium",
+                                       "rationale": "订单属于账号对象", "evidence_refs": ["E1"]},
+                "roles": [], "objects": [], "workflows": [], "trust_boundaries": [], "facts": [],
+                "hypotheses": [{
+                    "statement": "订单归属校验缺失可能导致跨账号越权",
+                    "expected_signal": "第二账号得到第一账号订单",
+                    "counter_signal": "服务端返回 403",
+                    "next_minimal_experiment": "比较同一订单的双身份真实请求",
+                    "stop_condition": "缺少第二身份时阻塞",
+                    "evidence_refs": ["E1"],
+                }, {
+                    "statement": "没有证据支撑的隐藏管理员入口",
+                    "evidence_refs": ["unknown"],
+                }],
+                "blockers": [], "unknowns": [],
+            })
+            task = Task(task_id="business-hypothesis", task_type="business_context",
+                        agent_type=AgentType.BUSINESS_CONTEXT, target="https://example.test")
+
+            result = await agent._build_context(task)
+            rows = hypothesis_summary(bb)["active"]
+
+            self.assertTrue(result.ok)
+            self.assertEqual(len(rows), 1)
+            hypothesis = bb.read_versioned(
+                BlackboardLayer.TOPOLOGY, rows[0]["hypothesis_ref"].split(":", 1)[1].rsplit("@", 1)[0])[0]
+            endpoint_version = bb.read_versioned(BlackboardLayer.ASSET, asset_id)[1]
+            self.assertEqual(hypothesis["evidence_refs"], [f"asset:{asset_id}@{endpoint_version}"])
+            self.assertEqual(hypothesis["test_type"], "idor")
+
+    def test_only_latest_steering_is_exposed_and_feedback_is_available(self) -> None:
+        from spiritscout.agents.ring import RingLedger
+
+        ring = RingLedger()
+        ring.steer("business_context", "旧指令", task_id=self.task.task_id)
+        latest = ring.steer("business_context", "新指令", task_id=self.task.task_id)
+        self.agent.ctx.ring = ring
+        active = ring.active_steering(
+            "business_context", task_id=self.task.task_id, route_id="r1")
+        self.assertEqual(active["id"], latest)
+        schemas = {s["function"]["name"]: s["function"] for s in self.agent._tool_schemas()}
+        self.assertIn("steering_feedback", schemas)
+
+    def test_blocked_steering_is_not_reinjected_on_later_turns(self) -> None:
+        from spiritscout.agents.ring import RingLedger
+
+        ring = RingLedger()
+        instruction = ring.steer(
+            "business_context", "完成需要用户验证码的流程", task_id=self.task.task_id)
+        self.assertTrue(ring.steering_feedback(
+            "business_context", task_id=self.task.task_id, route_id="r1",
+            instruction_id=instruction, status="blocked", detail="用户尚未提供验证码"))
+
+        active = ring.active_steering(
+            "business_context", task_id=self.task.task_id, route_id="r1")
+
+        self.assertIsNone(active)
+
+    async def test_duplicate_forced_refresh_is_downgraded_to_cacheable_probe(self) -> None:
+        self.agent.ctx.tools.call.return_value = ToolResult(
+            tool="http_probe", ok=True, stdout="ok", parsed={"status_code": 200})
+        call = {"id": "probe", "name": "http_probe",
+                "arguments": {"url": self.task.target, "refresh": True}}
+
+        await self.agent._run_tool_call(self.task, call)
+        await self.agent._run_tool_call(self.task, call)
+
+        first, second = [item.args[1] for item in self.agent.ctx.tools.call.await_args_list]
+        self.assertTrue(first["refresh"])
+        self.assertFalse(second["refresh"])
 
     async def test_ask_user_answer_and_scope_flow_back_to_agent(self) -> None:
         broker = SimpleNamespace(ask=AsyncMock(return_value={

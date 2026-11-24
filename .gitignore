@@ -2,22 +2,6 @@
 # 偶有删不掉的残留，这里挡住，别进版本库）
 tmp*/
 corrupt_data/
-_work/
-_build-native/
-_build-out/
-_deliver_test/
-_exe_test/
-_exe_test_clean/
-
-# 桌面版编译产物
-DesktopApp/out/*.exe
-DesktopApp/out/*.png
-
-# 桌面版本机测试数据（真正的用户数据在 %APPDATA%，不在这里）
-DesktopApp/out/data/
-DesktopApp/out/reports/
-DesktopApp/out/*.txt
-
 # Python
 __pycache__/
 *.pyc
@@ -40,12 +24,11 @@ sh[0-9]*_*/
 # 技能库数据（204MB / 4850 文件，是运行时下载的技能包，不是源码）
 SpiritScout/skills/
 
-# 桌面版 e2e 构建产物（里面有测试用的 secrets.dat，不进库）
-DesktopApp/build/out/
-
 # 备份文件（改脚本时留的 .bak-时间戳）
 *.bak-*
 *.bak-2026*
 
 # 根目录的构建产物 / 打包结果
-启动服务.exe
+/logs/
+/dist/
+/dist-*/

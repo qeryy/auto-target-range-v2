@@ -1,142 +1,221 @@
 /* 资源管理对话拥有独立历史；目录、检索和变更不会派发安全测试。 */
 const ResourceConsole = (() => {
-  const states = new Map(); let editor = null, poll;
-  const titles = {mcp:['MCP 管理','添加工具服务器，或编辑已有连接。'],skill:['Skill 管理','添加和管理智能体可查阅的参考知识。']};
-  const stateFor = kind => {if(!states.has(kind)) states.set(kind,{items:[],offset:0,q:'',mode:'',modeCounts:{},modeLabels:{},generation:0});return states.get(kind);};
+  const states = new Map(); let editor = null, poll, inspecting = 0;
+  const titles = {mcp:[I18n.t('MCP 管理'),I18n.t('添加工具服务器，或编辑已有连接。')],skill:[I18n.t('Skill 管理'),I18n.t('添加和管理智能体可查阅的参考知识。')]};
+  const stateFor = kind => {if(!states.has(kind)) states.set(kind,{items:[],offset:0,q:'',generation:0,filters:kind==='skill'?skillDefaults():mcpDefaults(),counts:{enabled:0,disabled:0}});return states.get(kind);};
   const root = kind => $(`#view-${kind}`);
+  function skillDefaults() {return {enabled:true,domain:'',tier:'',source:'',added_from:'',added_to:'',date_state:'all',sort:'relevance'};}
+  function skillQuery(s,offset=0) {
+    const params=new URLSearchParams({q:s.q,offset:String(offset),limit:'40'});
+    for(const [key,value] of Object.entries(s.filters))if(value!=='')params.set(key,String(value));
+    return params;
+  }
+  function skillControlsHtml(mcp=false) {
+    return I18n.html`<div class="skill-status-groups" role="group" aria-label="启用状态">
+      <button type="button" data-skill-enabled="true" aria-pressed="true"><span>已启用</span><b data-count-enabled>0</b></button>
+      <button type="button" data-skill-enabled="false" aria-pressed="false"><span>未启用</span><b data-count-disabled>0</b></button></div>
+      <details class="resource-filters"><summary>筛选与排序</summary><div class="skill-filters" aria-label="技能筛选">
+      <label>类型<select data-skill-filter="domain"><option value="">全部类型</option></select></label>
+      ${mcp?'':I18n.html('<label>分级<select data-skill-filter="tier"><option value="">全部分级</option><option value="core">核心技能</option><option value="domain">领域技能</option><option value="reference">参考资料</option></select></label>')}
+      <label>来源<select data-skill-filter="source"><option value="">全部来源</option><option value="builtin">内置参考</option><option value="archive">压缩包导入</option><option value="manual">手动／助手添加</option></select></label>
+      <label>时间记录<select data-skill-filter="date_state"><option value="all">全部时间</option><option value="known">已记录时间</option><option value="unknown">时间未知</option></select></label>
+      <label title="按北京时间筛选">起始日期<input type="date" data-skill-filter="added_from"></label>
+      <label title="按北京时间筛选">截止日期<input type="date" data-skill-filter="added_to"></label>
+      <label>排序<select data-skill-filter="sort">${mcp?'':I18n.html('<option value="relevance">相关性</option>')}<option value="added_desc">最近导入／添加</option><option value="added_asc">最早导入／添加</option><option value="updated_desc">最近修改</option><option value="name_asc">名称 A–Z</option></select></label>
+      </div><div class="skill-filter-footer"><button type="button" class="btn sm" data-skill-reset>清除筛选</button></div></details>`;
+  }
+  function skillMeta(d) {
+    const source=({builtin:I18n.t('内置参考'),archive:I18n.t('压缩包导入'),manual:I18n.t('手动／助手添加')})[d.source_kind]||I18n.t('自定义');
+    const date=d.created_at==null?I18n.t('时间未知'):new Date(d.created_at*1000).toLocaleString(I18n.dateLocale,{timeZone:'Asia/Shanghai',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hour12:false});
+    return `${d.domain||'custom'} · ${source} · ${date}`;
+  }
+  function syncSkillControls(s,result) {
+    const el=root('skill');s.counts=result.counts||s.counts;
+    el.querySelector('[data-count-enabled]').textContent=s.counts.enabled;
+    el.querySelector('[data-count-disabled]').textContent=s.counts.disabled;
+    const select=el.querySelector('[data-skill-filter="domain"]'),domains=[...(result.facets?.domains||[])];
+    if(s.filters.domain&&!domains.includes(s.filters.domain))domains.push(s.filters.domain);
+    const signature=JSON.stringify(domains);
+    if(select.dataset.domains!==signature){select.dataset.domains=signature;select.innerHTML=I18n.html('<option value="">全部类型</option>')+domains.map(domain=>`<option value="${esc(domain)}">${esc(domain)}</option>`).join('');}
+    select.value=s.filters.domain;
+    if(typeof selxSync==='function')el.querySelectorAll('[data-skill-filter]').forEach(field=>{if(field.tagName==='SELECT')selxSync(field);});
+  }
+  function mcpDefaults() {return {enabled:true,transport:'',source:'',risk:'',agent:'',added_from:'',added_to:'',date_state:'all',sort:'added_desc'};}
+  function mcpControlsHtml() {
+    return skillControlsHtml(true).replaceAll('data-skill-', 'data-mcp-')
+      .replace(I18n.t('技能筛选'),I18n.t('MCP 筛选'))
+      .replace(I18n.html('<label>类型<select data-mcp-filter="domain"><option value="">全部类型</option></select></label>'),
+        I18n.html('<label>传输类型<select data-mcp-filter="transport"><option value="">全部类型</option><option value="stdio">STDIO · 本地命令</option><option value="http">HTTP · 流式连接</option><option value="sse">SSE · 事件流</option></select></label>'))
+      .replace(I18n.html('<option value="builtin">内置参考</option><option value="archive">压缩包导入</option><option value="manual">手动／助手添加</option>'),
+        I18n.html('<option value="config">配置文件</option><option value="managed">管理页保存</option>'))
+      .replace(I18n.html('<label>时间记录'), I18n.html('<label>风险等级<select data-mcp-filter="risk"><option value="">全部风险</option><option value="readonly">只读</option><option value="intrusive">侵入性</option><option value="destructive">破坏性</option></select></label><label>适用 Agent<select data-mcp-filter="agent"><option value="">全部 Agent</option><option value="default">沿用角色默认范围</option></select></label><label>时间记录'))
+      .replaceAll(I18n.t('导入／添加'),I18n.t('添加'));
+  }
+  function mcpConnection(data) {
+    if(data.transport==='stdio')return data.command||I18n.t('尚未配置命令');
+    try {const url=new URL(data.url);url.username='';url.password='';url.search='';url.hash='';return url.toString();}
+    catch {return I18n.t('尚未配置地址');}
+  }
+  function mcpMeta(item) {
+    const data=item.data,risk=({readonly:I18n.t('只读'),intrusive:I18n.t('侵入性'),destructive:I18n.t('破坏性')})[data.default_risk]||data.default_risk;
+    const date=skillMeta({source_kind:'manual',created_at:item.created_at}).split(' · ').pop();
+    return `${item.origin==='config'?I18n.t('配置文件'):I18n.t('管理页保存')} · ${risk} · ${date}`;
+  }
+  function syncMcpControls(s,result) {
+    const el=root('mcp');s.counts=result.counts||s.counts;
+    el.querySelector('[data-count-enabled]').textContent=s.counts.enabled;
+    el.querySelector('[data-count-disabled]').textContent=s.counts.disabled;
+    const select=el.querySelector('[data-mcp-filter="agent"]'),agents=[...(result.facets?.agents||[])];
+    if(s.filters.agent&&s.filters.agent!=='default'&&!agents.includes(s.filters.agent))agents.push(s.filters.agent);
+    select.innerHTML=I18n.html('<option value="">全部 Agent</option><option value="default">沿用角色默认范围</option>')+agents.map(role=>`<option value="${esc(role)}">${esc(role)}</option>`).join('');
+    select.value=s.filters.agent;
+    if(typeof selxSync==='function')el.querySelectorAll('[data-mcp-filter]').forEach(field=>{if(field.tagName==='SELECT')selxSync(field);});
+  }
   function shell(kind) {
     const [title,description]=titles[kind],el=root(kind);if(el.dataset.ready)return;el.dataset.ready='yes';
-    el.innerHTML=`<header class="resource-head"><div><h2>${title}</h2><p>${description}</p></div><div class="resource-head-actions">${kind==='skill'?'<button class="btn" data-skill-pull title="把仓库里 configs/skills.yaml 的技能同步进本地库：只增改，不删本地条目">拉取清单</button><button class="btn" data-skill-push title="把本地库里的自定义技能写回 configs/skills.yaml，之后用 git 提交推送">提交清单</button>':''}<button class="btn" data-refresh>刷新</button><button class="btn primary" data-new>手动添加</button></div></header>
-            <div class="resource-layout"><section class="resource-catalog" aria-label="${title}目录"><label class="resource-search">检索已配置资源<input type="search" data-search placeholder="输入关键词…" maxlength="200"></label>${kind==="skill"?"<div class=\"resource-modes\" data-modes role=\"group\" aria-label=\"按任务大类筛选\"></div>":""}<div class="resource-list-status" role="status"></div><div class="resource-list"></div><button class="btn resource-more" hidden>加载更多</button></section>
-      <section class="resource-chat" aria-label="${title}专属管理对话"><header><div><b>资源助手</b><small>变更需确认后执行</small></div></header><div class="resource-chat-log" aria-live="polite"></div><div class="resource-proposals"></div><form class="resource-chat-form"><label class="sr-only" for="resource-message-${kind}">向${title}助手描述需求</label><textarea id="resource-message-${kind}" placeholder="${kind==='mcp'?'例如：帮我配置一个只读浏览器 MCP，请先给出安装方案':'例如：添加一份关于接口权限边界的参考技能'}" rows="3" maxlength="16000"></textarea><div><small>请勿在聊天中粘贴密钥</small><button class="btn primary" type="submit">发送</button></div><p class="resource-chat-status" role="status"></p></form></section></div>`;
-    el.querySelector('[data-refresh]').onclick=()=>{load(kind);loadChat(kind);};
-    if(kind==='skill'){
-      el.querySelector('[data-skill-pull]').onclick=e=>skillSync(e.currentTarget,'sync','拉取');
-      el.querySelector('[data-skill-push]').onclick=e=>skillSync(e.currentTarget,'export','提交');
-    }
+    el.innerHTML=I18n.html`<header class="resource-head"><div><h2 title="${description}">${title}</h2></div><div class="resource-head-actions">${kind==='skill'?I18n.html('<button class="btn" data-import>导入压缩包</button><input type="file" data-archives hidden multiple accept=".zip,.tar,.tar.gz,.tgz,.tar.bz2,.tbz2,.tar.xz,.txz,.rar,.7z,.tar.zst,.tzst">'):''}<button class="action-icon" data-refresh title="刷新" aria-label="刷新"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 7v5h-5M4 17v-5h5"/><path d="M6.1 6.1A8 8 0 0 1 20 12M4 12a8 8 0 0 0 13.9 5.9"/></svg></button><button class="btn primary" data-new>手动添加</button></div></header>
+      ${kind==='skill'?I18n.html('<details class="page-details resource-import-help"><summary>导入要求</summary><p id="skill-import-help">支持 ZIP、TAR、RAR、7z 等；可多选，每包最多 20 MiB，须包含 SKILL.md。只导入文本资料。</p></details><p class="resource-import-status" role="status"></p>'):''}
+      <div class="resource-layout"><section class="resource-catalog" aria-label="${title}目录"><label class="resource-search"><span class="sr-only">${kind==='skill'?I18n.t('搜索技能'):I18n.t('搜索 MCP')}</span><input type="search" data-search placeholder="搜索名称或内容…" maxlength="200"></label>${kind==='skill'?skillControlsHtml():mcpControlsHtml()}<div class="resource-list-status" role="status"></div><div class="resource-list"></div><button class="btn resource-more" hidden>加载更多</button></section>
+      ${kind==='mcp'?I18n.html('<details class="skill-assistant mcp-search-settings"><summary>搜索服务 · Exa 配置</summary><div data-exa-settings></div></details>'):''}<details class="skill-assistant"><summary>资源助手 · 对话添加和管理 ${kind==='skill'?'Skill':'MCP'}</summary><section class="resource-chat" aria-label="${title}专属管理对话"><header><div><b>资源助手</b><small>变更需确认后执行</small></div></header><div class="resource-chat-log" aria-live="polite"></div><div class="resource-proposals"></div><form class="resource-chat-form"><label class="sr-only" for="resource-message-${kind}">向${title}助手描述需求</label><textarea id="resource-message-${kind}" placeholder="${kind==='mcp'?I18n.t('例如：帮我配置一个只读浏览器 MCP，请先给出安装方案'):I18n.t('例如：添加一份关于接口权限边界的参考技能')}" rows="3" maxlength="16000"></textarea><div><small>请勿在聊天中粘贴密钥</small><button class="btn primary" type="submit">发送</button></div><p class="resource-chat-status" role="status"></p></form></section></details></div>`;
+    if(kind==='mcp')ExaSettings.mount(el.querySelector('[data-exa-settings]'));
+    el.querySelector('[data-refresh]').onclick=()=>{load(kind);loadChat(kind);if(kind==='mcp')ExaSettings.load();};
     el.querySelector('[data-new]').onclick=()=>edit(kind);
+    if(kind==='skill'){
+      const input=el.querySelector('[data-archives]'),button=el.querySelector('[data-import]');
+      button.setAttribute('aria-describedby','skill-import-help');
+      button.onclick=()=>input.click();input.onchange=()=>importArchives(input);
+    }
+    {
+      const prefix=kind==='skill'?'skill':'mcp';
+      const setGroup=enabled=>{const s=stateFor(kind);s.filters.enabled=enabled;
+        el.querySelectorAll(`[data-${prefix}-enabled]`).forEach(b=>b.setAttribute('aria-pressed',String((b.getAttribute(`data-${prefix}-enabled`)==='true')===enabled)));};
+      el.querySelectorAll(`[data-${prefix}-enabled]`).forEach(b=>b.onclick=()=>{setGroup(b.getAttribute(`data-${prefix}-enabled`)==='true');load(kind);});
+      el.querySelectorAll(`[data-${prefix}-filter]`).forEach(field=>field.onchange=()=>{
+        const s=stateFor(kind),key=field.getAttribute(`data-${prefix}-filter`);s.filters[key]=field.value;
+        if(key==='date_state'&&field.value==='unknown'){
+          s.filters.added_from='';s.filters.added_to='';
+          el.querySelector(`[data-${prefix}-filter="added_from"]`).value='';el.querySelector(`[data-${prefix}-filter="added_to"]`).value='';
+        }else if(key.startsWith('added_')&&field.value&&s.filters.date_state==='unknown'){
+          s.filters.date_state='all';el.querySelector(`[data-${prefix}-filter="date_state"]`).value='all';
+        }
+        load(kind);
+      });
+      el.querySelector(`[data-${prefix}-reset]`).onclick=()=>{
+        const s=stateFor(kind),enabled=s.filters.enabled;s.filters=kind==='skill'?skillDefaults():mcpDefaults();s.filters.enabled=enabled;s.q='';
+        el.querySelector('[data-search]').value='';el.querySelectorAll(`[data-${prefix}-filter]`).forEach(field=>field.value=s.filters[field.getAttribute(`data-${prefix}-filter`)]);load(kind);
+      };
+    }
     let timer;el.querySelector('[data-search]').oninput=e=>{const s=stateFor(kind);s.q=e.target.value.trim();s.generation++;clearTimeout(timer);timer=setTimeout(()=>load(kind),250);};
     el.querySelector('.resource-more').onclick=()=>load(kind,true);
     el.querySelector('.resource-chat-form').onsubmit=e=>send(kind,e);
   }
-  // 技能清单往返：拉取把仓库里的清单同步进库，提交把库写回清单文件。
-  // 提交只写文件不碰 git——服务端替用户提交有风险，提示他自己跑那两条命令。
-  async function skillSync(button,action,label){
-    const original=button.textContent;
-    button.disabled=true;button.textContent=label+'中…';
+  async function importArchives(input) {
+    const files=Array.from(input.files||[]);if(!files.length)return;
+    const el=root('skill'),button=el.querySelector('[data-import]'),status=el.querySelector('.resource-import-status');
+    button.disabled=true;input.disabled=true;let imported=0;const messages=[];
     try{
-      const data=await api('/api/resources/skills/'+action,{method:'POST'});
-      if(action==='sync'){
-        toast(`拉取完成：新增 ${data.added} 条，更新 ${data.updated} 条，未变 ${data.unchanged} 条`);
-      }else{
-        toast(`已写回清单（${data.total} 条）。接着运行：${data.hint||'git add && git commit && git push'}`);
+      for(const [index,file] of files.entries()){
+        status.textContent=I18n.t`正在导入 ${index+1}/${files.length}：${file.name}`;
+        try{
+          if(file.size>20*1024*1024)throw new Error(I18n.t('压缩包不得超过 20 MiB'));
+          const result=await api('/api/resources/skills/import',{method:'POST',headers:{'Content-Type':'application/octet-stream'},body:file});
+          imported+=result.items.length;
+          messages.push(I18n.t`${file.name}：已导入 ${result.items.map(item=>item.skill_id).join('、')}`,...(result.warnings||[]));
+        }catch(e){messages.push(I18n.t`${file.name}：导入失败，${e.message}`);}
       }
-      await load('skill');
-    }catch(err){
-      toast(label+'失败：'+(err?.message||err),true);
-    }finally{
-      button.disabled=false;button.textContent=original;
-    }
+      if(imported)await load('skill');
+      status.textContent=messages.join('\n');
+    }finally{button.disabled=false;input.disabled=false;input.value='';}
   }
-
   async function load(kind,append=false) {
     const s=stateFor(kind),version=++s.generation,status=root(kind).querySelector('.resource-list-status');
-    status.textContent='正在读取…';
+    status.textContent=I18n.t('正在读取…');
+    if(!append){s.items=[];s.more=false;root(kind).querySelector('.resource-list').innerHTML=I18n.html('<div class="resource-empty">正在读取目录…</div>');root(kind).querySelector('.resource-more').hidden=true;}
     try{
+      if(s.filters.added_from&&s.filters.added_to&&s.filters.added_from>s.filters.added_to)throw new Error(I18n.t('起始日期不能晚于截止日期'));
       const offset=append?s.items.length:0;
       const path=`/api/resources/${kind==='skill'?'skills':'mcp'}`;
-      const params={q:s.q,offset:String(offset),limit:'40'};
-      if(kind==='skill'&&s.mode) params.mode=s.mode;   // 只技能页有任务大类
-      const result=await api(path+'?'+new URLSearchParams(params));
+      const result=await api(path+'?'+skillQuery(s,offset));
       if(version!==s.generation)return;
-      let rows=result.items||[];if(kind==='mcp'&&s.q)rows=rows.filter(x=>JSON.stringify(x.data).toLowerCase().includes(s.q.toLowerCase()));
+      const rows=result.items||[];
       s.items=append?[...s.items,...rows]:rows;s.more=result.has_more;s.total=result.total??rows.length;
-      if(kind==='skill'){s.modeCounts=result.mode_counts||{};s.modeLabels=result.mode_labels||{};s.allTotal=result.all_total||0;paintModes(kind);}
-      status.textContent=`${s.total} 条记录${kind==='mcp'?' · 保存后新会话生效':''}`;render(kind);
-    }catch(e){status.textContent=`读取失败：${e.message}。点击刷新重试。`;}
+      if(kind==='skill')syncSkillControls(s,result);else syncMcpControls(s,result);
+      status.textContent=I18n.t`${s.total} 条${s.more?I18n.t(' · 已显示 ')+s.items.length+I18n.t(' 条'):''}`;render(kind);
+    }catch(e){if(version===s.generation)status.textContent=I18n.t`读取失败：${e.message}。调整筛选或点击刷新重试。`;}
   }
-  // 技能页的分类筛选：全部 / SRC 渗透 / CTF 解题 / 智能体竞赛，按钮上带条数
-  function paintModes(kind) {
-    const box = root(kind)?.querySelector('[data-modes]');
-    if (!box) return;
-    const s = stateFor(kind);
-    const order = ['', 'src', 'ctf', 'competition'];
-    const labelOf = m => m ? (s.modeLabels[m] || m) : '全部';
-    // 「全部」用后端给的总数：三类会重叠（web 技能既属 SRC 也属 CTF），
-    // 相加会把同一条计两次，441 而实际只有 288。
-    const countOf = m => m ? (s.modeCounts[m] || 0) : (s.allTotal || 0);
-    box.innerHTML = order.map(m =>
-      `<button class="btn sm resource-mode-btn${s.mode === m ? ' on' : ''}" type="button"`
-      + ` data-skill-mode="${m}" aria-pressed="${s.mode === m}">${esc(labelOf(m))}`
-      + `<span class="resource-mode-count">${countOf(m)}</span></button>`).join('');
-    box.querySelectorAll('[data-skill-mode]').forEach(b => {
-      b.onclick = () => { s.mode = b.dataset.skillMode; s.generation++; load(kind); };
-    });
-  }
-
   function render(kind) {
     const s=stateFor(kind),list=root(kind).querySelector('.resource-list');
     list.innerHTML=s.items.map((item,i)=>{
       const d=kind==='mcp'?item.data:item;
       const title=kind==='mcp'?d.name:d.skill_id;
-      // enabled 可能是 null（老条目没这字段），只有明确 false 才显示已停用
-      const badge=d.enabled===false?'已停用':'已启用';
-      const subtitle=kind==='mcp'?`${d.transport} · ${d.command||d.url||'尚未配置地址'}`:d.description||'尚无描述';
-      const modeTags = kind==='skill' ? (d.modes||[]).map(m=>`<span class="resource-mode">${esc(s.modeLabels[m]||m)}</span>`).join('') : '';
-      return `<article class="resource-item"><button class="resource-select" data-select="${i}"><span class="resource-badge">${esc(badge)}</span><strong>${esc(title)}</strong>${modeTags?`<span class="resource-modes-inline">${modeTags}</span>`:''}<p>${esc(subtitle)}</p><small>${esc(kind==='mcp'?`配置版本 ${item.version} · ${d.default_risk} · ${d.allowed_agents?.length?d.allowed_agents.join(', '):'沿用角色默认范围'}`:`${d.domain||'未分类'} · ${d.origin==='builtin'?'内置参考':'自定义'} · v${d.version}`)}</small></button><button class="btn sm resource-toggle" data-toggle="${i}">${d.enabled===false?'启用':'停用'}</button></article>`;
-    }).join('')||`<div class="resource-empty">还没有匹配记录<p>可更换关键词，或从资源助手对话开始配置。</p></div>`;
-    list.querySelectorAll('[data-select]').forEach(b=>b.onclick=()=>edit(kind,s.items[+b.dataset.select]));
+      const badge=kind==='skill'?`${({core:I18n.t('核心技能'),domain:I18n.t('领域技能'),reference:I18n.t('参考资料')})[d.tier]||I18n.t('领域技能')} · ${d.domain||'custom'}`:d.transport.toUpperCase();
+      const subtitle=kind==='mcp'?mcpConnection(d):d.description||I18n.t('尚无描述');
+      const label=kind==='skill'?I18n.t('技能'):'MCP';
+      return I18n.html`<article class="resource-item"><button class="resource-select" data-select="${i}" title="${esc(kind==='mcp'?mcpMeta(item):skillMeta(d))}${kind==='mcp' && d.allowed_agents?.length?' · '+esc(d.allowed_agents.join('、')):''}"><span class="resource-badge">${esc(badge)}</span><strong>${esc(title)}</strong><p>${esc(subtitle)}</p><span class="sr-only">${esc(kind==='mcp'?mcpMeta(item):skillMeta(d))}</span>${kind==='mcp'?`<span class="sr-only">${esc(d.allowed_agents?.length?d.allowed_agents.join('、'):I18n.t('沿用角色默认范围'))}</span>`:''}</button><div class="skill-card-actions"><button class="skill-switch resource-toggle" type="button" role="switch" aria-checked="${!!d.enabled}" aria-label="启用${label} ${esc(title)}" data-toggle="${i}"><span class="skill-switch-track" aria-hidden="true"><span></span></span><span>${d.enabled?I18n.t('已启用'):I18n.t('未启用')}</span></button><button type="button" class="skill-delete" data-delete="${i}" aria-label="删除${label} ${esc(title)}">删除</button></div></article>`;
+    }).join('')||I18n.html`<div class="resource-empty">当前没有${s.filters.enabled?I18n.t('已启用'):I18n.t('未启用')}的匹配${kind==='skill'?I18n.t('技能'):'MCP'}<p>可切换分组、调整条件或清除筛选。</p></div>`;
+    list.querySelectorAll('[data-select]').forEach(b=>b.onclick=()=>kind==='skill'?inspectSkill(s.items[+b.dataset.select]):edit(kind,s.items[+b.dataset.select]));
     list.querySelectorAll('[data-toggle]').forEach(b=>b.onclick=async()=>{const item=s.items[+b.dataset.toggle],d=kind==='mcp'?item.data:item;b.disabled=true;try{await api(`/api/resources/${kind==='mcp'?'mcp':'skills'}/${encodeURIComponent(kind==='mcp'?item.id:d.skill_id)}`,{method:'PUT',body:JSON.stringify({data:{enabled:!d.enabled},expected_version:item.version??d.version})});load(kind);}catch(e){toast(e.message,true);b.disabled=false;}});
+    list.querySelectorAll('[data-delete]').forEach(button=>button.onclick=async()=>{
+      const item=s.items[+button.dataset.delete],name=kind==='skill'?item.skill_id:item.id;
+      if(!confirm(kind==='skill'?I18n.t`删除 Skill「${name}」？删除后将从目录和后续参考检索中移除。`:I18n.t`删除 MCP「${name}」？新启动的会话将不再连接，运行中的会话不受影响。不会卸载本地程序。`))return;
+      button.disabled=true;
+      try{await api(`/api/resources/${kind==='skill'?'skills':'mcp'}/${encodeURIComponent(name)}?expected_version=${item.version}`,{method:'DELETE'});toast(I18n.t`${kind==='skill'?'Skill':'MCP'} 已删除`);await load(kind);}
+      catch(e){toast(e.message,true);button.disabled=false;}
+    });
     root(kind).querySelector('.resource-more').hidden=!s.more;
   }
-  let mcpPresets=null;
-  async function ensurePresets() {
-    if(mcpPresets)return mcpPresets;
-    try{const r=await api('/api/resources/mcp/presets');mcpPresets=r.items||[];}catch(e){mcpPresets=[];}
-    return mcpPresets;
-  }
-  function applyPreset(id) {
-    const item=(mcpPresets||[]).find(x=>x.id===id);
-    if(!item){$('#resource-preset-hint').textContent='';return;}
-    const hint=item.placeholder_hint||'';
-    const missing=item.missing||[];
-    $('#resource-preset-hint').textContent=missing.length?`${hint} 本机没有 ${missing.join(' / ')}，先装好再用。`:hint;
-    let data={};
-    try{data=JSON.parse($('#resource-json').value)||{};}catch(e){data={};}
-    data.transport=item.transport;data.command=item.command;data.args=[...(item.args||[])];
-    data.default_risk=item.default_risk;
-    if(!('enabled' in data))data.enabled=true;
-    $('#resource-json').value=JSON.stringify(data,null,2);
-    if(!$('#resource-key').value.trim())$('#resource-key').value=`local-${id==='custom'?'mcp':id}`;
+  async function inspectSkill(item) {
+    const generation=++inspecting;
+    try{
+      const data=await api('/api/resources/skills/'+encodeURIComponent(item.skill_id));
+      if(generation===inspecting&&S.view==='skill')SkillBrowser.open(data,item=>edit('skill',item),()=>load('skill'));
+    }catch(e){if(generation===inspecting)toast(e.message,true);}
   }
   async function edit(kind,item) {
-    let data=kind==='mcp'?item?.data:null;
+    let data=null;
+    if(kind==='mcp'&&item){try{item=await api('/api/resources/mcp/'+encodeURIComponent(item.id)+'/config');data=item.data;}catch(e){toast(e.message,true);return;}}
     if(kind==='skill'&&item){try{data=await api('/api/resources/skills/'+encodeURIComponent(item.skill_id));}catch(e){toast(e.message,true);return;}}
-    editor={kind,version:item?.version||0};$('#resource-editor-title').textContent=kind==='mcp'?'MCP 接入配置':'Skill 参考知识';$('#resource-key').value=kind==='mcp'?item?.id||'':item?.skill_id||'';$('#resource-key').disabled=!!item;
-    const clean=Object.fromEntries(Object.entries(data||{}).filter(([key])=>!['id','version','origin','env_keys','headers_keys','name','skill_id'].includes(key)));
-    $('#resource-json').value=JSON.stringify(data?clean:kind==='mcp'?{transport:'stdio',command:'',args:[],enabled:true,default_risk:'intrusive',risk_by_action:false,allowed_agents:[]}:{description:'',domain:'custom',body:'适用条件：\n参考事实：\n证据与注意事项：',enabled:true},null,2);
+    editor={kind,version:data?.version??item?.version??0};$('#resource-editor-title').textContent=kind==='mcp'?I18n.t('MCP 接入配置'):I18n.t('Skill 参考知识');$('#resource-key').value=kind==='mcp'?item?.id||'':item?.skill_id||'';$('#resource-key').disabled=!!item;
+    const clean=Object.fromEntries(Object.entries(data||{}).filter(([key])=>!['id','version','origin','env_keys','headers_keys','name','skill_id','created_at','updated_at','source_kind'].includes(key)));
+    if(kind==='skill'&&data?.files)delete clean.body;
+    $('#resource-skill-meta').hidden=kind!=='skill';
+    if(kind==='skill'){
+      $('#resource-skill-tier').value=data?.tier||'domain';
+      if(typeof selxSync==='function')selxSync($('#resource-skill-tier'));
+      $('#resource-skill-aliases').value=(data?.aliases||[]).join('，');
+      $('#resource-skill-tags').value=(data?.tags||[]).join('，');
+      for(const key of ['tier','aliases','tags'])delete clean[key];
+    }
+    $('#resource-json').value=JSON.stringify(data?clean:kind==='mcp'?{transport:'stdio',command:'',args:[],enabled:true,default_risk:'intrusive',risk_by_action:false,allowed_agents:[]}:{description:'',domain:'custom',body:I18n.t('适用条件：\n参考事实：\n证据与注意事项：'),enabled:true},null,2);
     $('#resource-env').value='';$('#resource-headers').value='';$('#resource-secrets').hidden=kind!=='mcp';$('#resource-save-error').textContent='';$('#resource-editor').showModal();
-    if(kind==='mcp'){
-      const list=await ensurePresets(),sel=$('#resource-preset');
-      sel.innerHTML='<option value="">（选一个本地模板，或直接手填下面的 JSON）</option>'+list.map(i=>`<option value="${i.id}"${i.available?'':' disabled'}>${esc(i.label)}${i.available?'':'（本机缺 '+(i.missing||[]).join('/')+'）'}</option>`).join('');
-      sel.value='';sel.onchange=()=>applyPreset(sel.value);
-      $('#resource-preset-row').hidden=false;$('#resource-preset-hint').textContent='';
-    }else{$('#resource-preset-row').hidden=true;}
   }
-  async function save() {if(!editor)return;const button=$('#resource-save');button.disabled=true;try{const data=JSON.parse($('#resource-json').value),key=$('#resource-key').value.trim();if(!key)throw new Error('请填写唯一标识');if(editor.kind==='mcp'){if($('#resource-env').value.trim())data.env=JSON.parse($('#resource-env').value);if($('#resource-headers').value.trim())data.headers=JSON.parse($('#resource-headers').value);}await api(`/api/resources/${editor.kind==='mcp'?'mcp':'skills'}/${encodeURIComponent(key)}`,{method:'PUT',body:JSON.stringify({data,expected_version:editor.version})});$('#resource-editor').close();toast('配置已保存');load(editor.kind);}catch(e){$('#resource-save-error').textContent=e.message;}finally{button.disabled=false;}}
+  async function save() {if(!editor)return;const button=$('#resource-save');button.disabled=true;try{const data=JSON.parse($('#resource-json').value),key=$('#resource-key').value.trim();if(!key)throw new Error(I18n.t('请填写唯一标识'));if(editor.kind==='skill'){data.tier=$('#resource-skill-tier').value;for(const field of ['aliases','tags'])data[field]=$('#resource-skill-'+field).value.split(/[,，\n]/).map(v=>v.trim()).filter(Boolean);}if(editor.kind==='mcp'){if($('#resource-env').value.trim())data.env=JSON.parse($('#resource-env').value);if($('#resource-headers').value.trim())data.headers=JSON.parse($('#resource-headers').value);}await api(`/api/resources/${editor.kind==='mcp'?'mcp':'skills'}/${encodeURIComponent(key)}`,{method:'PUT',body:JSON.stringify({data,expected_version:editor.version})});$('#resource-editor').close();toast(I18n.t('配置已保存'));load(editor.kind);}catch(e){$('#resource-save-error').textContent=e.message;}finally{button.disabled=false;}}
   function renderChat(kind,data) {
     const el=root(kind),log=el.querySelector('.resource-chat-log'),signature=JSON.stringify(data);if(el.dataset.chatSignature===signature)return;el.dataset.chatSignature=signature;
     const follow=log.scrollHeight-log.scrollTop-log.clientHeight<40;
-    const usage=data.usage_total;if(usage)el.querySelector('.resource-chat header small').textContent=`独立对话 · 累计 ${Number(usage.used_tokens||0).toLocaleString('zh-CN')} token · ${usage.calls||0} 次调用`;
-    log.innerHTML=data.messages.map(m=>`<div class="resource-message ${m.role==='user'?'user':'assistant'}"><small>${m.role==='user'?'你':'资源助手'} · ${esc(new Date(m.created_at*1000).toLocaleString('zh-CN',{hour12:false}))}</small><p>${esc(m.content)}</p></div>`).join('')||'<div class="resource-chat-welcome"><h3>描述配置需求</h3><p>描述要添加的工具或技能。执行前会列出待确认的变更。</p></div>';
+    const usage=data.usage_total;if(usage)el.querySelector('.resource-chat header small').textContent=I18n.t`独立对话 · 累计 ${Number(usage.used_tokens||0).toLocaleString(I18n.dateLocale)} token · ${usage.calls||0} 次调用`;
+    log.innerHTML=data.messages.map(m=>`<div class="resource-message ${m.role==='user'?'user':'assistant'}"><small>${m.role==='user'?I18n.t('你'):I18n.t('资源助手')} · ${esc(new Date(m.created_at*1000).toLocaleString(I18n.dateLocale,{hour12:false}))}</small><p>${esc(m.content)}</p></div>`).join('')||I18n.html('<div class="resource-chat-welcome"><h3>描述配置需求</h3><p>描述要添加的工具或技能。执行前会列出待确认的变更。</p></div>');
     if(follow)log.scrollTop=log.scrollHeight;
-    const proposals=el.querySelector('.resource-proposals');proposals.innerHTML=(data.proposals||[]).map(p=>`<details class="resource-proposal" ${['pending','applying'].includes(p.state)?'open':''}><summary>${esc(({pending:'待确认变更',applying:'正在安装与配置',completed:'变更已完成',failed:'执行失败',interrupted:'执行已中断'})[p.state]||p.state)}</summary><pre>${esc(JSON.stringify(p.proposal,null,2))}</pre>${p.result?`<p>${esc(p.result)}</p>`:''}${['pending','failed','interrupted'].includes(p.state)?`<button class="btn primary" data-apply="${esc(p.id)}">应用变更</button>`:''}</details>`).join('');
-    proposals.querySelectorAll('[data-apply]').forEach(b=>b.onclick=async()=>{if(!b.dataset.confirmed){b.dataset.confirmed='yes';b.textContent='确认安装与配置';return;}b.disabled=true;try{await api(`/api/resources/proposals/${b.dataset.apply}/apply`,{method:'POST',body:JSON.stringify({confirm:true})});loadChat(kind);}catch(e){toast(e.message,true);b.disabled=false;}});
-    if((data.proposals||[]).some(p=>p.state==='completed'))load(kind);
+    const proposals=el.querySelector('.resource-proposals'),html=(data.proposals||[]).map(p=>`<details class="resource-proposal" data-proposal="${esc(p.id)}" ${['pending','applying'].includes(p.state)?'open':''}><summary>${esc(({pending:I18n.t('待确认变更'),applying:I18n.t('正在安装与配置'),completed:I18n.t('变更已完成'),failed:I18n.t('执行失败'),interrupted:I18n.t('执行已中断')})[p.state]||p.state)}</summary><pre>${esc(JSON.stringify(p.proposal,null,2))}</pre>${p.result?`<p>${esc(p.result)}</p>`:''}${['pending','failed','interrupted'].includes(p.state)?I18n.html`<button class="btn primary" data-apply="${esc(p.id)}">应用变更</button>`:''}</details>`).join('');
+    if(proposals._content!==html){
+      const top=proposals.scrollTop,left=proposals.scrollLeft;
+      const positions=new Map([...proposals.querySelectorAll('[data-proposal]')].map(box=>[box.dataset.proposal,{open:box.open,top:box.querySelector('pre').scrollTop,left:box.querySelector('pre').scrollLeft}]));
+      proposals.innerHTML=html;proposals._content=html;
+      proposals.querySelectorAll('[data-proposal]').forEach(box=>{
+        const saved=positions.get(box.dataset.proposal);if(!saved)return;
+        box.open=saved.open;const pre=box.querySelector('pre');pre.scrollTop=saved.top;pre.scrollLeft=saved.left;
+      });
+      proposals.scrollTop=top;proposals.scrollLeft=left;
+    }
+    proposals.querySelectorAll('[data-apply]').forEach(b=>b.onclick=async()=>{if(!b.dataset.confirmed){b.dataset.confirmed='yes';b.textContent=I18n.t('确认安装与配置');return;}b.disabled=true;try{await api(`/api/resources/proposals/${b.dataset.apply}/apply`,{method:'POST',body:JSON.stringify({confirm:true})});loadChat(kind);}catch(e){toast(e.message,true);b.disabled=false;}});
+    // 仅在新方案完成时刷新目录，后续聊天更新不折回已加载分页。
+    const completed=(data.proposals||[]).filter(p=>p.state==='completed').map(p=>p.id);
+    if(completed.some(id=>!proposals._completed?.includes(id)))load(kind);
+    proposals._completed=completed;
   }
-  async function loadChat(kind) {try{const data=await api(`/api/resources/${kind}/chat`);if(S.view===kind)renderChat(kind,data);}catch(e){root(kind).querySelector('.resource-chat-status').textContent=`管理对话读取失败：${e.message}`;}}
-  async function send(kind,event) {event.preventDefault();const form=event.currentTarget,input=form.querySelector('textarea'),text=input.value.trim();if(!text)return;const button=form.querySelector('button');button.disabled=true;const status=form.querySelector('.resource-chat-status');status.textContent='正在处理…';try{const result=await api(`/api/resources/${kind}/chat`,{method:'POST',body:JSON.stringify({message:text})});if(input.value.trim()===text)input.value='';if(S.view===kind)renderChat(kind,result);status.textContent=result.usage?`本次 ${result.usage.input_tokens+result.usage.output_tokens} token · ${result.usage.model}`:'';}catch(e){status.textContent=`处理失败：${e.message}。输入已保留，可重试。`;loadChat(kind);}finally{button.disabled=false;}}
-  function open(kind) {clearInterval(poll);shell(kind);load(kind);loadChat(kind);poll=setInterval(()=>{if(S.view!==kind){clearInterval(poll);return;}loadChat(kind);},2500);}
+  async function loadChat(kind) {try{const data=await api(`/api/resources/${kind}/chat`);if(S.view===kind)renderChat(kind,data);}catch(e){root(kind).querySelector('.resource-chat-status').textContent=I18n.t`管理对话读取失败：${e.message}`;}}
+  async function send(kind,event) {event.preventDefault();const form=event.currentTarget,input=form.querySelector('textarea'),text=input.value.trim();if(!text)return;const button=form.querySelector('button');button.disabled=true;const status=form.querySelector('.resource-chat-status');status.textContent=I18n.t('正在处理…');try{const result=await api(`/api/resources/${kind}/chat`,{method:'POST',body:JSON.stringify({message:text})});if(input.value.trim()===text)input.value='';if(S.view===kind)renderChat(kind,result);status.textContent=result.usage?I18n.t`本次 ${result.usage.input_tokens+result.usage.output_tokens} token · ${result.usage.model}`:'';}catch(e){status.textContent=I18n.t`处理失败：${e.message}。输入已保留，可重试。`;loadChat(kind);}finally{button.disabled=false;}}
+  function open(kind) {clearInterval(poll);shell(kind);load(kind);loadChat(kind);if(kind==='mcp')ExaSettings.load();poll=setInterval(()=>{if(S.view!==kind){clearInterval(poll);return;}loadChat(kind);},2500);}
   document.querySelectorAll('[data-resource]').forEach(button=>button.onclick=()=>{S.cur=null;show(button.dataset.resource);renderSessions();});
   $('#resource-save').onclick=save;
   $('#resource-editor').addEventListener('close',()=>{$('#resource-env').value='';$('#resource-headers').value='';});

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import uuid
 
 from spiritscout.bus.base import EventBus, EventHandler, Subscription, remember_event
@@ -34,9 +33,10 @@ class NatsBus(EventBus):
 
     async def stop(self) -> None:
         for s in self._nats_subs:
-            # 退订失败无所谓：下一行会把订阅表整体清空
-            with contextlib.suppress(Exception):
+            try:
                 await s.unsubscribe()
+            except Exception:  # noqa: BLE001, S110
+                pass
         self._nats_subs.clear()
         if self._nc:
             await self._nc.drain()

@@ -1,53 +1,47 @@
-"""通过 bubblewrap（Linux）或本机受限后端（Windows/macOS）执行 shell 和 Python。
+"""通过 bubblewrap 执行 shell 和 Python。
 
-Linux 下优先 bwrap：宿主文件系统只读，用户目录和控制目录遮蔽；附件只读，
-会话 sandbox 目录可写并持久化。
-Windows/macOS 没有 bwrap 命名空间能力，退到 host 后端：进程工作目录锁在
-会话 sandbox 目录、环境变量按白名单重建（HOME/TMP 指向会话目录）、超时强杀
-进程树、输出限幅与落盘规则不变；Windows 上再补一层只作用于本会话目录的 ACL
-收口（`tools/host_guard.py`：会话目录去继承 + 既有证据文件 deny 写），
-但**没有读隔离**——工具结果里会带 ``parsed["sandbox"] = "host"`` 与
-``parsed["hardening"]`` 以便审计区分。
-
-后端选择：``SPIRITSCOUT_SANDBOX_BACKEND``（auto/bwrap/host，默认 auto）。
-auto = 有 bwrap 用 bwrap；Windows/macOS 退 host；Linux 无 bwrap 时明确报错，
-不静默降级（服务器仍应装 bubblewrap）。
-"""
+宿主文件系统只读，用户目录和控制目录遮蔽；附件只读，会话 sandbox 目录可写并持久化。
+每次调用清理环境变量，并限制运行时间和输出。网络保持可用。
+默认 /tmp 为独立 tmpfs；合格轻量 CTF/AWDP 调用使用题级持久 /tmp。
+bwrap 不可用时返回错误，不直接在宿主执行。"""
 
 from __future__ import annotations
 
 import asyncio
+import codecs
 import contextlib
+import hashlib
 import os
-import re
+import shlex
 import shutil
 import signal
-import subprocess
+import stat
 import sys
 import tempfile
 import time
+from contextvars import ContextVar
 from pathlib import Path
 from typing import Any
 
-from spiritscout.platform_support import TreeGuard
+from spiritscout.core.models import RunMode
+from spiritscout.platform_support import app_root, is_frozen
+from spiritscout.tools.output import command_output
+from spiritscout.tools.sandbox_paths import (
+    open_directory,
+    sandbox_directory,
+    sandbox_tmp_directory,
+)
 from spiritscout.tools.spec import ToolResult
 
 _BWRAP = "bwrap"
-_BACKEND_ENV = "SPIRITSCOUT_SANDBOX_BACKEND"
-_BASH_ENV = "SPIRITSCOUT_HOST_BASH"
 _MIN_TIMEOUT = 5.0
 _MAX_TIMEOUT = 300.0
 _READ_CHUNK = 65536
 _LOG_ROTATE_BYTES = 10 * 1024 * 1024    # 单日志超限轮转（保留上一代 .old）
-_IS_WINDOWS = os.name == "nt"
-# host 后端保留的最小环境变量（其余一律不继承：用户 shell 里的密钥不进沙箱）
-_ENV_KEEP = (
-    "SystemRoot", "SystemDrive", "windir", "COMSPEC", "PATHEXT",
-    "NUMBER_OF_PROCESSORS", "PROCESSOR_ARCHITECTURE", "OS",
-)
-_NO_WINDOW = 0x08000000                 # CREATE_NO_WINDOW
-_NEW_GROUP = 0x00000200                 # CREATE_NEW_PROCESS_GROUP
-
+# 仅后台作业管理器设置；不能通过模型工具参数关闭普通命令的超时。
+background_output: ContextVar[Any] = ContextVar("sandbox_background_output", default=None)
+# 离线回归由可信调用方设置；不暴露为模型工具参数，也不改变普通赛题网络策略。
+offline_execution: ContextVar[bool] = ContextVar("sandbox_offline_execution", default=False)
 
 class _RotatingLog:
     """写入中按字节轮转，两代有界；stdout/stderr 在同一事件循环共用。"""
@@ -57,6 +51,9 @@ class _RotatingLog:
         self.previous = path.with_name(path.stem + ".old.log")
         self.limit = max(1, _LOG_ROTATE_BYTES)
         self.rotated = False
+        self.digest = hashlib.sha256()
+        self.previous_sha256 = ''
+        self.written_bytes = 0
         self._fh = path.open("ab", buffering=0)
         self._size = path.stat().st_size
         if self._size > self.limit:
@@ -67,6 +64,11 @@ class _RotatingLog:
             self._fh.truncate(0)
             self._size = 0
             self.rotated = True
+            self.previous_sha256 = hashlib.sha256(self.previous.read_bytes()).hexdigest()
+        elif self._size:
+            with path.open('rb') as existing:
+                while chunk := existing.read(_READ_CHUNK):
+                    self.digest.update(chunk)
 
     def write(self, chunk: bytes) -> None:
         data = memoryview(chunk)
@@ -74,7 +76,9 @@ class _RotatingLog:
             if self._size >= self.limit:
                 self._fh.close()
                 self.path.replace(self.previous)
+                self.previous_sha256 = self.digest.hexdigest()
                 self._fh = self.path.open("wb", buffering=0)
+                self.digest = hashlib.sha256()
                 self._size = 0
                 self.rotated = True
             take = min(len(data), self.limit - self._size)
@@ -82,281 +86,84 @@ class _RotatingLog:
             if not written:
                 raise OSError("日志写入未完成")
             self._size += written
+            self.written_bytes += written
+            self.digest.update(data[:written])
             data = data[written:]
 
     def close(self) -> None:
         self._fh.close()
 
 
-# ---------------------------------------------------------------- 后端选择
-
-
-def _requested_backend() -> str:
-    raw = (os.environ.get(_BACKEND_ENV) or "auto").strip().lower()
-    return raw if raw in {"auto", "bwrap", "host"} else "auto"
-
-
-def _bwrap_ready() -> bool:
-    return sys.platform.startswith("linux") and shutil.which(_BWRAP) is not None
-
-
-def sandbox_backend() -> str | None:
-    """当前生效的执行后端：``bwrap`` / ``host``；不可用返回 None。
-
-    auto 在 Linux 上只认 bwrap（服务器缺 bwrap 应显式修环境，不静默降级）；
-    Windows/macOS 没有命名空间能力，auto 即 host。
-    """
-    want = _requested_backend()
-    if want == "bwrap":
-        return "bwrap" if _bwrap_ready() else None
-    if want == "host":
-        return "host"
-    if _bwrap_ready():
-        return "bwrap"
-    if _IS_WINDOWS or sys.platform == "darwin":
-        return "host"
-    return None
-
-
 def sandbox_available() -> bool:
-    """执行后端可用性探测（工具调用与装配提示共用）。"""
-    if sandbox_backend() != "host":
-        return sandbox_backend() is not None
-    return _host_shell() is not None or _host_python() is not None
-
-
-# ---------------------------------------------------------------- 路径与解释器
+    """bwrap 可用性探测（工具调用与装配提示共用）。"""
+    return sys.platform.startswith("linux") and shutil.which(_BWRAP) is not None
 
 
 def _project_venv() -> Path | None:
     """项目自带虚拟环境（工具库全部封装于此，不依赖用户系统安装）。
 
-    沙箱路径：src/spiritscout/tools/sandbox.py → 项目根/.venv。
+    源码运行取仓库根/.venv；冻结构建取可执行文件旁/.venv，供 portable
+    部署自行放置工具层，不继承启动终端里已激活的无关虚拟环境。
     """
-    root = Path(__file__).resolve().parents[3]
-    candidates = [Path(os.environ["VIRTUAL_ENV"])] if os.environ.get("VIRTUAL_ENV") else []
+    root = app_root()
+    candidates: list[Path] = []
+    if not is_frozen() and os.environ.get("VIRTUAL_ENV"):
+        candidates.append(Path(os.environ["VIRTUAL_ENV"]))
     candidates.append(root / ".venv")
-    return next((venv for venv in candidates if _venv_python(venv) is not None), None)
-
-
-def _venv_python(venv: Path) -> Path | None:
-    for rel in (("bin", "python3"), ("bin", "python"), ("Scripts", "python.exe")):
-        candidate = venv.joinpath(*rel)
-        if candidate.exists():
-            return candidate
-    return None
+    return next((venv for venv in candidates if (venv / "bin" / "python3").exists()
+                 or (venv / "bin" / "python").exists()), None)
 
 
 def _venv_site_dirs(venv: Path) -> list[str]:
-    """site-packages：POSIX 在 lib/python*/，Windows 在 Lib/。"""
-    posix = [str(p) for p in sorted(venv.glob("lib/python*/site-packages"))]
-    return posix or ([str(venv / "Lib" / "site-packages")]
-                     if (venv / "Lib" / "site-packages").is_dir() else [])
+    return [str(p) for p in sorted(venv.glob("lib/python*/site-packages"))]
 
 
-_BASH_CACHE: dict[str, bool] = {}
-
-
-def _bash_works(path: str) -> bool:
-    """真跑一次再认：System32\\bash.exe 是 WSL 启动器，WSL 没装发行版时会直接失败，
-    只按路径存在判断会让每次工具调用都失败。"""
-    cached = _BASH_CACHE.get(path)
-    if cached is not None:
-        return cached
-    ok = False
-    try:
-        proc = subprocess.run(
-            [path, "-c", "printf ok"], capture_output=True, timeout=20,
-            creationflags=_NO_WINDOW if _IS_WINDOWS else 0, check=False)
-        ok = proc.returncode == 0 and b"ok" in proc.stdout
-    except (OSError, subprocess.SubprocessError):
-        ok = False
-    _BASH_CACHE[path] = ok
-    return ok
-
-
-def _find_bash() -> str | None:
-    """host 后端优先用 bash（Git Bash / WSL 语义一致，模型写的命令多半是 sh）。
-
-    顺序：显式覆盖 → Git for Windows 安装位 → PATH 里的 bash（排除 WSL 启动器）。
-    每个候选都实测能执行才算数。
-    """
-    override = os.environ.get(_BASH_ENV)
-    if override and Path(override).is_file():
-        return override
-    candidates: list[str] = []
-    if _IS_WINDOWS:
-        roots: list[Path] = []
-        # Git 不一定装在 C:\Program Files：从 git.exe 反推安装根（也覆盖 scoop/自定义盘符）
-        for exe in (shutil.which("git"), shutil.which("git.exe")):
-            if exe:
-                with contextlib.suppress(IndexError, OSError):
-                    roots.append(Path(exe).resolve().parents[1])
-        for base in (os.environ.get("PROGRAMFILES"), os.environ.get("PROGRAMW6432"),
-                     os.environ.get("LOCALAPPDATA")):
-            if base:
-                roots.append(Path(base) / "Git")
-                roots.append(Path(base) / "Programs" / "Git")
-        seen: set[str] = set()
-        for root in roots:
-            for rel in (("bin", "bash.exe"), ("usr", "bin", "bash.exe"),
-                        ("mingw64", "bin", "bash.exe")):
-                candidate = root.joinpath(*rel)
-                text = str(candidate)
-                if text not in seen and candidate.is_file():
-                    seen.add(text)
-                    candidates.append(text)
-    found = shutil.which("bash")
-    if found:
-        system_root = os.environ.get("SYSTEMROOT", r"C:\Windows").lower()
-        if not (found.lower().startswith(system_root.lower())):
-            candidates.append(found)
-    for candidate in candidates:
-        if _bash_works(candidate):
-            return candidate
-    return None
-
-
-def _host_shell() -> list[str] | None:
-    """host 后端的 shell 前缀；bash 用 -c（不加载 profile：避免 login shell 拖慢首调）。"""
-    bash = _find_bash()
-    if bash:
-        return [bash, "-c"]
-    if _IS_WINDOWS:
-        return [os.environ.get("COMSPEC") or "cmd.exe", "/c"]
-    return ["/bin/sh", "-c"]
-
-
-# Windows 盘符路径 → Git Bash（MSYS）形式。模型看到的工作区路径是
-# `C:\Users\x`，写进 shell 命令时常变成 `/C:/Users/x` 或 `C:/Users/x`，
-# bash 里一律找不到（实测 57 条命令全是「No such file or directory」，
-# 模型就此陷入换着写法的死循环）。执行前统一改写成 `/c/Users/x`。
-_MSYS_DRIVE_PATH = re.compile(r"(?<![\w])(/?)([A-Za-z]):([\\/][^\s\"'`;|&<>]*)")
-
-# Python 侧反过来：Windows 解释器不认 `/c/Users/x`，只认 `C:/Users/x`。
-# 只改「单字母 + 斜杠」这种明确的盘符形态，`/tmp`、`/usr/bin` 不碰。
-_MSYS_PATH_LITERAL = re.compile(r"([\"'])/([A-Za-z])/")
-
-
-def _to_host_shell_paths(command: str) -> str:
-    """把命令里的 Windows 盘符路径改写成 host shell 认的形式（幂等）。"""
-    if not _IS_WINDOWS:
-        return command
-
-    def rewrite(match: re.Match[str]) -> str:
-        drive = match.group(2).lower()
-        rest = match.group(3).replace("\\", "/")
-        return f"/{drive}{rest}"
-
-    return _MSYS_DRIVE_PATH.sub(rewrite, command)
-
-
-def _to_host_python_paths(code: str) -> str:
-    """把 Python 代码字符串字面量里的 `/c/...` 改回 `C:/...`（幂等）。"""
-    if not _IS_WINDOWS:
-        return code
-    return _MSYS_PATH_LITERAL.sub(lambda m: f"{m.group(1)}{m.group(2)}:/", code)
-
-
-def _host_path_hint(rundir: Path) -> str:
-    """给模型看的「这个路径在 host shell 里怎么写」，避免它自己猜。"""
-    text = str(rundir)
-    if not _IS_WINDOWS:
-        return text
-    posix = _to_host_shell_paths(text)
-    return f"{text}（bash 里写作 {posix}，也可以直接用相对路径）"
-
-
-def _link_attachments(rundir: Path, attachments: Path) -> None:
-    """把 attachments/ 变成工作目录里可直达的入口（软链，失败则目录联接）。
-
-    只是个便利入口：建不起来就跳过，工具结果里依然给出附件的真实路径。
-    """
-    link = rundir / "attachments"
-    if link.exists() or link.is_symlink():
-        return
-    with contextlib.suppress(OSError, NotImplementedError):
-        link.symlink_to(attachments, target_is_directory=True)
-        return
-    if not _IS_WINDOWS:
-        return
-    with contextlib.suppress(OSError, subprocess.SubprocessError):
-        subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(attachments)],
-                       capture_output=True, timeout=20, check=False,
-                       creationflags=_NO_WINDOW)
-
-
-def _host_python() -> str | None:
-    venv = _project_venv()
-    exe = _venv_python(venv) if venv is not None else None
-    if exe is not None:
-        return str(exe)
-    return shutil.which("python3") or shutil.which("python")
-
-
-def _host_path_dirs() -> list[str]:
-    """host 后端的 PATH：项目 venv → Git Bash 工具层 → 系统基础层。
-
-    用户主目录下的私有安装（~/.local/bin、pip --user、cargo 等）不进来。
-    """
-    dirs: list[str] = []
-    venv = _project_venv()
-    if venv is not None:
-        dirs += [str(venv / "Scripts"), str(venv / "bin")]
-    bash = _find_bash()
-    if bash:
-        git_root = Path(bash).resolve().parents[1]
-        for rel in ("usr/bin", "mingw64/bin", "bin"):
-            candidate = git_root / rel
-            if candidate.is_dir():
-                dirs.append(str(candidate))
-    if _IS_WINDOWS:
-        dirs += [str(Path(os.environ.get("SYSTEMROOT", r"C:\Windows")) / "System32"),
-                 os.environ.get("SYSTEMROOT", r"C:\Windows")]
-    else:
-        dirs += ["/usr/bin", "/bin"]
-    seen: set[str] = set()
-    return [d for d in dirs if not (d in seen or seen.add(d))]
-
-
-def _host_env(rundir: Path) -> dict[str, str]:
-    """最小环境：基础系统变量保留，HOME/TEMP 指向会话目录，其余不继承。"""
-    env = {key: os.environ[key] for key in _ENV_KEEP if os.environ.get(key)}
-    if _IS_WINDOWS:
-        sep = ";"
-        env["PATHEXT"] = env.get("PATHEXT", ".COM;.EXE;.BAT;.CMD")
-    else:
-        sep = ":"
-    env["PATH"] = sep.join(_host_path_dirs())
-    env["HOME"] = str(rundir)
-    env["USERPROFILE"] = str(rundir)      # Windows 的 HOME 等价物，别让工具写回真实主目录
-    env["TMPDIR"] = env["TEMP"] = env["TMP"] = str(rundir)
-    env["LANG"] = "C.UTF-8"
-    env["PYTHONUTF8"] = "1"
-    env["PYTHONIOENCODING"] = "utf-8"
-    venv = _project_venv()
-    site_dirs = _venv_site_dirs(venv) if venv is not None else []
-    if site_dirs:
-        env["PYTHONPATH"] = sep.join(site_dirs)
-    return env
+def _cuda_devices(root: Path = Path('/dev')) -> list[Path]:
+    """只开放当前用户可访问的 CUDA 字符设备，不开放整个宿主 /dev 或显示控制设备。"""
+    candidates = [root / name for name in ('nvidiactl', 'nvidia-uvm', 'nvidia-uvm-tools')]
+    candidates += [path for path in root.glob('nvidia[0-9]*') if path.name[6:].isdecimal()]
+    candidates += [path for path in (root / 'nvidia-caps').glob('nvidia-cap[0-9]*')
+                   if path.name[len('nvidia-cap'):].isdecimal()]
+    result = []
+    for path in candidates:
+        try:
+            if stat.S_ISCHR(path.lstat().st_mode) and os.access(path, os.R_OK):
+                result.append(path)
+        except OSError:
+            continue
+    return sorted(result)
 
 
 def _build_argv(workspace: Path, rundir: Path, inner: list[str], *,
-                guard_root: Path | None = None) -> list[str]:
+                guard_root: Path | None = None,
+                persistent_tmp: Path | None = None,
+                directory_fds: dict[Path, int] | None = None,
+                proxy_env: dict[str, str] | None = None) -> list[str]:
     """bwrap 参数：整机只读 + 控制面遮蔽 + 产物可写/附件只读 + 干净环境。
 
     工具来源：项目内 .venv（只读回挂并入 PATH/PYTHONPATH）——用户主目录、
     ~/.local、/usr/local 等私有安装层一律不进沙箱，智能体工具能力来自
     项目封装与发行版基础层。
     """
+    def source(path: Path) -> str:
+        # 目录身份已由宿主固定；不要在 bwrap 启动时再次解析可被替换的路径。
+        fd = (directory_fds or {}).get(path)
+        return f"/proc/self/fd/{fd}" if fd is not None else str(path)
+
     home = Path.home()
     argv = [
         _BWRAP,
         "--ro-bind", "/", "/",
         "--dev", "/dev",
+        # 云端/本地 LLM 与赛题计算设备独立：普通、轻量工具都可以使用已有 CUDA。
+        *(argument for device in _cuda_devices() for argument in ('--dev-bind', str(device), str(device))),
         "--unshare-pid",               # 不通过宿主 /proc/<pid>/root 绕过文件遮蔽
+        *(("--unshare-net",) if offline_execution.get() else ()),
         "--proc", "/proc",
-        "--tmpfs", "/tmp",
+        # 轻量 × CTF：/tmp 换成题级持久目录（tmpfs 每调用即焚会让小模型
+        # 陷入"解压→下次消失→再解压"的原地循环，实测反复打转）。
+        *(('--bind', source(persistent_tmp), '/tmp') if persistent_tmp is not None
+          else ("--tmpfs", "/tmp")),
         "--tmpfs", str(home),          # 主目录遮蔽：.ssh / 密钥库不可见
         # 宿主私有安装层遮蔽：/usr/local 是手工安装落点（用户自装工具、
         # 独立分发的二进制、私有库），整层遮蔽（bin 内 sbin 是符号链接，
@@ -380,12 +187,14 @@ def _build_argv(workspace: Path, rundir: Path, inner: list[str], *,
         site_dirs = _venv_site_dirs(venv)
     # 整个控制目录不可见，只开放约定的产物目录；同样覆盖位于 /tmp
     # 或主目录之外的工作区，不能仅靠遮蔽 execution.key 保护数据库。
-    argv += ["--tmpfs", str(workspace), "--bind", str(rundir), str(rundir)]
-    for name in ("attachments", "artifacts"):
+    argv += ["--tmpfs", str(workspace), "--bind", source(rundir), str(rundir)]
+    for name in ("attachments", "artifacts", "http-responses", "traffic-ca"):
+        if name == "traffic-ca" and not proxy_env:
+            continue
         directory = workspace / name
-        if directory.is_dir():
-            argv += ["--ro-bind" if name == "attachments" else "--bind",
-                     str(directory), str(directory)]
+        if directory in (directory_fds or {}) or directory.is_dir():
+            argv += ["--bind" if name == "artifacts" else "--ro-bind",
+                     source(directory), str(directory)]
     # 空控制目录本身也只读，不能伪造同名控制文件；不递归改变产物挂载。
     argv += ["--remount-ro", str(workspace)]
     argv += [
@@ -395,14 +204,27 @@ def _build_argv(workspace: Path, rundir: Path, inner: list[str], *,
         "--setenv", "PATH", ":".join(path_dirs),
         "--setenv", "HOME", str(rundir),
         "--setenv", "LANG", "C.UTF-8",
+        # TERM 留空时 gdb/pwndbg 等先报 terminfo 告警再干活——徒增噪音
+        "--setenv", "TERM", "xterm",
     ]
     if site_dirs:
         argv += ["--setenv", "PYTHONPATH", ":".join(site_dirs)]
+    for key, value in (proxy_env or {}).items():
+        argv += ["--setenv", key, value]
+    if background_output.get() is not None:
+        argv += ["--setenv", "PYTHONUNBUFFERED", "1"]
+    socket_path = (proxy_env or {}).get('SPIRITSCOUT_EGRESS_SOCKET')
+    if socket_path and not offline_execution.get():
+        from spiritscout.tools.egress_isolation import relay_command
+
+        mounted = '/tmp/spiritscout-egress.sock'
+        argv += ['--unshare-net', '--ro-bind', socket_path, mounted]
+        inner = relay_command(inner, mounted)
     return [*argv, *inner]
 
 
 async def _read_capped(stream: asyncio.StreamReader | None,
-                       cap: int, sink=None) -> tuple[bytes, int]:
+                       cap: int, sink=None, observe=None) -> tuple[bytes, int]:
     """流式读取并限幅：完整内容逐块写入 sink（落盘，过程不丢），
     内存只保留头尾，返回（保留字节, 实际总量）。"""
     if stream is None:
@@ -417,6 +239,8 @@ async def _read_capped(stream: asyncio.StreamReader | None,
         if not chunk:
             break
         total += len(chunk)
+        if observe is not None:
+            observe(chunk)
         if sink is not None:
             try:
                 sink.write(chunk)
@@ -434,29 +258,11 @@ async def _read_capped(stream: asyncio.StreamReader | None,
 
 
 def _kill_group(proc: asyncio.subprocess.Process) -> None:
-    """杀整个进程组：POSIX 杀 pgid；Windows 用 taskkill /T 连带子进程。"""
-    if _IS_WINDOWS:
-        with contextlib.suppress(OSError):
-            subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)],
-                           capture_output=True, creationflags=_NO_WINDOW,
-                           timeout=10, check=False)
-        return
-    with contextlib.suppress(ProcessLookupError, PermissionError):
+    """杀整个进程组（bwrap 与沙箱内全部子进程）。"""
+    try:
         os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-
-
-def _force_close(proc: asyncio.subprocess.Process) -> None:
-    """Windows 收口：进程树已被 taskkill 杀掉，但 MSYS/管道句柄不保证发 EOF。
-
-    直接关传输层，避免 wait() 与读取任务永久挂住（一次超时拖住整条回合）。
-    """
-    transport = getattr(proc, "_transport", None)
-    if transport is not None:
-        with contextlib.suppress(BaseException):
-            transport.close()
-    with contextlib.suppress(BaseException):
-        if proc.returncode is None:
-            proc.kill()
+    except (ProcessLookupError, PermissionError):
+        pass
 
 
 def _decode(data: bytes, total: int, cap: int) -> str:
@@ -480,12 +286,14 @@ async def sandbox_exec(
     guard_root: str | None = None,
     log_name: str = "last_output",
     max_output_chars: int = 20000,
+    _run_mode: RunMode | None = None,
+    _lightweight_local: bool = False,
     **_: Any,
 ) -> ToolResult:
-    """沙箱执行：language=shell 跑 shell；language=python 落盘后由项目 venv 运行。
+    """沙箱执行：language=shell 跑 ``bash -c``；language=python 落盘后 ``python3`` 运行。
 
     ok 语义：进程正常结束（任何退出码）即 ok=True——退出码非零是结果不是
-    工具故障；只有后端不可用 / 启动失败 / 超时被终止才 ok=False。
+    工具故障；只有沙箱不可用 / 启动失败 / 超时被终止才 ok=False。
     workspace_scope：工作目录作用域（调用方传题级 id 等）。非空时工作目录
     细分为 ``sandbox/<scope>/``——多题并行时各题产物、脚本与日志互不覆盖；
     缺省时沿用会话级 ``sandbox/``（SRC 等单目标场景不受影响）。
@@ -495,121 +303,112 @@ async def sandbox_exec(
     if not code.strip():
         return ToolResult(tool="sandbox_exec", ok=False, returncode=-1,
                           error="执行内容为空")
-    backend = sandbox_backend()
-    if backend is None or (backend == "host" and _host_shell() is None
-                           and not _host_python()):
+    if not sandbox_available():
         return ToolResult(tool="sandbox_exec", ok=False, returncode=-1, error=(
-            "执行后端不可用：Linux 需要 bubblewrap（bwrap）并确认命名空间权限；"
-            "Windows/macOS 需要 bash（Git Bash）或本机 Python。"
-            "本次未在宿主直接执行任何命令。"))
+            "沙箱不可用：需要 Linux 与 bubblewrap（bwrap）。Windows/macOS 请使用 Docker 部署，"
+            "Linux 请安装 bubblewrap 并确认命名空间权限；不会直接在宿主执行"
+            "（不静默降级为宿主直跑）。"))
     if not workspace_root:
         return ToolResult(tool="sandbox_exec", ok=False, returncode=-1,
                           error="缺少工作区配置（workspace_root）")
-    try:
-        timeout = max(_MIN_TIMEOUT, min(float(timeout), _MAX_TIMEOUT))
-    except (TypeError, ValueError):
-        timeout = 60.0
+    if background_output.get() is not None:
+        timeout = None
+    else:
+        try:
+            timeout = max(_MIN_TIMEOUT, min(float(timeout), _MAX_TIMEOUT))
+        except (TypeError, ValueError):
+            timeout = 60.0
     lang = "python" if str(language).lower() == "python" else "shell"
+    lightweight = _lightweight_local and _run_mode in (RunMode.CTF, RunMode.AWDP)
+    if lightweight:
+        with contextlib.suppress(TypeError, ValueError):
+            max_output_chars = min(int(max_output_chars), 4000)
     workspace = Path(workspace_root).resolve()
-    try:
-        workspace.mkdir(parents=True, exist_ok=True)
-        # 不允许旧脚本留下的目录符号链接将控制目录重新挂进沙箱。
-        for name in ("sandbox", "attachments", "artifacts"):
-            if (workspace / name).is_symlink():
-                raise OSError(f"沙箱共享目录不能是符号链接: {name}")
-        # 会话持久工作目录：workspace_root 即会话工作区，跨调用保留产物，
-        # 供后续回合与附件工具继续使用（/tmp 为每运行 tmpfs，不持久）；
-        # 题级作用域在会话工作区内再细分一层（多题并行互不覆盖）。
-        rundir = workspace / "sandbox"
-        if workspace_scope:
-            safe = re.sub(r"[^A-Za-z0-9._-]+", "_", str(workspace_scope)).strip("._-")[:80]
-            if safe:
-                rundir = rundir / safe
-        rundir.mkdir(parents=True, exist_ok=True)
-        (workspace / "artifacts").mkdir(exist_ok=True)
-        (workspace / "attachments").mkdir(exist_ok=True)
-        # 附件挂到工作目录里：模型最自然的写法就是 `cat attachments/base64.c`，
-        # 而它实际在 sandbox/<scope>/ 下（相对路径算错就一路 No such file）。
-        # 链接建不起来（无权限）不算错，工具结果里仍会给出真实路径。
-        _link_attachments(rundir, workspace / "attachments")
-    except OSError as exc:
-        return ToolResult(tool="sandbox_exec", ok=False, returncode=-1,
-                          error=f"沙箱工作区不可用: {exc}")
+    from spiritscout.traffic.proxy import tool_environment
 
-    # host 后端没有命名空间，补一层只作用于本会话目录的 ACL 收口：会话目录去继承
-    # （别的本地账户读不到本次证据），证据目录 deny 写（Agent 改不了自己的判定依据）。
-    # 拿不到权限或非 Windows 时跳过，不阻断执行，原因随 parsed.hardening 留痕。
-    hardening = None
-    if backend == "host":
-        from spiritscout.tools import host_guard
+    proxy_env = await tool_environment(workspace)
+    with contextlib.ExitStack() as directories:
+        try:
+            workspace.mkdir(parents=True, exist_ok=True)
+            relative = sandbox_directory(workspace_scope)
+            rundir = workspace / relative
+            directory_fds = {rundir: directories.enter_context(
+                open_directory(workspace, relative, create=True))}
+            for name in ("attachments", "artifacts", "http-responses"):
+                try:
+                    fd = directories.enter_context(open_directory(
+                        workspace, Path(name), create=name == "artifacts"))
+                except FileNotFoundError:
+                    continue
+                directory_fds[workspace / name] = fd
+            persistent_tmp = None
+            if lightweight:
+                temporary = sandbox_tmp_directory(workspace_scope)
+                persistent_tmp = workspace / temporary
+                directory_fds[persistent_tmp] = directories.enter_context(
+                    open_directory(workspace, temporary, create=True))
+            if proxy_env:
+                directory_fds[workspace / "traffic-ca"] = directories.enter_context(
+                    open_directory(workspace, Path("traffic-ca")))
+        except (OSError, ValueError) as exc:
+            return ToolResult(tool="sandbox_exec", ok=False, returncode=-1,
+                              error=f"沙箱工作区不可用（目录不能是符号链接）: {exc}")
+        return await _execute_sandbox(
+            code, lang, timeout, workspace, rundir, persistent_tmp, directory_fds,
+            guard_root, log_name, max_output_chars, started, proxy_env=proxy_env)
 
-        report = host_guard.harden(workspace, (workspace / "attachments",))
-        hardening = report.as_dict()
 
-    env: dict[str, str] | None = None
-    popen_kwargs: dict[str, Any] = {}
+async def _execute_sandbox(code: str, lang: str, timeout: float | None, workspace: Path,
+                           rundir: Path, persistent_tmp: Path | None,
+                           directory_fds: dict[Path, int], guard_root: str | None,
+                           log_name: str, max_output_chars: int, started: float,
+                           proxy_env: dict[str, str] | None = None) -> ToolResult:
+    directory = Path(f"/proc/self/fd/{directory_fds[rundir]}")
+    pipeline_name = None
     if lang == "python":
-        # host 后端跑的是本机 Windows Python：模型从 shell 语境带过来的
-        # `/c/...` 路径要翻回盘符写法，否则脚本里 open('/c/x') 必炸。
-        if backend == "host":
-            code = _to_host_python_paths(code)
-        script = rundir / f"run_{int(time.time() * 1000)}_{os.urandom(3).hex()}.py"
-        script.write_text(code, encoding="utf-8")
-        py = _host_python() if backend == "host" else None
-        if backend == "bwrap":
-            venv = _project_venv()
-            inner = [str(venv / "bin" / "python3") if venv is not None else "python3",
-                     str(script)]
-        else:
-            if py is None:
-                return ToolResult(tool="sandbox_exec", ok=False, returncode=-1,
-                                  error="host 后端缺少可用 Python 解释器")
-            inner = [py, str(script)]
+        filename = f"run_{int(time.time() * 1000)}_{os.urandom(6).hex()}.py"
+        fd = os.open(filename, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                     0o600, dir_fd=directory_fds[rundir])
+        with os.fdopen(fd, "w", encoding="utf-8") as script:
+            script.write(code)
+        venv = _project_venv()
+        py = str(venv / "bin" / "python3") if venv is not None else "python3"
+        inner = [py, str(rundir / filename)]
     else:
-        if backend == "bwrap":
+        if persistent_tmp is not None:
+            pipeline_name = f".pipeline-{os.urandom(8).hex()}"
+            handler = ('_ss_rc=$? _ss_codes=("${PIPESTATUS[@]}"); '
+                       'printf "%s" "${_ss_codes[*]}" > ' + shlex.quote(str(rundir / pipeline_name))
+                       + '; exit "$_ss_rc"')
+            inner = ["bash", "-o", "pipefail", "-c", "trap " + shlex.quote(handler) + " EXIT\n" + code]
+        else:
             inner = ["bash", "-c", code]
-        else:
-            shell = _host_shell()
-            if shell is None:
-                return ToolResult(tool="sandbox_exec", ok=False, returncode=-1,
-                                  error="host 后端缺少可用 shell（装 Git Bash 或改 SPIRITSCOUT_HOST_BASH）")
-            # Git Bash 是 MSYS：`C:\x` 与 `/C:/x` 都不认，先统一成 `/c/x`
-            code = _to_host_shell_paths(code)
-            inner = [*shell, code]
 
-    if backend == "bwrap":
-        guard = Path(guard_root).resolve() if guard_root else None
-        argv = _build_argv(workspace, rundir, inner, guard_root=guard)
-        popen_kwargs["start_new_session"] = True
-    else:
-        argv = inner
-        env = _host_env(rundir)
-        if _IS_WINDOWS:
-            popen_kwargs["creationflags"] = _NO_WINDOW | _NEW_GROUP
-        else:
-            popen_kwargs["start_new_session"] = True
-
-    guard = TreeGuard()
+    # bwrap 需要继承描述符完成挂载，但执行的程序不能据此访问宿主父目录。
+    close_fds = " ".join(f"{fd}<&-" for fd in directory_fds.values())
+    inner = ["bash", "-c", f'exec {close_fds}; exec "$@"', "sandbox", *inner]
+    guard = Path(guard_root).resolve() if guard_root else None
+    argv = _build_argv(workspace, rundir, inner, guard_root=guard,
+                       persistent_tmp=persistent_tmp, directory_fds=directory_fds, proxy_env=proxy_env)
     try:
         proc = await asyncio.create_subprocess_exec(
-            *argv, cwd=str(rundir), env=env,
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-            **popen_kwargs)
+            *argv, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+            start_new_session=True, pass_fds=tuple(directory_fds.values()))
     except OSError as exc:
-        guard.close()
         return ToolResult(tool="sandbox_exec", ok=False, returncode=-1,
-                          error=f"执行启动失败（{backend}）: {exc}")
-    # 正常结束也要收口后代：命令里 `cmd &` 拉起的后台进程不许在工具返回后继续写文件
-    guard.attach(proc.pid)
+                          error=f"沙箱启动失败: {exc}")
 
     cap = max(1000, int(max_output_chars))
     # 完整输出逐块落盘（工作目录内，跨调用可查）——上下文只进头尾摘要，
     # 过程不因截断而丢失；需要细节时模型用沙箱按需读取该文件
     log_name = Path(str(log_name)).name[:160] or "last_output"
+    observer = background_output.get()
+    if observer is not None:
+        observer("started", proc.pid)
     log_path = None
     try:
         # 同题分支和同回合多工具可能同名并发，返回的证据路径必须永久对应本次调用。
-        fd, filename = tempfile.mkstemp(prefix=f"{log_name}-", suffix=".log", dir=rundir)
+        fd, filename = tempfile.mkstemp(prefix=f"{log_name}-", suffix=".log", dir=directory)
         os.close(fd)
         log_path = Path(filename)
         # 日志代际轮转：单文件超限就把上一代挪到 .old——完整过程保留最近
@@ -618,30 +417,45 @@ async def sandbox_exec(
     except OSError:
         log_fh = None
         log_path = None
-    out_task = asyncio.create_task(_read_capped(proc.stdout, cap, sink=log_fh))
-    err_task = asyncio.create_task(_read_capped(proc.stderr, cap, sink=log_fh))
+    observe = background_output.get() or command_output.get()
+    streams = {name: {"digest": hashlib.sha256(), "decoder": codecs.getincrementaldecoder('utf-8')('strict'),
+                      "lossy": False, "nul": False, "head": bytearray(), "bytes": 0}
+               for name in ('stdout', 'stderr')}
+
+    def capture(name: str, chunk: bytes) -> None:
+        state = streams[name]
+        state['digest'].update(chunk)
+        state['bytes'] += len(chunk)
+        state['nul'] |= b'\x00' in chunk
+        state['head'].extend(chunk[:max(0, 128 - len(state['head']))])
+        if not state['lossy']:
+            try:
+                state['decoder'].decode(chunk)
+            except UnicodeDecodeError:
+                state['lossy'] = True
+        if observe is not None:
+            observe(name, chunk)
+
+    out_task = asyncio.create_task(_read_capped(proc.stdout, cap, sink=log_fh,
+        observe=lambda data: capture("stdout", data)))
+    err_task = asyncio.create_task(_read_capped(proc.stderr, cap, sink=log_fh,
+        observe=lambda data: capture("stderr", data)))
     timed_out = False
     try:
-        async with guard.tracking():
-            try:
-                await asyncio.wait_for(proc.wait(), timeout=timeout)
-            except TimeoutError:
-                timed_out = True
-                _kill_group(proc)
-                if _IS_WINDOWS:
-                    _force_close(proc)
-                else:
-                    with contextlib.suppress(BaseException):
-                        await asyncio.wait_for(proc.wait(), timeout=5)
-    except BaseException:
-        # 取消（会话停止）/异常路径：tracking 退出时已先收口后代（此时父进程还活着，
-        # 进程树完整），这里只补父进程与管道清理，然后原样抛出——不残留沙箱进程
+        await asyncio.wait_for(proc.wait(), timeout=timeout)
+    except TimeoutError:
+        timed_out = True
         _kill_group(proc)
-        if _IS_WINDOWS:
-            _force_close(proc)
-        else:
-            with contextlib.suppress(BaseException):
-                await asyncio.wait_for(proc.wait(), timeout=5)
+        try:
+            await asyncio.wait_for(proc.wait(), timeout=5)
+        except TimeoutError:
+            pass
+    except BaseException:
+        # 取消（会话停止）/异常路径同样不留活口：杀进程组、回收、关日志，
+        # 然后原样抛出——停止后不得残留沙箱进程
+        _kill_group(proc)
+        with contextlib.suppress(BaseException):
+            await asyncio.wait_for(proc.wait(), timeout=5)
         out_task.cancel()
         err_task.cancel()
         with contextlib.suppress(BaseException):
@@ -649,12 +463,12 @@ async def sandbox_exec(
         if log_fh is not None:
             log_fh.close()
         raise
-    # 直接子进程已退出：tracking 已把 `cmd &` 式后台子进程一并带走，管道随之关闭
+    capture_complete = True
     try:
-        # 超时/被杀后管道可能不再发 EOF：只等一小会儿，拿已读到的部分收尾
         (out_b, out_total), (err_b, err_total) = await asyncio.wait_for(
-            asyncio.gather(out_task, err_task), timeout=0.8 if timed_out else 5)
+            asyncio.gather(out_task, err_task), timeout=5)
     except TimeoutError:
+        capture_complete = False
         out_task.cancel()
         err_task.cancel()
         await asyncio.gather(out_task, err_task, return_exceptions=True)
@@ -664,23 +478,56 @@ async def sandbox_exec(
         if log_fh is not None:
             log_fh.close()
     rc = proc.returncode if proc.returncode is not None else -1
+    pipeline_statuses = []
+    if pipeline_name:
+        try:
+            fd = os.open(pipeline_name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+                         dir_fd=directory_fds[rundir])
+            try:
+                if stat.S_ISREG(os.fstat(fd).st_mode) and os.fstat(fd).st_size <= 1024:
+                    values = os.read(fd, 1024).decode().split()
+                    if len(values) <= 128 and all(v.isdigit() and 0 <= int(v) <= 255 for v in values):
+                        pipeline_statuses = [int(v) for v in values]
+            finally:
+                os.close(fd)
+        except (OSError, UnicodeError):
+            pass
+        finally:
+            with contextlib.suppress(OSError):
+                os.unlink(pipeline_name, dir_fd=directory_fds[rundir])
+    pipeline_partial = (not timed_out and rc == 141 and len(pipeline_statuses) > 1
+                        and pipeline_statuses[-1] == 0 and out_total > 0 and not err_total
+                        and all(code in (0, 141) for code in pipeline_statuses))
 
     duration = (time.perf_counter() - started) * 1000
     stdout = _decode(out_b, out_total, max_output_chars)
     stderr = _decode(err_b, err_total, max_output_chars)
+    captures = {}
+    for name, state in streams.items():
+        if capture_complete and not state['lossy']:
+            try:
+                state['decoder'].decode(b'', final=True)
+            except UnicodeDecodeError:
+                state['lossy'] = True
+        captures[name + '_capture'] = {"sha256": state['digest'].hexdigest(), "bytes": state['bytes'],
+            "complete": capture_complete, "text_decode_lossy": state['lossy'], "contains_nul": state['nul'],
+            "preview_truncated": state['bytes'] > cap, "head_hex": bytes(state['head']).hex()}
     return ToolResult(
         tool="sandbox_exec", ok=not timed_out, returncode=rc,
         stdout=stdout, stderr=stderr, timed_out=timed_out,
-        parsed={"language": lang, "exit_code": rc, "sandbox": backend,
+        parsed={"language": lang, "exit_code": rc,
                 "duration_ms": round(duration, 1), "workdir": str(rundir),
-                "workdir_hint": _host_path_hint(rundir),
-                "attachments_dir": str(workspace / "attachments"),
-                "attachments_rel": os.path.relpath(workspace / "attachments", rundir),
-                "artifacts_dir": str(workspace / "artifacts"),
-                "hardening": hardening or {},
-                "output_file": str(log_path) if log_path else "",
+                "output_file": str(rundir / log_path.name) if log_path else "",
+                "output_sha256": log_fh.digest.hexdigest() if log_fh else '',
+                "previous_output_sha256": log_fh.previous_sha256 if log_fh else '',
+                "output_complete": bool(log_fh and capture_complete
+                    and log_fh.written_bytes == sum(state['bytes'] for state in streams.values())),
+                **captures,
+                "tmp_persistent": persistent_tmp is not None,
+                **({"pipeline_statuses": pipeline_statuses, "pipeline_partial": pipeline_partial}
+                   if pipeline_name else {}),
                 "output_rotated": bool(log_fh and log_fh.rotated),
-                "previous_output_file": str(log_fh.previous)
+                "previous_output_file": str(rundir / log_fh.previous.name)
                 if log_fh and log_fh.previous.exists() else ""},
         error=(f"执行超时（{timeout:.0f}s），进程已终止" if timed_out else ""),
         duration_ms=duration,

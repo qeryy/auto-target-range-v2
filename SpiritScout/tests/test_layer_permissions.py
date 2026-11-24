@@ -16,6 +16,11 @@ from spiritscout.core.models import AgentType, BlackboardLayer
 
 
 class ReconClueLayerAccessTests(unittest.TestCase):
+    def test_js_reverse_writes_unified_assets_but_not_legacy_js_intel(self) -> None:
+        self.assertTrue(can_write(AgentType.JS_REVERSE, BlackboardLayer.ASSET))
+        self.assertTrue(can_write(AgentType.JS_REVERSE, BlackboardLayer.TOPOLOGY))
+        self.assertFalse(can_write(AgentType.JS_REVERSE, BlackboardLayer.JS_INTEL))
+
     def test_port_scan_and_host_vuln_may_write_recon_clue(self) -> None:
         self.assertTrue(can_write(AgentType.PORT_SCAN, BlackboardLayer.RECON_CLUE))
         self.assertTrue(can_write(AgentType.HOST_VULN, BlackboardLayer.RECON_CLUE))
@@ -23,7 +28,7 @@ class ReconClueLayerAccessTests(unittest.TestCase):
     def test_clue_write_passes_store_permission_gate(self) -> None:
         for agent in (AgentType.PORT_SCAN, AgentType.HOST_VULN):
             with self.subTest(agent=agent.value), \
-                    tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+                    tempfile.TemporaryDirectory() as tmp:
                 bb = Blackboard(Path(tmp) / "bb.db")
                 version = bb.write(
                     BlackboardLayer.RECON_CLUE, f"clue-{agent.value}",

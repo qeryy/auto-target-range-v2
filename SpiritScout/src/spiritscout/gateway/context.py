@@ -8,6 +8,43 @@ import math
 from typing import Any
 
 from spiritscout.core.models import BlackboardLayer
+from spiritscout.ctf.evidence_memory import NORMAL_GUIDANCE as EVIDENCE_REUSE_GUIDANCE
+
+# 执行规范与现场数据分开；云端旧会话只追加一次，不重写 system 或历史前缀。
+EXECUTION_DATA_GUIDANCE = (
+    '精确数据规范：Token/JWT/Cookie/密钥/编码串、URL/端口/路径/ID、Flag/哈希/偏移/长度及响应字段，'
+    '从原始文件、结构化工具结果或实际变量直接读取、解析并传递，不凭记忆重构或手抄长串；'
+    '保留大小写、编码和字节，秘密优先用受限引用。函数/参数/字段以已读源码或本机帮助为准，'
+    '参数报错先核对实际用法再修正。已有完整原文或可靠变量直接复用，不为确认副本重复读取；'
+    '来源截断、有歧义或现场变化才回读。摘要和自己的旧分析不是原始证据；读取失败保留未知，'
+    '不猜补缺失值。二进制保留原字节，以hex/Base64/转义形式查看，不用ignore/replace掩盖解码失败。'
+    '提交答案前核对原始来源与完整性。'
+)
+
+
+FAILURE_ATTRIBUTION_GUIDANCE = (
+    '错误归因：区分失败事实、原因假设和已验证结论，证据不足标原因未定。自写脚本出错先沿完整异常链定位首个偏离，'
+    '核对输入、本机接口及脚本逻辑；异步/CDP按需记录连接、发送、接收、响应ID匹配、解析阶段，'
+    '超时报最后完成阶段与待匹配ID，不打印凭据；检查回调是否注册、是否处理了返回值。'
+    '超时或连接失败本身不能证明目标/环境故障。重启服务、换环境或重建会话前先做能区分原因的最小检查；'
+    '脚本缺陷足以解释失败时先修脚本。有证据支持环境异常时按事实处理，不机械重跑全部检查。'
+    '重试说明对应的修正或条件变化；只延长等待、换文件名或复述旧推测不算已修复。'
+)
+
+
+def ensure_execution_data_guidance(state: dict[str, Any], gateway: Any) -> None:
+    """云端执行契约按独立版本追加；轻量模式保持原请求。"""
+    if getattr(getattr(gateway, 'config', None), 'lightweight_local', False):
+        return
+    for version, guidance in (('execution_data_guidance_v1', EXECUTION_DATA_GUIDANCE),
+                              ('failure_attribution_guidance_v1', FAILURE_ATTRIBUTION_GUIDANCE),
+                              ('evidence_reuse_guidance_v1', EVIDENCE_REUSE_GUIDANCE)):
+        if state.get(version):
+            continue
+        messages = state.setdefault('messages', [])
+        if not any(message.get('content') == guidance for message in messages):
+            messages.append({'role': 'user', 'content': guidance, '_context_contract': True})
+        state[version] = True
 
 
 def estimate_input_tokens(messages: list[dict[str, Any]],
@@ -24,44 +61,6 @@ def estimate_input_tokens(messages: list[dict[str, Any]],
     return math.ceil(ascii_chars / 3 + non_ascii_bytes / 2) + len(messages) * 8 + 32
 
 
-OUTPUT_FLOOR_TOKENS = 512
-"""输出上限的保底值。
-
-128 只够写一两句话：本机实测模型想写一段 base64 表生成脚本时，输出被顶在
-128 token，每次都在 `for ...:` 的缩进块开头断掉，落成 IndentationError，
-模型据此判断「算法写错了」，回头重读源码——一整轮就这么耗掉了。工具调用
-本身（含 arguments）通常就要 200~600 token，512 才是一个可用的下限。
-"""
-
-# 估算偏低的兜底比例：离线估算（ASCII 三字符一 token、中文按字节的一半）对
-# 中文工具调用和代码块会少算 10%~15%，本机实测「估 8.1k、真 8.57k」直接把
-# 请求撞成 400。留两成余量比反复失败划算——实测只超 41 token 就把整条路线报废。
-TOKEN_SAFETY_RATIO = 0.18
-TOKEN_SAFETY_MIN = 512
-"""估算余量的绝对下限：小窗口里一成不够，至少留这么多。"""
-
-
-def clamp_output_tokens(messages: list[dict[str, Any]],
-                        tools: list[dict[str, Any]] | None,
-                        context_window: int,
-                        want: int | None) -> int | None:
-    """把输出上限收进模型窗口：窗口 − 估算输入 − 余量。
-
-    小窗口模型（本地部署 4k/8k 很常见）一旦「输入 + 输出」超过窗口，端点直接
-    400（litellm.ContextWindowExceededError），上层只看到「主备均不可用」，
-    排查时完全看不出是额度撞墙。这里按估算输入把输出余量收到窗口内：宁可少写
-    一点，也要让这一次调用能返回可解析的正文。want 为空或窗口未知时原样返回。
-    """
-    if want is None or context_window <= 0:
-        return want
-    used = estimate_input_tokens(messages, tools)
-    safety = max(TOKEN_SAFETY_MIN, int(used * TOKEN_SAFETY_RATIO))
-    room = context_window - used - safety - OUTPUT_FLOOR_TOKENS
-    if room <= OUTPUT_FLOOR_TOKENS:
-        return OUTPUT_FLOOR_TOKENS
-    return min(want, room)
-
-
 def input_window_budget(context_window: int, reserved_output: int = 0) -> int | None:
     """按声明容量留出输出和整理空间；未知容量不伪装成某模型的真实窗口。"""
     if context_window <= 0:
@@ -73,11 +72,12 @@ def input_window_budget(context_window: int, reserved_output: int = 0) -> int | 
 # 这些字段可以超过软预算，不能为了缩短输入而丢掉授权、任务或用户回答。
 _PROTECTED = {"constraints", "task_intent", "用户答复", "scope", "rules", "mission",
               "target", "available_tactics", "shared_context", "business_context",
-              "reference_skills", "reference_skills_hint", "world_state",
-              "project_rules", "user_context",
+              "new_messages", "chat_history", "attachments", "instruction",
+              "reference_skills", "world_state", "project_rules", "project_context", "user_context",
+              "available_skills", "skill_context", "skill_observations",
               "authorization", "testing_rules", "user_replies",
               "competition_context", "platform_facts", "灵枢当前指令",
-              "active_tasks", "steering_status", "competition_status"}
+              "active_tasks", "steering_status", "competition_status", "user_type_hints", "exploration_display"}
 
 
 def compact_json(payload: dict[str, Any], max_chars: int = 8000) -> str:
@@ -135,7 +135,7 @@ def business_digest(context: dict[str, Any], *, version: int | None = None) -> d
     if not context:
         return {}
     keys = ("coverage", "ready_for_testing", "target", "observed_pages", "observed_endpoints",
-            "recorded_transactions", "har_transactions")
+            "recorded_transactions", "har_transactions", "surface_assessment")
     out = {key: context[key] for key in keys if key in context}
     out["record_id"] = "business-context"
     if version is not None:
@@ -215,12 +215,14 @@ def shared_context(blackboard: Any) -> dict[str, Any]:
     out = business_digest(context[0], version=context[1]) if context else {}
     replies = blackboard.query(BlackboardLayer.RECON_CLUE, limit=8,
                                data_filter=("clue_type", "user_reply"))
-    historical = blackboard.read(BlackboardLayer.TOPOLOGY, "historical-assets")
-    if historical:
-        out["historical_assets"] = historical
-    project_memory = blackboard.read(BlackboardLayer.TOPOLOGY, "project-memory")
-    if project_memory:
-        out["project_memory"] = project_memory
+    history_policy = blackboard.read(BlackboardLayer.TOPOLOGY, "history-policy") or {}
+    project_memory = blackboard.read(BlackboardLayer.TOPOLOGY, "project-memory") or {}
+    if not (history_policy.get("on_demand") or project_memory.get("history_on_demand")):
+        historical = blackboard.read(BlackboardLayer.TOPOLOGY, "historical-assets")
+        if historical:
+            out["historical_assets"] = historical
+        if project_memory:
+            out["project_memory"] = project_memory
     if replies:
         out["user_replies"] = [{"record_id": rec["record_id"], "version": rec["version"],
                                 "question": rec["data"].get("detail", ""),
@@ -247,20 +249,15 @@ def compact_history(messages: list[dict[str, Any]], max_chars: int = 48000) -> N
         if i < 2 or i >= len(messages) - 2 or i in recent_users:
             continue
         content = message.get("content")
+        if message.get('_progress_reminder'):
+            # 框架展示提醒不是用户声明；完整契约已单独保留，旧提醒可缩短。
+            message['content'] = '公开探索展示约定已在前文提供。'
+            continue
         if (message.get("_context_contract") or message.get("role") not in {"assistant", "tool"}
                 or not isinstance(content, str) or len(content) < 800):
             continue
         # 只压缩观察正文；函数名、调用 ID 和参数仍完整保留。
         message["content"] = content[:400] + "\n[早期观察已节选；需要细节时查对应执行记录]\n" + content[-250:]
-
-
-_COMPACTION_PASSES = ((400, 250, 800), (120, 80, 200), (60, 0, 0))
-"""整理强度阶梯：(保留头部, 保留尾部, 只处理多长的正文)。
-
-一轮温和节选常常压不进小窗口：工具声明、系统契约和几十条短观察加起来仍会超。
-本机实测 16k 窗口跑到第 44 回合时，第一遍节选后输入依然超过窗口，请求直接 400，
-整条路线以「主备均不可用」收尾。逐级加强才压得下来。
-"""
 
 
 def compact_history_tokens(messages: list[dict[str, Any]], max_tokens: int, *,
@@ -274,74 +271,22 @@ def compact_history_tokens(messages: list[dict[str, Any]], max_tokens: int, *,
         return False
     # 高水位触发后整理到低水位，避免每新增一条结果就再次破坏缓存前缀。
     target_tokens = max(1, int(max_tokens * 0.6))
+    last_assistant = next((i for i in range(len(messages) - 1, -1, -1)
+                           if messages[i].get("role") == "assistant"), len(messages))
     changed = False
-    for pass_index, (head, tail, minimum) in enumerate(_COMPACTION_PASSES):
-        last_assistant = next((i for i in range(len(messages) - 1, -1, -1)
-                               if messages[i].get("role") == "assistant"), len(messages))
-        for index, message in enumerate(messages):
-            if estimate_input_tokens(messages, tools) <= target_tokens:
-                break
-            if index < 2 or index >= last_assistant or message.get("_context_contract"):
-                continue
-            if pass_index == len(_COMPACTION_PASSES) - 1 and message.get("tool_calls"):
-                # 最后一档连旧工具参数一起折叠：观察正文已经截断，保留完整参数
-                # 只是占着上下文；工具调用本身与配对关系照旧。
-                for call in message["tool_calls"]:
-                    function = call.get("function")
-                    if isinstance(function, dict) and function.get("arguments") not in (None, "{}"):
-                        function["arguments"] = "{}"
-                        changed = True
-                message["content"] = "[早期工具参数已折叠]\n" + str(message.get("content") or "")
-                continue
-            content = message.get("content")
-            if (message.get("role") not in {"assistant", "tool"}
-                    or not isinstance(content, str) or len(content) <= minimum):
-                continue
-            marker = "\n[早期观察已节选；完整内容见执行记录]\n"
-            message["content"] = content[:head] + (marker + content[-tail:] if tail
-                                                  else marker.rstrip("\n"))
-            changed = True
+    for index, message in enumerate(messages):
+        if index < 2 or index >= last_assistant or message.get("_context_contract"):
+            continue
+        content = message.get("content")
+        if (message.get("role") not in {"assistant", "tool"}
+                or not isinstance(content, str) or len(content) <= 800):
+            continue
+        message["content"] = (content[:400]
+                              + "\n[早期观察已节选；完整内容见执行记录]\n" + content[-250:])
+        changed = True
         if estimate_input_tokens(messages, tools) <= target_tokens:
             break
     return changed
-
-
-def shrink_history_to_window(messages: list[dict[str, Any]], context_window: int, *,
-                             tools: list[dict[str, Any]] | None = None,
-                             reserve: int | None = None) -> int:
-    """节选压不进窗口时，整组丢掉最旧的工具往返（成对删，不留孤儿 tool 消息）。
-
-    返回丢弃的消息条数。只在小窗口模型上才会走到：16k 窗口跑到第 44 回合，
-    输入估算仍超过窗口，端点直接 400，整条路线以「主备均不可用」收尾——与其
-    让整轮对话报废，不如丢掉最早的几组观察，保住最近的现场与全部指令。
-    """
-    if context_window <= 0:
-        return 0
-    # 预留量不能超过窗口一半：档案里 max_output_tokens 可能比窗口还大（128K 输出
-    # 配 100K 窗口），直接拿它当预留会把 limit 算成负数，历史被削光。
-    head_room = min(max(OUTPUT_FLOOR_TOKENS, reserve if reserve is not None else 0),
-                    max(OUTPUT_FLOOR_TOKENS, context_window // 2))
-    # 继续留一点估算余量：离线估算对中文与代码会少算。
-    limit = int((context_window - head_room) * (1 - TOKEN_SAFETY_RATIO))
-    dropped = 0
-    # 至少保留开头两条（系统契约 + 首条现场）和最后四条（最近的往返）
-    keep_head, keep_tail = 2, 4
-    while estimate_input_tokens(messages, tools) > limit and len(messages) > keep_head + keep_tail:
-        index = keep_head
-        message = messages[index]
-        span = 1
-        # assistant 带工具调用时，把紧随其后的 tool 结果一起删掉，保持配对完整
-        if message.get("role") == "assistant" and message.get("tool_calls"):
-            while (index + span < len(messages) and len(messages) - (index + span) > keep_tail
-                   and messages[index + span].get("role") == "tool"):
-                span += 1
-        elif message.get("role") == "tool":
-            # 孤儿 tool 消息不能单独留：往前找它的 assistant
-            index = max(keep_head, index - 1)
-            span = 2
-        del messages[index:index + span]
-        dropped += span
-    return dropped
 
 
 def decision_messages(system: str, payload: dict[str, Any], max_chars: int = 8000) -> list[dict[str, Any]]:
@@ -352,7 +297,7 @@ def decision_messages(system: str, payload: dict[str, Any], max_chars: int = 800
     projected = json.loads(compact_json(dynamic, max_chars))
     stable_keys = ("world_state", "available_tactics", "task_intent", "mission",
                    "rules", "target", "execution_recovery", "reference_skills",
-                   "reference_skills_hint",
+                   "available_skills", "skill_context",
                    "business_context", "shared_context")
     ordered = {key: projected.pop(key) for key in stable_keys if key in projected}
     situation = projected.pop("situation", None)
@@ -417,6 +362,13 @@ class DecisionMemory:
         self.segment_info: dict[str, Any] = {}
         self.journal: Any = None
         self.checkpoint_key = ""
+        self.skills: dict[str, Any] = {}
+        self.blackboard: Any = None
+        self.agent_type: Any = None
+        self.shared_memory_enabled = False
+        self.history_lookup: Any = None
+        self.manual_compaction_id = ""
+        self.pending_compaction: dict[str, Any] | None = None
 
     @staticmethod
     def _same_value(old: Any, new: Any) -> bool:
@@ -428,7 +380,7 @@ class DecisionMemory:
                 DecisionMemory._same_value(value, new[key]) for key, value in old.items())
         if isinstance(old, list):
             return len(old) == len(new) and all(
-                DecisionMemory._same_value(a, b) for a, b in zip(old, new, strict=True))
+                DecisionMemory._same_value(a, b) for a, b in zip(old, new))
         return old == new
 
     @staticmethod
@@ -511,6 +463,9 @@ class DecisionMemory:
                 max_input_tokens: int | None = None,
                 compact_patches: bool = False,
                 stable_snapshot_prefix: bool = False) -> list[dict[str, Any]]:
+        from spiritscout.gateway.manual_context import pending_request
+
+        self.pending_compaction = pending_request(self.blackboard, self.manual_compaction_id)
         system = "\n".join(m["content"] for m in messages if m.get("role") == "system")
         snapshot: dict[str, Any] = {}
         for message in messages:
@@ -531,9 +486,10 @@ class DecisionMemory:
         pressure = (estimate_input_tokens(prepared) > max_input_tokens
                     if max_input_tokens is not None else len(serialize(prepared)) > max(
                         self.soft_chars, len(serialize(snapshot)) * 3))
-        self.segment_changed = not prepared or pressure
+        previous_tokens = estimate_input_tokens(prepared) if self.pending_compaction and prepared else None
+        self.segment_changed = not prepared or pressure or self.pending_compaction is not None
         if self.segment_changed:
-            self.segment_info = {"reason": "initial" if not self.messages else
+            self.segment_info = {"reason": "manual" if self.pending_compaction else "initial" if not self.messages else
                                  "contract_changed" if system != self.system else "context_window",
                                  "snapshot_chars": len(serialize(snapshot)),
                                  "previous_chars": len(serialize(self.messages)),
@@ -543,7 +499,7 @@ class DecisionMemory:
                 # 只布局新建段；已提交的历史（含旧版本检查点）绝不重新排序。
                 stable = ("world_state", "available_tactics", "task_intent", "mission",
                           "rules", "target", "execution_recovery", "reference_skills",
-                          "reference_skills_hint",
+                   "available_skills", "skill_context",
                           "business_context", "shared_context", "project_rules")
                 canonical = json.loads(serialize(snapshot))
                 ordered = {key: canonical.pop(key) for key in stable if key in canonical}
@@ -553,6 +509,10 @@ class DecisionMemory:
                 initial = serialize({"snapshot": snapshot})
             prepared = [{"role": "system", "content": system + self.note},
                         {"role": "user", "content": initial}]
+        if self.pending_compaction:
+            self.segment_info.update(request_id=self.pending_compaction["request_id"],
+                estimated_tokens_before=previous_tokens if previous_tokens is not None else estimate_input_tokens(prepared),
+                estimated_tokens_after=estimate_input_tokens(prepared))
         self.pending = (prepared, copy.deepcopy(snapshot), system)
         return copy.deepcopy(prepared)
 
@@ -563,9 +523,17 @@ class DecisionMemory:
         self.messages = copy.deepcopy([*messages, {"role": "assistant", "content": content,
                                      **({"reasoning_content": reasoning} if reasoning else {})}])
         self.pending = None
+        if self.pending_compaction:
+            self.manual_compaction_id = self.pending_compaction["request_id"]
+            self.pending_compaction = None
+        self.persist()
+
+    def persist(self) -> None:
+        """技能版本快照与实际已读内容随当前决策记忆一起恢复。"""
         if self.journal is not None:
             self.journal.checkpoint("decision_memory", self.checkpoint_key, "committed", {
-                "messages": self.messages, "snapshot": self.snapshot, "system": self.system})
+                "messages": self.messages, "snapshot": self.snapshot, "system": self.system,
+                "skills": self.skills, "manual_compaction_id": self.manual_compaction_id})
 
 
 def decision_memory(owner: Any, key: str) -> DecisionMemory:
@@ -577,6 +545,20 @@ def decision_memory(owner: Any, key: str) -> DecisionMemory:
     if key not in memories:
         journal = getattr(getattr(owner, "ctx", None), "journal", None)
         memory = DecisionMemory()
+        memory.blackboard = getattr(getattr(owner, "ctx", None), "blackboard", None)
+        memory.agent_type = getattr(owner, "agent_type", None)
+        memory.shared_memory_enabled = getattr(getattr(owner, 'ctx', None), 'mode', None) == 'competition'
+        ctx = getattr(owner, "ctx", None)
+        memory.history_lookup = getattr(ctx, "history_lookup", None)
+        if (memory.history_lookup is None
+                and getattr(getattr(ctx, "policy", None), "mode", None) == "src"
+                and getattr(ctx, "tools", None) is not None):
+            async def lookup(arguments: dict[str, Any]) -> dict[str, Any]:
+                result = await ctx.tools.call("history_lookup", arguments, **ctx.builtin_ctx)
+                return {"ok": result.ok, "result": result.stdout or result.failure_reason(),
+                        "invocation_id": result.invocation_id}
+
+            memory.history_lookup = lookup
         if callable(getattr(journal, "latest_checkpoint", None)):
             # 会话数据库隔离会话；类型隔离 Agent，key 已含任务/路线/阶段。
             checkpoint_key = f"{type(owner).__name__}:{key}"
@@ -587,6 +569,8 @@ def decision_memory(owner: Any, key: str) -> DecisionMemory:
                 memory.messages = copy.deepcopy(state["messages"])
                 memory.snapshot = copy.deepcopy(state["snapshot"])
                 memory.system = state["system"]
+                memory.skills = copy.deepcopy(state.get("skills") or {})
+                memory.manual_compaction_id = state.get("manual_compaction_id", "")
             memory.journal, memory.checkpoint_key = journal, checkpoint_key
             # 只淘汰已提交且可从磁盘恢复的记忆；无持久化时不能悄悄丢上下文。
             if len(memories) >= 128:

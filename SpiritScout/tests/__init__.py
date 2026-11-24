@@ -20,12 +20,34 @@ from __future__ import annotations
 
 import atexit
 import contextlib
+import os
 import re
 import shutil
+import tempfile
 from pathlib import Path
 
 _PKG = Path(__file__).resolve().parent.parent
 _ROOT = _PKG.parent
+_TEMP = Path(tempfile.gettempdir())
+
+
+# Windows does not allow deleting an open SQLite database.  Older tests create
+# TemporaryDirectory objects and close their stores through addCleanup(), which
+# runs after the context manager has already attempted cleanup.  Linux CI never
+# observes this ordering bug, but Windows does.  Keep the fixture cleanup
+# best-effort on Windows and sweep the remaining test-only files at exit.
+if os.name == "nt":
+    _OriginalTemporaryDirectory = tempfile.TemporaryDirectory
+
+    class _WindowsTemporaryDirectory(_OriginalTemporaryDirectory):
+        def __init__(self, *args, ignore_cleanup_errors: bool = True, **kwargs):
+            super().__init__(
+                *args,
+                ignore_cleanup_errors=ignore_cleanup_errors,
+                **kwargs,
+            )
+
+    tempfile.TemporaryDirectory = _WindowsTemporaryDirectory
 
 #: mkdtemp 默认命名：tmp + 8 位随机串
 _NAME = re.compile(r"^tmp[a-z0-9_]{8}$")
@@ -51,7 +73,7 @@ def _is_test_leftover(path: Path) -> bool:
 
 @atexit.register
 def _sweep_temp_dirs() -> None:
-    for base in (_PKG, _ROOT):
+    for base in (_PKG, _ROOT, _TEMP):
         if not base.is_dir():
             continue
         try:

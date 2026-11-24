@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from spiritscout.core.exceptions import ConfigurationError
 from spiritscout.core.models import AgentType, RunMode
@@ -92,8 +92,17 @@ class BlackboardConfig(ValidatedConfig):
     sqlite_path: str = ".spiritscout/blackboard.db"
 
 
+class StorageConfig(ValidatedConfig):
+    """磁盘维护独立于上下文和任务预算；只处理已结束、空闲的会话。"""
+
+    background_archive_max_mb: int = Field(default=512, ge=1, description="每会话后台输出存档配额；超限提示，不停止命令或删除旧证据")
+    auto_maintenance: bool = True
+    maintenance_interval_seconds: int = Field(default=900, ge=1)
+    idle_seconds: int = Field(default=300, ge=0)
+
+
 class GatewayConfig(ValidatedConfig):
-    """多模型网关：预算与协作策略。"""
+    """多模型网关：重试、用量参考与协作策略。"""
 
     budget_tokens: int = Field(default=2_000_000, description="Token 用量参考值，仅计量不熔断")
     budget_usd: float = Field(default=20.0, description="费用参考值，仅计量不熔断")
@@ -106,15 +115,16 @@ class GatewayConfig(ValidatedConfig):
     cascade_confidence_threshold: float = 0.8   # 级联升级阈值（6.10：<0.8 升级旗舰复判）
     vote_min_models: int = 2                    # 投票最少模型数（4.9.3-2：≥2 独立判断）
     request_timeout_seconds: int = Field(default=300, gt=0)  # 重推理模型单次调用可达 3~4 分钟，120s 会中途掐死
-    max_retries: int = 2
+    max_retries: int | None = Field(
+        default=2, ge=0, description="可恢复请求的重试次数；null 仅受请求超时约束，0 关闭重试")
+    retry_initial_seconds: float = Field(default=5.0, gt=0, allow_inf_nan=False)
+    retry_max_seconds: float = Field(default=60.0, gt=0, allow_inf_nan=False)
     stable_snapshot_prefix: bool = True  # 新决策段保留稳定事实前缀，历史不重写
     shared_ctf_prefix: bool = False  # 共享布局实验关闭，真实复杂对照尚未证明命中收益
     compact_decision_patches: bool = False  # 无损补丁短编码，真实模型对照通过后再启用
     remember_endpoint_capabilities: bool = True  # 只复用已成功的可选参数兼容回退
-    priority_refresh_seconds: int = Field(
-        default=30, ge=5, le=3600,
-        description="模型优先级链（设置页排的顺序）重读间隔：运行中的会话按最新"
-                    "排序选模型，改完顺序最多等这么久，不用重启")
+    automatic_platform_extraction: bool = True
+    lightweight_local: bool = False
 
 
 class ExecutorConfig(ValidatedConfig):
@@ -124,13 +134,8 @@ class ExecutorConfig(ValidatedConfig):
     docker_image: str = "kalilinux/kali-rolling:latest"
     default_timeout_seconds: int = Field(default=300, gt=0)
     max_output_chars: int = Field(default=20000, gt=0)         # HackSynth 输出窗口截断（3.2.4-9）
+    http_max_body_bytes: int = Field(default=8 * 1024 * 1024, gt=0)  # HTTP 解压后正文上限，与展示窗口独立
     ctf_network_isolation: bool = True    # CTF 模式网络隔离（硬约束 C7）
-    # ---- shell/python 执行后端（sandbox_exec）----
-    # auto：有 bwrap 用 bwrap；Windows/macOS 退 host（无文件系统隔离，仅本机自用）；
-    #       Linux 缺 bwrap 明确报错，不静默降级
-    # bwrap：强制 Linux 命名空间沙箱；缺 bwrap 即报错
-    # host：强制本机受限执行（工作目录锁定 + 环境白名单 + 超时杀进程树）
-    sandbox_backend: Literal["auto", "bwrap", "host"] = "auto"
     # ---- Docker 沙箱加固（9.3 EXP 沙箱验证：最小权限 + 资源限额 + 只读根fs）
     docker_memory_mb: int = Field(default=512, gt=0)
     docker_cpus: float = Field(default=1.0, gt=0)
@@ -160,10 +165,9 @@ class WebConfig(ValidatedConfig):
 
     host: str = "127.0.0.1"               # 默认仅回环
     port: int = Field(default=8000, ge=1, le=65535)
-    max_concurrent_sessions: int = Field(default=4, ge=1, description="并发会话上限（信号量）")
-    auth_mode: Literal["none", "password"] = Field(
-        default="none",
-        description="控制台登录：none=不启用（本机直接进），password=启用管理员登录")
+    max_concurrent_sessions: int | None = Field(
+        default=None, ge=1, description="兼容旧配置字段；会话并发数量已不再限制")
+    auto_name_sessions: bool = True
     remote_auth_required: bool = Field(
         default=True, description="非回环绑定必须配置管理密码，否则拒绝启动")
     password_env: str = Field(
@@ -234,9 +238,6 @@ class ResourcesConfig(ValidatedConfig):
     root: str = ""
     freshness_hours: float = Field(default=24, gt=0)
     npm_registry: str = Field(default="https://registry.npmjs.org", pattern=r"^https?://")
-    #: 自定义技能清单（版本库里的真源）：启动时同步进资源库的 settings 表，
-    #: 工作区重建后技能还在。内置 206 条不在这里，见 knowledge/data。
-    skills_config: str = "configs/skills.yaml"
 
 
 class ExperienceConfig(ValidatedConfig):
@@ -246,26 +247,7 @@ class ExperienceConfig(ValidatedConfig):
     distill_timeout_seconds: int = Field(
         default=45, gt=0, description="收尾提炼单次 LLM 调用硬顶（秒），仅终态路径使用")
     recall_limit: int = Field(default=6, gt=0, le=20, description="会话开工注入的经验条数上限")
-
-    distill_enabled: bool = Field(
-        default=True,
-        description="解出 Flag / 会话收尾时是否提炼经验；关掉后只记录不提炼，"
-                    "经验库保持不变（已入库的经验照常召回）")
-    duplicate_threshold: float = Field(
-        default=0.95, ge=0.5, le=1.0,
-        description="入库判重阈值：与库里任一有效经验相似度达到该比例就不再存一条新的"
-                    "（0.95 只放过标点/虚词的差异；二次提炼合并用的是更宽松的 0.85）")
-    sync_path: str = Field(
-        default="experience-export/experience-insights.json",
-        description="经验同步的主清单路径（仓库里的公共快照；拉取时与 inbox 一起读）")
-    sync_inbox: str = Field(
-        default="experience-export/inbox",
-        description="经验提交目录：每人每次提交写自己一个文件，谁都能提、互不覆盖")
-    sync_branch: str = Field(default="main", description="经验同步用的远端分支")
-    sync_user: str = Field(
-        default="", description="提交人名字（进文件名）；空=git user.name，再空=系统用户名")
-    sync_repo: str = Field(
-        default="", description="经验同步用的 git 仓库目录；空=项目根目录（复用它的 remote 与凭据）")
+    auto_distill: bool = True
 
 
 class SearchConfig(ValidatedConfig):
@@ -279,6 +261,102 @@ class SearchConfig(ValidatedConfig):
     cache_max_entries: int = Field(default=2000, ge=1)
 
 
+class CVEConfig(ValidatedConfig):
+    """CVE 参考情报；比赛模式只读本地记录，不访问外部情报源。"""
+
+    enabled: bool = True
+    sqlite_path: str = ".spiritscout/cve.db"
+    online: bool = True
+    nvd_api_key_env: str = "NVD_API_KEY"
+    timeout_seconds: float = Field(default=25, gt=0, le=120)
+    cache_ttl_seconds: int = Field(default=21600, ge=1)
+
+
+class ScannerConfig(ValidatedConfig):
+    """并行扫描者：仅使用预先安装的本地工具和模板。"""
+
+    enabled: bool = True
+    binary: str = Field(default="nuclei", min_length=1)
+    templates_dir: str = Field(default=".venv/share/nuclei-templates", min_length=1)
+    rate_limit: int = Field(default=5, ge=1, le=1000)
+    concurrency: int = Field(default=2, ge=1, le=64)
+    timeout_seconds: int = Field(default=180, ge=5, le=300)
+    metasploit_enabled: bool = True
+    metasploit_command: list[str] = Field(default_factory=lambda: ["msfconsole"])
+
+
+class FofaConfig(ValidatedConfig):
+    """FOFA 只提供外部候选，不直接产出正式资产或扫描目标。"""
+
+    enabled: bool = False
+    api_url: str = Field(default="https://fofa.info/api/v1/search/all", pattern=r"^https://")
+    email_env: str = "FOFA_EMAIL"
+    api_key_env: str = "FOFA_KEY"
+    vault_key_name: str = "asset-provider:fofa"
+    page_size: int = Field(default=100, ge=1, le=10000)
+    timeout_seconds: float = Field(default=20, gt=0, le=120)
+
+
+class AssetApiProviderConfig(ValidatedConfig):
+    """单密钥空间测绘来源；密钥只从环境变量或 Vault 读取。"""
+
+    enabled: bool = False
+    api_url: str = Field(pattern=r"^https://")
+    api_key_env: str
+    vault_key_name: str
+    page_size: int = Field(default=100, ge=1, le=1000)
+    timeout_seconds: float = Field(default=20, gt=0, le=120)
+
+
+class EnterpriseProviderConfig(ValidatedConfig):
+    """企业信息来源；Cookie 只从环境变量或 Vault 读取。"""
+
+    enabled: bool = False
+    base_url: str = Field(pattern=r"^https://")
+    cookie_env: str
+    vault_key_name: str
+    timeout_seconds: float = Field(default=20, gt=0, le=120)
+    page_size: int = Field(default=20, ge=1, le=100)
+    max_companies: int = Field(default=40, ge=1, le=500)
+    max_depth: int = Field(default=3, ge=1, le=10)
+
+
+class OneForAllConfig(ValidatedConfig):
+    """OneForAll 被动子域来源；主动模块由适配器固定关闭。"""
+
+    enabled: bool = False
+    path: str = ""
+    python: str = ""
+    timeout_seconds: int = Field(default=600, ge=30, le=3600)
+
+
+class AssetIntelligenceConfig(ValidatedConfig):
+    """外部资产情报来源；默认全部关闭，按部署显式启用。"""
+
+    max_candidates_per_provider: int = Field(default=200, ge=1, le=5000)
+    verification_batch_size: int = Field(default=20, ge=1, le=500)
+    verification_concurrency: int = Field(default=4, ge=1, le=64)
+    provider_cache_ttl_seconds: int = Field(default=900, ge=0, le=86400)
+    provider_cache_max_entries: int = Field(default=256, ge=1, le=10000)
+    fofa: FofaConfig = Field(default_factory=FofaConfig)
+    hunter: AssetApiProviderConfig = Field(default_factory=lambda: AssetApiProviderConfig(
+        api_url="https://hunter.qianxin.com/openApi/search",
+        api_key_env="HUNTER_API_KEY", vault_key_name="asset-provider:hunter"))
+    quake: AssetApiProviderConfig = Field(default_factory=lambda: AssetApiProviderConfig(
+        api_url="https://quake.360.net/api/v3/search/quake_service",
+        api_key_env="QUAKE_API_KEY", vault_key_name="asset-provider:quake"))
+    zoomeye: AssetApiProviderConfig = Field(default_factory=lambda: AssetApiProviderConfig(
+        api_url="https://api.zoomeye.hk/host/search",
+        api_key_env="ZOOMEYE_API_KEY", vault_key_name="asset-provider:zoomeye"))
+    oneforall: OneForAllConfig = Field(default_factory=OneForAllConfig)
+    aiqicha: EnterpriseProviderConfig = Field(default_factory=lambda: EnterpriseProviderConfig(
+        base_url="https://aiqicha.baidu.com", cookie_env="AIQICHA_COOKIE",
+        vault_key_name="asset-provider:aiqicha"))
+    qichacha: EnterpriseProviderConfig = Field(default_factory=lambda: EnterpriseProviderConfig(
+        base_url="https://www.qcc.com", cookie_env="QICHACHA_COOKIE",
+        vault_key_name="asset-provider:qichacha"))
+
+
 class SystemConfig(ValidatedConfig):
     """系统总配置。"""
 
@@ -286,10 +364,14 @@ class SystemConfig(ValidatedConfig):
     workspace: WorkspaceConfig = Field(default_factory=WorkspaceConfig)
     bus: BusConfig = Field(default_factory=BusConfig)
     blackboard: BlackboardConfig = Field(default_factory=BlackboardConfig)
+    storage: StorageConfig = Field(default_factory=StorageConfig)
     gateway: GatewayConfig = Field(default_factory=GatewayConfig)
     executor: ExecutorConfig = Field(default_factory=ExecutorConfig)
     knowledge: KnowledgeConfig = Field(default_factory=KnowledgeConfig)
     search: SearchConfig = Field(default_factory=SearchConfig)
+    scanner: ScannerConfig = Field(default_factory=ScannerConfig)
+    asset_intelligence: AssetIntelligenceConfig = Field(default_factory=AssetIntelligenceConfig)
+    cve: CVEConfig = Field(default_factory=CVEConfig)
     report: ReportConfig = Field(default_factory=ReportConfig)
     web: WebConfig = Field(default_factory=WebConfig)
     secretary: SecretaryConfig = Field(default_factory=SecretaryConfig)
@@ -313,6 +395,9 @@ class SystemConfig(ValidatedConfig):
         return v
 
 
+BillingScheme = Literal['manual', 'glm_api', 'glm_token_plan', 'kimi_api', 'kimi_token_plan', 'deepseek_api', 'other_token_plan']
+
+
 class ProviderEntry(ValidatedConfig):
     """模型供应商（接入端点）：一个 base_url + 一把密钥，下挂若干模型。
 
@@ -331,6 +416,21 @@ class ProviderEntry(ValidatedConfig):
     # （anthropic_compatible→anthropic_messages，其余→chat_completions）；
     # 仅 o 系/gpt-5 等原生 Responses 端点需显式指定 responses
     api_format: Literal["auto", "chat_completions", "responses", "anthropic_messages"] = "auto"
+    billing_scheme: BillingScheme = 'manual'
+    billing_plan: str = ''                # 套餐档位；价格查询不代表购买或确认账户权益
+    auth_method: Literal['api_key', 'kimi_oauth'] = 'api_key'
+    quota_query: Literal['auto', 'disabled', 'deepseek_balance', 'glm_plan', 'kimi_plan',
+                         'minimax_plan', 'siliconflow_balance', 'stepfun_balance',
+                         'openrouter_balance', 'moonshot_balance', 'opencode_plan', 'ark_plan', 'glm_balance'] = 'auto'
+
+    @model_validator(mode='after')
+    def _oauth_endpoint(self):
+        if self.auth_method == 'kimi_oauth':
+            if (self.base_url.rstrip('/') != 'https://api.kimi.com/coding/v1'
+                    or self.provider != 'openai_compatible' or self.api_format not in {'auto', 'chat_completions'}
+                    or self.billing_scheme != 'kimi_token_plan'):
+                raise ValueError('Kimi OAuth 需使用 Kimi Token Plan、OpenAI 兼容协议及 https://api.kimi.com/coding/v1')
+        return self
 
     @field_validator("name")
     @classmethod
@@ -345,52 +445,53 @@ class ProviderEntry(ValidatedConfig):
 class ModelEntry(ValidatedConfig):
     """模型注册表条目（4.9.4：能力画像/成本/速率/质量评分）。
 
-    模型 ID 即身份：注册表、编队指派、审计与预算都以它为主键；接入信息
+    配置身份由供应商与模型 ID 共同组成；端点模型名保持原样。接入信息
     （provider/base_url/api_key/api_format）来自所属供应商，装载时合并进来。
     """
 
-    model: str                            # 模型 ID（主键，也是发给端点的模型名）
+    @property
+    def key(self) -> str:
+        """配置唯一标识；端点请求仍使用原始 model。"""
+        from spiritscout.config.model_identity import model_key
+        return model_key(self)
+
+    model: str                            # 发给端点的原始模型 ID
     provider_ref: str = ""                # 归属供应商名（ProviderEntry.name）
-    # 停用开关：false = 配置留着但不参与选用（不进编队候选、不被路由挑中、
-    # 不能进命名链），用于「先别用这家的额度」这类临时停用。装载时默认就把
-    # 停用项滤掉（load_model_config(include_disabled=False)），只有「模型」页
-    # 与连通性测试需要看到全部。
-    enabled: bool = True
     provider: str = "openai_compatible"   # 由供应商合并而来
     base_url: str = ""
     api_key: str = ""                     # 由供应商合并而来（密钥库注入）
     api_format: Literal["auto", "chat_completions", "responses", "anthropic_messages"] = "auto"
+    billing_scheme: BillingScheme = 'manual'
+    billing_plan: str = ''
+    auth_method: Literal['api_key', 'kimi_oauth'] = 'api_key'
     capabilities: list[str] = Field(default_factory=list)  # reasoning/code/chinese/security
     context_window: int = 0               # 上下文窗口（token）；0 = 未声明
     # 单次输出上限（token）：0 = 请求不带 max_tokens，由端点按模型自身设定——
     # 上限只在模型想继续说的时候决定掐在哪，设小了思考型模型会把额度耗在
     # 思考上、正文被截成半截 JSON；声明值仅作模型档案的显式覆盖
     max_output_tokens: int = 0
+    ollama_options: dict[str, Any] = Field(default_factory=dict)
+    ollama_think: bool | None = None
+    ollama_keep_alive: str = "5m"
+    ollama_resource: str = ""
+    # 显式允许本条目参与轻量 CTF/AWDP 补偿；仅在独立轻量部署中启用。
+    ollama_lightweight: bool = False
+    # 本地推理引擎与 HTTP 协议分开声明；llama.cpp 使用 OpenAI Chat Completions。
+    local_runtime: Literal["", "llama_cpp"] = ""
+    local_lightweight: bool = False
     # 思考强度取值：由每个模型自行声明（如 low/medium/high，或某模型特有的
     # ultra）——不设固定枚举，也不假设各模型档位一致；空 = 该模型不吃思考强度。
     reasoning_effort_levels: list[str] = Field(default_factory=list)
     prompt_caching: Literal["provider_default", "anthropic_ephemeral"] = "provider_default"
-
-    # 端点自己的 tool_calls 解析不可靠时关掉它（如 llama.cpp 在参数较长时
-    # 拼出半截 JSON 直接报错）。关掉后不再下发 tools，模型把 JSON 写进正文，
-    # 由 inline call 恢复机制接手——那条路径本来就是为 Qwen 准备的。
-    native_tool_calls: bool = True
-
-    # 端点的流式 tool_calls 拼接不可靠时关掉流式（llama.cpp 实测：非流式
-    # 1183 字符的合法 JSON，流式拼成 1858 字符就断了）。关掉后拿不到逐字
-    # 增量，审计里只剩起止记录——正确性优先于实时观感。
-    streaming: bool = True
     cost_cached_input_per_mtok: float | None = Field(default=None, ge=0)
     cost_cache_write_per_mtok: float | None = Field(default=None, ge=0)
     cost_input_per_mtok: float = Field(default=0.0, ge=0)
     cost_output_per_mtok: float = Field(default=0.0, ge=0)
     rate_limit_rpm: int = Field(default=60, gt=0)
-    # 端点并发上限（同时在飞的请求数）：0 = 不限。本地单槽端点（LM Studio 以
-    # parallel=1 加载、llama.cpp 单实例）写 1，网关就把并发请求排队，而不是同时
-    # 砸上去——排队不计入单次调用硬超时，慢模型不会因为挤在同一时刻而集体超时。
+    # 本地旧配置兼容字段；0 表示由网关现有并发策略处理。
     max_concurrency: int = Field(default=0, ge=0)
     quality_score: float = 1.0            # 基准评测动态更新
-    is_fallback_for: list[str] = Field(default_factory=list, description="主备关系：作为哪些模型的备（模型 ID）")
+    is_fallback_for: list[str] = Field(default_factory=list, description="主备关系：作为哪些模型配置的备（旧裸名仅唯一时兼容）")
 
     def validate_cache_transport(self) -> None:
         """显式缓存标记只在已声明的兼容协议上启用。"""
@@ -449,9 +550,59 @@ def _load_yaml(path: str | Path) -> dict[str, Any]:
     return data
 
 
+_LEGACY_CONFIG_WARNED = False
+
+
+def _migrate_legacy_system_config(data: dict[str, Any]) -> dict[str, Any]:
+    """Drop or translate pre-0.22 fields without breaking an existing workspace."""
+    global _LEGACY_CONFIG_WARNED
+    changed: list[str] = []
+
+    # Old desktop builds injected these directly. The new executor chooses host
+    # or bubblewrap internally and no longer accepts a sandbox_backend field.
+    data.pop("sandbox_backend", None)
+    executor = data.get("executor")
+    if isinstance(executor, dict) and "sandbox_backend" in executor:
+        old = str(executor.pop("sandbox_backend") or "").strip().lower()
+        if old == "docker" and not executor.get("backend"):
+            executor["backend"] = "docker"
+        changed.append("executor.sandbox_backend")
+
+    web = data.get("web")
+    if isinstance(web, dict) and "auth_mode" in web:
+        web.pop("auth_mode", None)
+        changed.append("web.auth_mode")
+
+    experience = data.get("experience")
+    if isinstance(experience, dict):
+        if "distill_enabled" in experience:
+            value = bool(experience.pop("distill_enabled"))
+            experience.setdefault("auto_distill", value)
+            changed.append("experience.distill_enabled")
+        removed = [
+            key for key in (
+                "sync_repo", "sync_branch", "sync_path", "sync_inbox", "sync_user"
+            )
+            if experience.pop(key, None) is not None
+        ]
+        changed.extend(f"experience.{key}" for key in removed)
+
+    if changed and not _LEGACY_CONFIG_WARNED:
+        _LEGACY_CONFIG_WARNED = True
+        warnings.warn(
+            "检测到旧配置字段，已自动迁移："
+            + "、".join(changed)
+            + "。建议运行一次配置导出或手工清理旧字段。",
+            UserWarning,
+            stacklevel=2,
+        )
+    return data
+
+
 def load_system_config(path: str | Path) -> SystemConfig:
     data = _expand_env(_load_yaml(path))
     data = _apply_env_overrides(data)
+    data = _migrate_legacy_system_config(data)
     if isinstance(data.get("gateway"), dict) and "default_tier" in data["gateway"]:
         data["gateway"].pop("default_tier")
         warnings.warn("gateway.default_tier 已废弃，请在编队页指派模型", UserWarning, stacklevel=2)
@@ -476,6 +627,9 @@ def _merge_providers(cfg: ModelConfigFile) -> list[ModelEntry]:
             "base_url": p.base_url if p else m.base_url,
             "api_key": p.api_key if p else m.api_key,
             "api_format": (p.api_format if p and p.api_format != "auto" else m.api_format),
+            "billing_scheme": p.billing_scheme if p else m.billing_scheme,
+            "billing_plan": p.billing_plan if p else m.billing_plan,
+            "auth_method": p.auth_method if p else m.auth_method,
         }))
     for entry in out:
         entry.validate_cache_transport()
@@ -486,13 +640,8 @@ _TIER_WARNED = False    # 弃用提示只说一次：热路径每次请求都重
                          # models.yaml，逐次警告会在终端刷屏
 
 
-def load_model_config(path: str | Path, *, include_disabled: bool = False) -> list[ModelEntry]:
-    """装载模型注册表（供应商接入信息已合并进各模型）。
-
-    `enabled: false` 的条目默认不返回：编队候选、路由挑选、命名链、会话启动
-    都走这个默认，停用的模型因此彻底退出选用。只有「模型」页展示与连通性测试
-    需要 `include_disabled=True`——停用了还得能测通再启用。
-    """
+def load_model_config(path: str | Path) -> list[ModelEntry]:
+    """装载模型注册表（供应商接入信息已合并进各模型）。"""
     global _TIER_WARNED
     data = _expand_env(_load_yaml(path))
     for entry in data.get("models", []) if isinstance(data.get("models"), list) else []:
@@ -506,11 +655,10 @@ def load_model_config(path: str | Path, *, include_disabled: bool = False) -> li
         cfg = ModelConfigFile.model_validate(data)
     except Exception as exc:
         raise ConfigurationError(f"模型配置校验失败: {exc}") from exc
-    ids = [m.model for m in cfg.models]
+    ids = [m.key for m in cfg.models]
     if len(set(ids)) != len(ids):
         raise ConfigurationError("模型 ID 存在重复")
     names = [p.name for p in cfg.providers]
     if len(set(names)) != len(names):
         raise ConfigurationError("供应商名存在重复")
-    merged = _merge_providers(cfg)
-    return merged if include_disabled else [m for m in merged if m.enabled]
+    return _merge_providers(cfg)

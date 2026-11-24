@@ -25,11 +25,9 @@ from spiritscout.config.settings import SystemConfig
 from spiritscout.core.models import AgentType, Authorization, RunMode, Scope
 from spiritscout.ctf.flags import SubmitResult
 from spiritscout.gateway.context import DecisionMemory
-from spiritscout.platform_support import force_utf8_streams
 from spiritscout.runtime import run_ctf_engagement
 from spiritscout.web import vault
 
-force_utf8_streams()
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--run-live',action='store_true',help='显式执行付费 DeepSeek 测试')
 parser.add_argument('--output',type=Path,required=True)
@@ -194,9 +192,9 @@ async def main():
         auth=Authorization(auth_id='complex-offline-20261026',mode=RunMode.CTF,human_confirmed=True,
             scope=Scope(local_analysis=True,testing_rules=RULE),target_description='本地综合证据恢复 CTF')
         arm_data=REPORT['arms'].setdefault(ARM,{'submissions':[]})
-        async def submit(flag, challenge_id, _arm_data=arm_data):
+        async def submit(flag, challenge_id):
             accepted=flag==FLAG and challenge_id=='complex-proof'
-            _arm_data['submissions'].append({'flag':flag,'challenge_id':challenge_id,'accepted':accepted})
+            arm_data['submissions'].append({'flag':flag,'challenge_id':challenge_id,'accepted':accepted})
             save()
             return SubmitResult(accepted,json.dumps({'correct':accepted,'correct_flag_count':int(accepted),
                                                       'total_flag_count':1,'message':'本地验证器反馈'}))
@@ -252,4 +250,4 @@ if __name__=='__main__':
         REPORT['error_type']=type(exc).__name__
         save()
         print('STOP',type(exc).__name__,flush=True)
-        raise SystemExit(1) from None
+        raise SystemExit(1)

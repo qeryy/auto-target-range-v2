@@ -1,0 +1,303 @@
+"""真实本机 HTTP 响应落盘、完整性、原文定位与复用，不调用模型。"""
+from __future__ import annotations
+
+import asyncio
+import gzip
+import hashlib
+import json
+import os
+import tempfile
+import unittest
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
+
+import httpx
+
+from spiritscout.core.models import RunMode, Scope
+from spiritscout.ctf.agents import _http_observation, _obs_text
+from spiritscout.policy.scope import ScopeGuard
+from spiritscout.tools.builtin import BUILTIN_SPECS, http_probe
+from spiritscout.tools.http_responses import SPEC as HTTP_READ_SPEC
+from spiritscout.tools.http_responses import http_response_read
+from spiritscout.tools.invocation import InvocationContext, current_invocation
+from spiritscout.tools.registry import ToolRegistry
+from spiritscout.tools.sandbox import sandbox_available, sandbox_exec
+
+
+class HTTPResponseTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp.name)
+        self.requests = 0
+        self.release = asyncio.Event()
+        self.handlers = set()
+        self.source = ('<html>\r\n' + 'const pad="填充"; ' * 5000
+                       + '\r\nconst answer=[17,29,255];\r\n' + 'const pad="填充"; ' * 5000 + '\r\n</html>')
+        self.short = '<html>\r\n<script>const hidden=[17,29,255];</script><!--中间线索--></html>'
+
+        async def serve(reader, writer):
+            task = asyncio.current_task()
+            self.handlers.add(task)
+            try:
+                request = await reader.readuntil(b'\r\n\r\n')
+                self.requests += 1
+                path = request.split(b' ')[1]
+                if path in (b'/read-timeout', b'/body-timeout'):
+                    if path == b'/body-timeout':
+                        writer.write(b'HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\npart')
+                        await writer.drain()
+                    await self.release.wait()
+                    return
+                payload = (self.short if path == b'/short' else self.source).encode()
+                if path == b'/invalid':
+                    payload = b'const marker="\xff\xc0\xa0";'
+                extra = ''
+                if path == b'/gzip':
+                    payload = gzip.compress(payload)
+                    extra = 'Content-Encoding: gzip\r\n'
+                status = '206 Partial Content' if path == b'/partial' else '200 OK'
+                if path == b'/partial':
+                    extra = f'Content-Range: bytes 0-{len(payload)-1}/{len(payload)+1000}\r\n'
+                writer.write((f'HTTP/1.1 {status}\r\nContent-Type: text/html; charset=utf-8\r\n'
+                              f'{extra}Content-Length: {len(payload)}\r\nConnection: close\r\n\r\n').encode() + payload)
+                await writer.drain()
+            finally:
+                writer.close()
+                await writer.wait_closed()
+                self.handlers.discard(task)
+
+        self.server = await asyncio.start_server(serve, '127.0.0.1', 0)
+        self.base = f'http://127.0.0.1:{self.server.sockets[0].getsockname()[1]}'
+
+    async def asyncTearDown(self):
+        self.release.set()
+        self.server.close()
+        await self.server.wait_closed()
+        if self.handlers:
+            await asyncio.gather(*self.handlers)
+        self.temp.cleanup()
+
+    async def fetch(self, path='', **kwargs):
+        return await http_probe(self.base + path, guard=ScopeGuard(Scope(local_analysis=True)),
+                                workspace_root=str(self.root), **kwargs)
+
+    async def read(self, ref, **kwargs):
+        result = await http_response_read(workspace_root=str(self.root), body_ref=ref, **kwargs)
+        self.assertTrue(result.ok, result.error)
+        return json.loads(result.stdout)
+
+    async def test_empty_transport_errors_keep_type_phase_and_execution_uncertainty(self):
+        for error, phase, state in (
+            (httpx.ConnectTimeout, 'connect', 'not_sent'),
+            (httpx.PoolTimeout, 'pool', 'not_sent'),
+            (httpx.WriteTimeout, 'write', 'unknown'),
+            (httpx.ReadTimeout, 'read', 'unknown'),
+        ):
+            with self.subTest(error=error.__name__):
+                calls = []
+                def fail(request):
+                    calls.append(request)
+                    try:
+                        raise TimeoutError()
+                    except TimeoutError as cause:
+                        raise error('', request=request) from cause
+                with patch('spiritscout.tools.builtin.ScopedHTTPTransport', return_value=httpx.MockTransport(fail)):
+                    result = await self.fetch('/action', method='POST', data='x=1', timeout=.1)
+                self.assertFalse(result.ok)
+                self.assertTrue(result.timed_out)
+                self.assertIn(error.__name__, result.error)
+                self.assertEqual(len(calls), 1, '不能自动重放结果未知的写操作')
+                failure = result.parsed['http_failure']
+                self.assertEqual((failure['phase'], failure['request_state']), (phase, state))
+                self.assertIn('TimeoutError', failure['exception_chain'])
+
+    async def test_real_read_and_body_timeout_do_not_retry_or_claim_business_failure(self):
+        for path, state, status in (('/read-timeout', 'unknown', None),
+                                    ('/body-timeout', 'response_incomplete', 200)):
+            with self.subTest(path=path):
+                before = self.requests
+                result = await self.fetch(path, method='POST', data='action=once', timeout=.15)
+                self.assertFalse(result.ok)
+                self.assertTrue(result.timed_out)
+                failure = result.parsed['http_failure']
+                self.assertEqual(failure['error_type'], 'ReadTimeout')
+                self.assertEqual(failure['request_state'], state)
+                self.assertEqual(failure['status_code'], status)
+                self.assertEqual(self.requests - before, 1)
+
+    async def test_connect_failure_after_redirect_does_not_claim_original_post_unsent(self):
+        calls = []
+        def redirect_then_fail(request):
+            calls.append(request)
+            if len(calls) == 1:
+                return httpx.Response(303, headers={'Location': '/next'})
+            raise httpx.ConnectTimeout('', request=request)
+        with patch('spiritscout.tools.builtin.ScopedHTTPTransport',
+                   return_value=httpx.MockTransport(redirect_then_fail)):
+            result = await self.fetch('/action', method='POST', data='x=1')
+        failure = result.parsed['http_failure']
+        self.assertEqual(failure['request_state'], 'unknown')
+        self.assertEqual(failure['completed_redirects'], 1)
+        self.assertEqual([r.method for r in calls], ['POST', 'GET'])
+
+    async def test_model_mode_param_does_not_collide_with_ambient_context(self):
+        # 环境 mode（RunMode）曾与工具参数 mode 同名撞成
+        # 「multiple values for keyword argument」；保留键化后模型参数直达
+        token = current_invocation.set(InvocationContext('inv-ambient-fixture', 'digest'))
+        try:
+            probed = await self.fetch('/short')
+        finally:
+            current_invocation.reset(token)
+        ref = probed.parsed['body_ref']
+        registry = ToolRegistry(SimpleNamespace(), max_retries=0)
+        registry.register_builtin('http_response_read', http_response_read, HTTP_READ_SPEC)
+        context = {'workspace_root': str(self.root), '_run_mode': RunMode.CTF, '_search': None}
+        searched = await registry.call('http_response_read',
+                                       {'body_ref': ref, 'mode': 'search', 'query': 'hidden'}, **context)
+        self.assertTrue(searched.ok, searched.error)
+        self.assertIn('matches', searched.stdout)
+        read = await registry.call('http_response_read', {'body_ref': ref}, **context)
+        self.assertTrue(read.ok, read.error)
+        self.assertIn('hidden', read.stdout)
+        bad = await registry.call('http_response_read', {'body_ref': ref, 'mode': 'scan'}, **context)
+        self.assertFalse(bad.ok)
+        self.assertIn('read 或 search', bad.error)
+
+    async def test_long_gzip_saved_in_full_and_local_search_does_not_refetch(self):
+        token = current_invocation.set(InvocationContext('inv-http-fixture', 'digest'))
+        try:
+            result = await self.fetch('/gzip')
+        finally:
+            current_invocation.reset(token)
+        self.assertTrue(result.ok, result.error)
+        info = result.parsed
+        self.assertTrue(info['download_complete'])
+        self.assertFalse(info['body_truncated'])
+        self.assertEqual(info['body_sha256'], hashlib.sha256(self.source.encode()).hexdigest())
+        self.assertEqual(info['content_type'], 'text/html')
+        self.assertTrue(info['preview_truncated'])
+        self.assertNotIn('answer=[17,29,255]', result.stdout)
+        body_path = Path(info['body_path'])
+        self.assertEqual(body_path.with_name('body.bin').read_bytes(), self.source.encode())
+        self.assertEqual(info['body_sha256'], hashlib.sha256(self.source.encode()).hexdigest())
+        observation = _http_observation('GET /gzip', result, self.base + '/gzip', [])
+        self.assertLess(len(_obs_text(observation)), 5000)
+        found = await self.read(info['body_ref'], mode='search', query='answer=[17,29,255]')
+        self.assertIn('answer=[17,29,255]', found['matches'][0]['text'])
+        self.assertEqual(found['source_invocation_id'], 'inv-http-fixture')
+        offset = found['matches'][0]['offset']
+        exact = await self.read(info['body_ref'], offset=offset, limit=24)
+        self.assertEqual(exact['text'], self.source[offset:offset + 24])
+        line = await self.read(info['body_ref'], start_line=3)
+        line_start = self.source.index('const answer=')
+        self.assertEqual(line['text'], self.source[line_start:line_start + 3500])
+        self.assertEqual(self.requests, 1)
+
+    async def test_short_html_reaches_ctf_without_stripping_script_or_comments(self):
+        result = await self.fetch('/short')
+        obs = _http_observation('GET /short', result, self.base + '/short', [])
+        self.assertEqual(obs['excerpt'], self.short)
+        self.assertFalse(obs['preview_truncated'])
+        self.assertIn('body_ref=', _obs_text(obs))
+        self.assertIn(self.short, _obs_text(obs))
+
+    async def test_download_cap_is_explicit_and_independent_of_preview(self):
+        result = await self.fetch('/gzip', http_max_body_bytes=128)
+        self.assertTrue(result.ok, result.error)
+        self.assertFalse(result.parsed['download_complete'])
+        self.assertTrue(result.parsed['body_truncated'])
+        self.assertFalse(result.parsed['preview_truncated'])
+        self.assertEqual(Path(result.parsed['body_path']).with_name('body.bin').stat().st_size, 128)
+        obs = _http_observation('GET /gzip', result, self.base + '/gzip', [])
+        self.assertIn('下载不完整', _obs_text(obs))
+        self.assertNotIn('以下为完整正文', _obs_text(obs))
+        self.assertFalse((await self.read(result.parsed['body_ref']))['download_complete'])
+
+    async def test_contiguous_reads_reconstruct_exact_source_including_crlf(self):
+        result = await self.fetch('/short')
+        ref = result.parsed['body_ref']
+        offset, parts = 0, []
+        while True:
+            chunk = await self.read(ref, offset=offset, limit=7)
+            parts.append(chunk['text'])
+            offset = chunk['next_offset']
+            if not chunk['has_more']:
+                break
+        self.assertEqual(''.join(parts), self.short)
+        self.assertEqual(self.requests, 1)
+
+    async def test_references_are_session_local_and_cannot_traverse(self):
+        result = await self.fetch('/short')
+        ref = result.parsed['body_ref']
+        other = await http_response_read(workspace_root=str(self.root / 'other'), body_ref=ref)
+        self.assertFalse(other.ok)
+        escaped = await http_response_read(workspace_root=str(self.root), body_ref='../execution.key')
+        self.assertFalse(escaped.ok)
+        bad = await http_response_read(workspace_root=str(self.root), body_ref=ref, offset=-1)
+        self.assertFalse(bad.ok)
+        folder = self.root / 'http-responses' / ref
+        (folder / 'body.txt').unlink()
+        (folder / 'body.txt').symlink_to(self.root / 'outside.txt')
+        self.assertFalse((await http_response_read(workspace_root=str(self.root), body_ref=ref)).ok)
+
+    async def test_relative_workspace_returns_absolute_source_path(self):
+        relative = os.path.relpath(self.root, Path.cwd())
+        result = await http_probe(self.base + '/short', guard=ScopeGuard(Scope(local_analysis=True)),
+                                  workspace_root=relative)
+        self.assertTrue(result.ok, result.error)
+        path = Path(result.parsed['body_path'])
+        self.assertTrue(path.is_absolute())
+        self.assertEqual(path.read_bytes(), self.short.encode())
+        self.assertEqual(path.parent.parent, self.root / 'http-responses')
+        metadata = json.loads(path.with_name('metadata.json').read_text())
+        self.assertEqual(metadata['body_path'], str(path))
+        read = await http_response_read(workspace_root=relative, body_ref=result.parsed['body_ref'])
+        self.assertTrue(read.ok, read.error)
+        self.assertEqual(json.loads(read.stdout)['text'], self.short)
+
+    @unittest.skipUnless(sandbox_available(), '需要 bubblewrap 验证真实沙箱原文读取')
+    async def test_source_path_is_readable_from_actual_challenge_sandbox(self):
+        relative = os.path.relpath(self.root, Path.cwd())
+        result = await http_probe(self.base + '/short', guard=ScopeGuard(Scope(local_analysis=True)),
+                                  workspace_root=relative)
+        path = Path(result.parsed['body_path'])
+        code = (f'from pathlib import Path\np = Path({str(path)!r})\n'
+                f'assert p.read_bytes() == {self.short.encode()!r}\n'
+                'assert Path.cwd() != p.parent\nprint("source-readable")\n'
+                'try:\n    p.write_text("overwrite")\n'
+                'except OSError:\n    print("source-readonly")\n'
+                'else:\n    raise AssertionError("snapshot must be read-only")\n')
+        sandbox = await sandbox_exec(code, language='python', workspace_root=relative,
+                                     workspace_scope='challenge-fixture')
+        self.assertTrue(sandbox.ok, sandbox.error)
+        self.assertEqual(sandbox.returncode, 0, sandbox.stderr)
+        self.assertIn('source-readable', sandbox.stdout)
+        self.assertIn('source-readonly', sandbox.stdout)
+
+    async def test_cached_http_reuses_same_immutable_snapshot(self):
+        registry = ToolRegistry(SimpleNamespace(), max_retries=0)
+        registry.register_builtin('http_probe', http_probe, BUILTIN_SPECS['http_probe'])
+        context = {'guard': ScopeGuard(Scope(local_analysis=True)), 'workspace_root': str(self.root)}
+        first = await registry.call('http_probe', {'url': self.base + '/short'}, **context)
+        second = await registry.call('http_probe', {'url': self.base + '/short'}, **context)
+        self.assertTrue(first.ok, first.error)
+        self.assertTrue(second.ok, second.error)
+        self.assertTrue(second.reuse)
+        self.assertEqual(first.parsed['body_ref'], second.parsed['body_ref'])
+        saved = await self.read(second.parsed['body_ref'])
+        self.assertEqual(saved['text'], self.short)
+        self.assertEqual(self.requests, 1)
+
+    async def test_partial_http_response_is_not_claimed_to_be_entire_resource(self):
+        result = await self.fetch('/partial')
+        self.assertTrue(result.parsed['download_complete'])
+        self.assertTrue(result.parsed['response_is_partial'])
+        obs = _http_observation('GET /partial', result, self.base + '/partial', [])
+        self.assertIn('不代表完整资源', _obs_text(obs))
+
+    async def test_invalid_text_encoding_keeps_original_bytes_and_reports_loss(self):
+        result = await self.fetch('/invalid')
+        self.assertTrue(result.parsed['text_decode_lossy'])
+        self.assertEqual(Path(result.parsed['body_path']).with_name('body.bin').read_bytes(), b'const marker="\xff\xc0\xa0";')
+        self.assertTrue((await self.read(result.parsed['body_ref']))['text_decode_lossy'])

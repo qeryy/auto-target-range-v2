@@ -78,10 +78,11 @@ class ExecutionRegressionTests(unittest.IsolatedAsyncioTestCase):
         registry = ToolRegistry(LocalExecutor())
         execute = AsyncMock(return_value=ToolResult(tool="http_probe", ok=False))
         registry.register_builtin("http_probe", execute, BUILTIN_SPECS["http_probe"])
-        await registry.call("http_probe", {"method": "POST", "action": "analysis"})
+        target = {"url": "https://audit.test/"}
+        await registry.call("http_probe", {**target, "method": "POST", "action": "analysis"})
         execute.assert_awaited_once()
         execute.reset_mock()
-        self.assertFalse((await registry.call("http_probe", {"method": "DELETE"})).ok)
+        self.assertFalse((await registry.call("http_probe", {**target, "method": "DELETE"})).ok)
         execute.assert_not_awaited()
 
     async def test_readonly_probe_can_retry(self) -> None:
@@ -89,7 +90,7 @@ class ExecutionRegressionTests(unittest.IsolatedAsyncioTestCase):
         execute = AsyncMock(side_effect=[ToolResult(tool="http_probe", ok=False),
                                          ToolResult(tool="http_probe", ok=True)])
         registry.register_builtin("http_probe", execute, BUILTIN_SPECS["http_probe"])
-        self.assertTrue((await registry.call("http_probe", {"method": "GET"})).ok)
+        self.assertTrue((await registry.call("http_probe", {"url": "https://audit.test/", "method": "GET"})).ok)
         self.assertEqual(execute.await_count, 2)
 
     async def test_missing_program_returns_structured_result(self) -> None:
@@ -115,7 +116,8 @@ class ExecutionRegressionTests(unittest.IsolatedAsyncioTestCase):
         registry = ToolRegistry(LocalExecutor(), policy=policy)
         execute = AsyncMock()
         registry.register_builtin("remote", execute, ToolSpec(name="remote", kind=ToolKind.MCP))
-        self.assertFalse((await registry.call("remote", {"action": "reverse_shell"})).ok)
+        self.assertFalse((await registry.call("remote", {"action": "reverse_shell"},
+            _purpose="对测试夹具尝试反向连接，用于验证危险动作会先征求用户同意。")).ok)
         gate.assert_awaited_once()
         execute.assert_not_awaited()
 
@@ -214,7 +216,7 @@ class CredentialLedgerTests(unittest.IsolatedAsyncioTestCase):
         from spiritscout.blackboard import Blackboard
         from spiritscout.core.models import AgentType, BlackboardLayer, Task
 
-        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temp:
+        with tempfile.TemporaryDirectory() as temp:
             bb = Blackboard(Path(temp) / "bb.db")
             self.addCleanup(bb.close)
             bb.write(BlackboardLayer.RECON_CLUE, "reply-real", {
@@ -252,7 +254,7 @@ class CredentialLedgerTests(unittest.IsolatedAsyncioTestCase):
 class ConnectionRegressionTests(unittest.IsolatedAsyncioTestCase):
     async def test_https_certificate_is_verified_against_original_hostname(self) -> None:
         # 证书只含域名、不含回环 IP；只有正确保留 SNI/验证名才能握手成功。
-        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             key = ec.generate_private_key(ec.SECP256R1())
             name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "audit.test")])

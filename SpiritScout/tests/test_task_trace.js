@@ -1,8 +1,22 @@
 "use strict";
 const assert=require("node:assert/strict"), fs=require("node:fs"), vm=require("node:vm"), path=require("node:path");
-const context=vm.createContext({SessionObserver:{toolName:n=>n || "工具",cleanText:v=>String(v),resultSummary:d=>d.note || d.error || "返回结果"}});
+const context=vm.createContext(require('./helpers/i18n').context({SessionObserver:{toolName:n=>n || "工具",cleanText:v=>String(v),resultSummary:d=>d.note || d.error || "返回结果"}}));
 vm.runInContext(fs.readFileSync(path.join(__dirname,"../src/spiritscout/web/static/js/task-trace.js"),"utf8"),context);
 const api=vm.runInContext("TaskTrace",context), store=api.create();
+assert.equal(api.commentaryText('已确认输入条件。\n'+JSON.stringify({discovery:{key:'input',title:'发现'}})),
+  '已确认输入条件。','内联发现元数据不进入聊天正文');
+// 轻量流式公开说明仍落持久进展事件；语义补入同一消息，不重复正文。
+const streamedStore=api.create(), streamedScope={task_id:'single-stream',route_id:'single-r',turn:1};
+const streamedContent=JSON.stringify({progress:'这条路径已被现场否定。',exploration:{intent:'核对输入约束',attempt:'空输入对照',state:'refuted'}});
+api.reduce(streamedStore,{type:'agent.delta',actor:'ctf-misc-single',seq:1,detail:{...streamedScope,kind:'text',text:streamedContent}});
+const streamedTask=api.reduce(streamedStore,{type:'agent.progress',actor:'ctf-misc-single',seq:2,detail:{...streamedScope,streamed:true,
+  text:'这条路径已被现场否定。',exploration:{intent:'核对输入约束',attempt:'空输入对照',state:'refuted'}}});
+assert.equal(streamedTask.segments.size,1,'完整进展事件只为已流式消息补语义');
+assert.equal([...streamedTask.segments.values()][0].intent,'核对输入约束');
+assert.equal([...streamedTask.segments.values()][0].texts.size,1,'流式正文不再复制一遍');
+assert.equal([...streamedTask.steps.values()][0].exploration.state,'refuted');
+assert.equal(api.commentaryText('{"progress":" 完整说明 ","commentary":"完整说明"}'),"完整说明",
+  "公开字段与服务端一样先去除首尾空白，再合并相同说明");
 let seq=0;
 const push=(type,detail,actor="recon-one")=>api.reduce(store,{type,detail,actor,seq:++seq,ts:"now"});
 assert.equal(push("agent.delta",{text:"主会话消息"},"master-123"),null);
@@ -40,6 +54,47 @@ assert.match(api.summaryOf(callsOnly),/路线完成 2\/3/);
 assert.match(api.summaryOf(callsOnly),/未包含文字结论/);
 console.log("task trace: parallel task isolation, nested tool data, truthful summaries, partial history and failures passed");
 
+const repeatStore=api.create(), repeatScope={task_id:"repeat",route_id:"repeat-route"};
+let repeatSeq=0;
+const repeat=(type,detail)=>api.reduce(repeatStore,{actor:"local-display",type,seq:++repeatSeq,
+  detail:{...repeatScope,...detail}});
+const completedText="已读取本地配置，正在核对编码。";
+repeat("agent.delta",{turn:1,kind:"text",text:completedText});
+let repeatedTask=repeat("agent.progress",{turn:1,text:completedText,streamed:true});
+const repeatedSegment=[...repeatedTask.segments.values()][0];
+const displayed=()=>api.narrativeOf(repeatedTask,repeatedSegment);
+repeat("agent.delta",{turn:2,kind:"text",text:"已读取"});
+assert.equal(displayed().notes.length,1,"待收齐的重复前缀不显示为新进展");
+assert.equal(displayed().repeated,0,"未结束的相同前缀不算一次完整重复");
+repeat("agent.delta",{turn:2,kind:"text",text:"本地配置，正在核对编码。"});
+repeat("agent.progress",{turn:2,text:completedText,streamed:true});
+assert.equal(displayed().notes.length,1);
+assert.equal(displayed().repeated,1,"真实重复输出仍以次数呈现，不隐藏停滞");
+repeat("agent.delta",{turn:3,kind:"text",text:"已读取"});
+repeat("agent.progress",{turn:3,text:"已读取",streamed:true});
+assert.equal(displayed().notes.length,2,"较短但不同的完整回复不能被前缀判断吞掉");
+repeat("agent.delta",{turn:4,kind:"text",text:"已读取本地配置，发现编码不同。"});
+assert.equal(displayed().notes.length,3,"前缀后出现新信息时立即显示完整的新段落");
+repeat("agent.delta",{turn:4,kind:"reset",text:""});
+assert.equal(displayed().notes.length,2);
+assert.equal(displayed().repeated,1);
+const otherTask=repeat("agent.delta",{route_id:"another-route",turn:1,kind:"text",text:"已读取"});
+const otherSegment=otherTask.activeIntents.get("another-route");
+assert.equal(api.narrativeOf(otherTask,otherSegment).notes.length,1,"不同路线的短前缀不互相隐藏");
+repeat("agent.delta",{turn:2,kind:"reset",text:""});
+assert.equal(displayed().repeated,0,"撤回某次输出后同步撤回重复计数");
+
+const nativeStore=api.create();
+const native=(type,detail)=>api.reduce(nativeStore,{actor:"native-display",type,
+  detail:{task_id:"native",route_id:"native-route",...detail}});
+native("agent.delta",{call_id:"one",kind:"text",text:completedText});
+native("model.call",{call_id:"one"});
+native("agent.delta",{call_id:"two",kind:"text",text:"已读取"});
+const nativeTask=native("model.call",{call_id:"two"});
+assert.equal(api.narrativeOf(nativeTask,[...nativeTask.segments.values()][0]).notes.length,2,
+  "没有 progress 事件的原生调用也在完成时保留较短的新回复");
+console.log("stream commentary: complete boundaries, partial repeats, changed text, route isolation and native calls passed");
+
 // 模型正文在工具往返后仍保留，不再被工具状态覆盖或收进工具总折叠块。
 const narrative=api.create();
 let stamp=0;
@@ -59,11 +114,39 @@ assert.match(api.summaryOf(first),/尚不能认定存在越权/);
 assert.equal(api.commentaryText('{"progress":"尚未完成'),"","不展示半截结构化决策");
 assert.equal(api.commentaryText('{"progress":"已确认入口，准备验证访问条件。","analysis":"内部决策","actions":[{"command":"pwd"}]}'),"已确认入口，准备验证访问条件。" );
 assert.equal(api.commentaryText('{"actions":[{"command":"pwd"}]}'),"","没有公开说明时不拿执行协议凑进度");
+assert.equal(api.commentaryText('\",\"/_nuxt/builds/latest.json\"],\"rationale\":\"内部路径决策\"}'),"",
+  "旧审计中缺少 JSON 首帧的中段不能显示为正文");
+assert.equal(api.commentaryText('\":\"asset-one\",\"version\":1,\"offset\":0,\"limit\":12000}},{\"name\"'),"",
+  "旧工具协议残片不能显示为正文");
+explain("model.started",{task_id:"n",route_id:"r",call_id:"machine",cache_scope:"payload_planner"});
+explain("agent.delta",{task_id:"n",route_id:"r",call_id:"machine",kind:"text",text:'{"payloads":[{"payload":"GET /private"}]}' });
+assert.equal(api.updatesOf(first).some(item=>item.text.includes('/private')),false,
+  "旧 JSON 决策调用按 cache_scope 整体隐藏");
 explain("agent.delta",{task_id:"n",route_id:"r",turn:3,kind:"text",text:'{"progress":"这一段需要重试"}'});
 assert.equal(api.updatesOf(first).length,3);
 explain("agent.delta",{task_id:"n",route_id:"r",turn:3,kind:"reset"});
 assert.equal(api.updatesOf(first).length,2,"重试的未完成进展被正确撤销");
 console.log("task commentary: persistent natural-language updates, structured progress, retries and honest final fallback passed");
+
+api.reset();
+const interleaved=api.create();let interleaveSeq=0;
+const weave=(type,detail)=>api.reduce(interleaved,{actor:"parallel-worker",type,detail,seq:++interleaveSeq,ts:String(interleaveSeq)});
+weave("agent.turn",{task_id:"parallel",route_id:"a",turn:1});
+weave("agent.turn",{task_id:"parallel",route_id:"b",turn:1});
+const parallel=weave("agent.delta",{task_id:"parallel",route_id:"a",turn:1,kind:"text",text:"A 首句。"});
+weave("agent.delta",{task_id:"parallel",route_id:"b",turn:1,kind:"text",text:"B 首句。"});
+weave("agent.delta",{task_id:"parallel",route_id:"a",turn:1,kind:"text",text:"A 后续句。"});
+const segmentBodies=route=>[...parallel.segments.values()].filter(segment=>segment.route===route)
+  .map(segment=>[...segment.texts.values()].map(api.commentaryText).filter(Boolean).join("\n\n")).filter(Boolean);
+assert.deepEqual(segmentBodies("a"),["A 首句。","A 后续句。"],"恢复 A 流时不能把首句累计进后续卡");
+assert.deepEqual(segmentBodies("b"),["B 首句。"]);
+weave("agent.turn",{task_id:"parallel",route_id:"json",turn:1});
+weave("agent.delta",{task_id:"parallel",route_id:"json",turn:1,kind:"text",text:'{"progress":"结构化进'});
+weave("agent.delta",{task_id:"parallel",route_id:"b",turn:1,kind:"text",text:"B 后续句。"});
+weave("agent.delta",{task_id:"parallel",route_id:"json",turn:1,kind:"text",text:'展","commentary":"公开说明"}'});
+assert.deepEqual(segmentBodies("json"),["结构化进展\n\n公开说明"],"结构化 JSON 完整后再展示，不能按单个增量截断");
+weave("agent.delta",{task_id:"parallel",route_id:"json",turn:1,kind:"reset"});
+assert.deepEqual(segmentBodies("json"),[],"reset 仍撤销当前结构化流的公开正文");
 
 // 同一任务不同路线/回合必须分别展开，迟到的结果仍归原步骤。
 const phases=api.create();
@@ -83,3 +166,135 @@ assert.equal(grouped.steps.size,3,"不同路线同回合不合并");
 
 first.summary="## 核实登录行为";
 assert.match(api.summaryOf(first),/最后一次进展/,"只重复任务标题的摘要不能覆盖已有进展正文");
+const skillTask=push('agent.tool_call',{task_id:'skills',calls:[{id:'skill-1',name:'skill_open',arguments:{skill_id:'facts'}}]});
+assert.equal(api.skillsOf(skillTask).length,0,'选中或发起调用不等于成功读到技能');
+push('agent.tool_result',{task_id:'skills',id:'skill-1',name:'skill_open',ok:true,skill:{skill_id:'facts',version:1,revision:'rev1',path:'SKILL.md'},note:'已载入技能「facts」'});
+assert.equal(api.skillsOf(skillTask)[0].id,'facts');
+push('agent.tool_result',{task_id:'skills',id:'skill-2',name:'skill_read',ok:true,skill:{skill_id:'facts',version:1,revision:'rev1',path:'references/rules.md'}});
+assert.equal(api.skillsOf(skillTask)[0].paths.length,2);
+push('agent.tool_result',{task_id:'skills',id:'skill-failed',name:'skill_open',ok:false,skill:{skill_id:'unavailable',version:1,path:'SKILL.md'}});
+assert.equal(api.skillsOf(skillTask).length,1,'失败读取不能生成技能使用展示');
+
+// 推进状态独立：开始下一阶段时，尚未返回的工具仍归原阶段，不能提前标为完成。
+const advancement=api.create();let tick=0;
+const advance=(type,detail)=>api.reduce(advancement,{actor:'web-progress',type,detail,seq:++tick,ts:String(tick)});
+advance('task.start',{task_id:'progress',title:'验证登录边界'});
+advance('agent.turn',{task_id:'progress',route_id:'r',turn:1});
+const progress=advance('agent.tool_call',{task_id:'progress',route_id:'r',turn:1,calls:[{id:'slow',name:'http_request'}]});
+advance('agent.turn',{task_id:'progress',route_id:'r',turn:2});
+let stages=[...progress.steps.values()];
+assert.equal(stages[0].status,'waiting');assert.equal(stages[1].status,'running');
+advance('agent.delta',{task_id:'progress',route_id:'r',turn:2,kind:'text',text:'已确认匿名访问会跳转。接下来核对认证响应。'});
+assert.equal(api.stepTitle(progress,stages[1]),'已确认匿名访问会跳转');
+advance('agent.tool_result',{task_id:'progress',route_id:'r',id:'slow',ok:true,result:'302'});
+assert.equal(stages[0].status,'done');assert.equal(stages[1].status,'running');
+assert.equal(progress.activeSteps.get('r'),stages[1],'迟到的上一阶段结果不回退当前阶段');
+advance('agent.tool_call',{task_id:'progress',route_id:'r',turn:2,calls:[{id:'blocked',name:'shell'}]});
+advance('agent.tool_result',{task_id:'progress',route_id:'r',id:'blocked',ok:false,error:'环境缺少依赖'});
+assert.equal(stages[1].status,'failed','阶段失败独立呈现，不能显示为已完成');
+advance('agent.turn',{task_id:'progress',route_id:'r',turn:3});
+advance('task.cancelled',{task_id:'progress'});
+assert.equal([...progress.steps.values()].at(-1).status,'cancelled');
+advance('agent.delta',{task_id:'progress',route_id:'r',turn:3,kind:'text',text:'迟到正文'});
+assert.equal([...progress.steps.values()].at(-1).status,'cancelled','迟到正文不重新激活已撤销阶段');
+
+// SRC/旧记录没有回合号时，仍按真实外层动作推进，而非把所有工具塞进一块。
+const actions=api.create();
+let actionSeq=0;
+const action=(type,detail)=>api.reduce(actions,{actor:'recon-actions',type,detail,seq:++actionSeq});
+const actionTask=action('agent.tool_call',{task_id:'src',route_id:'src-route',calls:[{id:'one',name:'http_probe'}]});
+action('agent.tool_result',{task_id:'src',route_id:'src-route',id:'one',ok:true,result:'入口已观测'});
+action('agent.tool_call',{task_id:'src',route_id:'src-route',calls:[{id:'two',name:'tcp_scan'}]});
+assert.equal(actionTask.steps.size,2);assert.equal([...actionTask.steps.values()][0].status,'done');
+assert.equal(api.stepTitle(actionTask,[...actionTask.steps.values()][1]),'tcp_scan');
+console.log('task advancement: independent stage lifecycle, late results, semantic titles, failures, cancellation and legacy actions passed');
+
+// 持久语义进展不被工具状态覆盖；并行路线、等待答复与迟到回执保持隔离。
+const live=api.create();let seqLive=0;
+const change=(type,detail)=>api.reduce(live,{actor:'live-worker',type,detail,seq:++seqLive});
+change('task.start',{task_id:'live',title:'核对登录后的权限边界'});
+change('agent.turn',{task_id:'live',route_id:'r1',turn:1});
+const liveTask=change('agent.progress',{task_id:'live',route_id:'r1',turn:1,text:'已确认匿名访问被拒绝，接下来核对普通成员权限。'});
+const stageOne=[...liveTask.steps.values()][0];
+change('agent.tool_call',{task_id:'live',route_id:'r1',turn:1,calls:[{id:'probe',name:'http_probe'}]});
+change('agent.tool_result',{task_id:'live',route_id:'r1',id:'probe',ok:true,note:'HTTP 200'});
+assert.match(api.liveSummary(liveTask),/已确认匿名访问被拒绝/);
+assert.match(api.stageSummary(liveTask,stageOne),/核对普通成员权限/);
+change('agent.turn',{task_id:'live',route_id:'r2',turn:1});
+change('agent.progress',{task_id:'live',route_id:'r2',turn:1,text:'第二条路线正在比对分享链接的访问条件。'});
+assert.match(api.stageSummary(liveTask,stageOne),/普通成员权限/);
+change('agent.ask_user',{task_id:'live',route_id:'r2',question:'请在浏览器完成登录'});
+assert.match(liveTask.waitingReason,/完成登录/);
+change('agent.ask_answered',{task_id:'live',route_id:'r2',answer:'已完成'});
+assert.equal(liveTask.waitingReason,'');
+change('agent.delta',{task_id:'live',route_id:'r2',turn:1,kind:'reasoning',text:'内部推理不可作为公开进展'});
+assert.doesNotMatch(api.liveSummary(liveTask),/内部推理/);
+console.log('live progress: durable narratives, tool isolation, parallel stages, user handoff and reasoning exclusion passed');
+
+// 服务端与浏览器共用同一组协议样例；分片中也不能闪现元数据。
+for(const fixture of JSON.parse(fs.readFileSync(path.join(__dirname,'fixtures/public_progress.json'),'utf8'))) {
+  const actual=JSON.parse(JSON.stringify(api.parsePublicProgress(fixture.content)));
+  const expected={text:fixture.text,...(fixture.exploration ? {exploration:fixture.exploration} : {})};
+  assert.deepEqual(actual,expected,fixture.name);
+}
+const mixedStore=api.create(),mixedScope={task_id:'mixed',route_id:'mixed-r',turn:1};
+const mixed='已观察到登录表单。\n\n'+JSON.stringify({progress:'开始核实登录边界',exploration:{intent:'核实登录边界',attempt:'对照两个响应',state:'running'}});
+for(let i=1;i<=mixed.length;i++) {
+  const prefix=mixed.slice(0,i),visible=api.commentaryText(prefix);
+  assert.ok(!visible.includes('"progress"') && !visible.includes('"exploration"'),`metadata leaked at ${i}`);
+}
+let mixedTask;
+for(const text of [mixed.slice(0,19),mixed.slice(19,40),mixed.slice(40)])
+  mixedTask=api.reduce(mixedStore,{actor:'web-mixed',type:'agent.delta',detail:{...mixedScope,kind:'text',text}});
+api.reduce(mixedStore,{actor:'web-mixed',type:'agent.progress',seq:10,detail:{...mixedScope,text:mixed,streamed:true}});
+assert.equal([...mixedTask.steps.values()][0].exploration.intent,'核实登录边界');
+assert.equal(api.updatesOf(mixedTask).length,1,'持久进展与已流式正文去重');
+assert.equal(api.updatesOf(mixedTask)[0].text,'已观察到登录表单。');
+console.log('mixed progress: shared parser fixtures, partial protocol suppression, metadata recovery and narrative dedup passed');
+
+const intentStore=api.create();let intentSeq=20;
+const intentEvent=(type,detail,actor='web-switch')=>api.reduce(intentStore,{type,actor,seq:++intentSeq,detail:{task_id:'switch',route_id:'r',...detail}});
+intentEvent('agent.turn',{turn:1});
+intentEvent('agent.delta',{turn:1,kind:'text',text:'先核实入口。'});
+intentEvent('agent.progress',{turn:1,streamed:true,text:'先核实入口。',exploration:{intent:'核实入口',attempt:'读取页面'}});
+intentEvent('agent.turn',{turn:2});
+const switched=intentEvent('agent.delta',{turn:2,kind:'text',text:'已找到认证差异，转向身份校验。'});
+intentEvent('agent.progress',{turn:2,streamed:true,text:'已找到认证差异，转向身份校验。',exploration:{intent:'核实身份',attempt:'对照身份'}});
+const messages=[...switched.segments.values()].filter(s=>s.texts.size);
+assert.equal(messages.length,2,'显式新意图不能被 streamed 标记并回旧卡');
+assert.equal([...messages[0].texts.values()].map(api.commentaryText).join(''),'先核实入口。');
+assert.equal([...messages[1].texts.values()].map(api.commentaryText).join(''),'已找到认证差异，转向身份校验。');
+intentEvent('task.cancelled',{task_id:'switch'},'master-controller');
+assert.equal(switched.status,'cancelled','主控的真实任务撤销事件结束执行者卡片');
+assert.equal([...switched.steps.values()].at(-1).status,'cancelled');
+assert.ok([...switched.steps.values()].every(s=>!['running','waiting'].includes(s.status)));
+
+const fragmentStore=api.create(),fragmentScope={task_id:'fragment',route_id:'r',turn:5};
+let fragment=api.reduce(fragmentStore,{actor:'web-fragment',type:'agent.delta',detail:{...fragmentScope,kind:'text',text:'AF 提示","next":"PRIVATE_PROTOCOL_TAIL"}}'}});
+api.reduce(fragmentStore,{actor:'web-fragment',type:'agent.progress',seq:50,detail:{...fragmentScope,streamed:true,text:'完整公开观察。\n'+JSON.stringify({progress:'观察摘要',exploration:{intent:'核实条件',attempt:'响应对照'}})}});
+assert.deepEqual(Array.from(api.updatesOf(fragment),n=>n.text),['完整公开观察。'],'完整持久正文替换分页边界的协议残片');
+assert.ok([...fragment.segments.values()].every(s=>![...s.texts.values()].some(raw=>raw.includes('PRIVATE_PROTOCOL_TAIL'))));
+console.log('intent lifecycle: streamed intent changes, master cancellation and partial-page reconciliation passed');
+
+context.S={state:{session:{mode:'src'}}};
+const srcStore=api.create();
+const srcTask=api.reduce(srcStore,{actor:'recon-src',type:'task.start',detail:{task_id:'src-file',title:'报告文件化'}});
+api.reduce(srcStore,{actor:'recon-src',type:'agent.conclude',detail:{task_id:'src-file',summary:'LEGACY_REPORT_BODY'}});
+api.reduce(srcStore,{actor:'recon-src',type:'task.done',detail:{task_id:'src-file',conclusions:[{route:'r',text:'LEGACY_REPORT_BODY'}]}});
+assert.equal(srcTask.conclusions.size,0,'SRC 收尾正文不再灌入会话页面');
+assert.ok(!api.summaryOf(srcTask).includes('LEGACY_REPORT_BODY'));
+context.S.state.session.mode='ctf';
+api.reduce(srcStore,{actor:'recon-src',type:'agent.conclude',detail:{task_id:'src-file',summary:'CTF_EXISTING_OUTPUT'}});
+assert.ok(api.summaryOf(srcTask).includes('CTF_EXISTING_OUTPUT'),'普通 CTF 保留既有结论行为');
+console.log('SRC task reports: file-only conclusion display and CTF compatibility passed');
+
+const longStore=api.create();let longSeq=0;
+const longScope={task_id:"long-output",route_id:"r",call_id:"long-call",turn:1};
+const longText="已验证的公开结果。\n".repeat(3600)+"它的完整后续。";
+const longFeed=(type,detail)=>api.reduce(longStore,{actor:"fixture",type,seq:++longSeq,detail:{...longScope,...detail}});
+longFeed("agent.delta",{kind:"text",text:longText});
+let longTask=longFeed("agent.progress",{text:longText.slice(0,2400),streamed:true});
+assert.equal(api.narrativeOf(longTask,[...longTask.segments.values()][0]).notes.map(note=>note.text).join("\n"),longText.trim(),"旧 2400 字符持久前缀不能覆盖完整流");
+longTask=longFeed("agent.progress",{text:longText,streamed:true});
+assert.equal(api.narrativeOf(longTask,[...longTask.segments.values()][0]).notes.map(note=>note.text).join("\n"),longText.trim(),"长正文不能静默剪掉开头或重复显示");
+console.log("long public progress retained across live and legacy final events");

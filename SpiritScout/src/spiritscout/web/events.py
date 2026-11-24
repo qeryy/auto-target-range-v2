@@ -9,11 +9,12 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from collections.abc import AsyncIterator, Callable
 from pathlib import Path
 from typing import Any
 
-from spiritscout.core.audit import sanitize_record
+from spiritscout.core.audit import sanitize_record, watch_audit
 
 _HEARTBEAT = ": hb\n\n"
 _DONE = "event: done\ndata: {}\n\n"
@@ -112,6 +113,35 @@ def read_activity_page(path: Path, *, before: int | None = None,
             "has_more": has_more, "activity_count": min(count, limit)}
 
 
+def read_typed_page(path: Path, types: set[str], *, before: int | None = None,
+                    limit: int = 250) -> dict[str, Any]:
+    """按事件类型筛读一页（存档点等稀疏索引用），游标语义与活动分页一致。
+
+    匹配事件稀疏时一次请求会向后多拉若干原始页；为防病态长日志拖垮请求，
+    单次最多扫 400 页（约十万行），未扫尽时 has_more 照常为真供续拉。"""
+    items: list[dict[str, Any]] = []
+    cursor = before
+    older = 0
+    has_more = False
+    for _ in range(400):
+        page = read_audit_page(path, before=cursor, limit=250)
+        # 逐页向旧端扫描：新拉到的页更旧，前插保持整体升序（与活动分页一致）
+        items = [item for item in page["items"]
+                 if item["event"].get("type") in types] + items
+        older, has_more = page["older_cursor"], page["has_more"]
+        if len(items) >= limit or not has_more or not page["items"]:
+            break
+        cursor = older
+    if len(items) > limit:
+        # 只保留最新的 limit 条；older_cursor 指向保留段最旧一条，续拉可能
+        # 与本页末尾重合一条，由调用方按 id 去重。
+        items = items[-limit:]
+        older = items[0]["id"]
+        has_more = True
+    return {"items": items, "older_cursor": older,
+            "cursor": items[-1]["id"] if items else 0, "has_more": has_more}
+
+
 def _frame(event_id: int, line: str) -> str:
     # 历史日志可能含旧版本写下的原始参数；读取时也不能直接转发。
     try:
@@ -162,109 +192,62 @@ async def stream_audit(path: Path, last_event_id: int = 0, *,
     def _done() -> bool:
         return is_terminal is not None and is_terminal()
 
-    _open()
-    idle = 0.0
-    try:
-        while True:
-            if fh is None:                       # 审计文件尚未创建（会话刚启动）
-                _open()
-                if fh is None:
-                    if _done():
+    async def wait_for_write() -> None:
+        if poll <= 0:
+            await asyncio.sleep(0)
+            return
+        try:
+            await asyncio.wait_for(changed.wait(), timeout=poll)
+        except TimeoutError:
+            pass  # 外部进程写入和终态变化仍由轮询兜底。
+
+    with watch_audit(path) as changed:
+        _open()
+        last_activity = time.monotonic()
+        try:
+            while True:
+                # 先清通知再读取，读取期间的新写入会唤醒下一次等待。
+                changed.clear()
+                if fh is None:                       # 审计文件尚未创建（会话刚启动）
+                    _open()
+                    if fh is None:
+                        if _done():
+                            yield _DONE
+                            return
+                        yield _HEARTBEAT
+                        await wait_for_write()
+                        continue
+                fh.seek(offset)
+                data = fh.read()
+                if data:
+                    lines = data.split(b"\n")
+                    if data.endswith(b"\n"):
+                        lines.pop()                  # 完整换行结尾：末元素是空串，不是一行
+                        tail = b""
+                    else:
+                        tail = lines.pop()           # 半行：本轮不发，下轮从行首重读
+                    for line in lines:
+                        cursor += 1
+                        if byte_offset is not None:
+                            offset += len(line) + 1
+                        text = line.decode("utf-8", errors="replace").strip()
+                        if text:
+                            yield _frame(offset if byte_offset is not None else cursor, text)
+                            emitted += 1
+                            if max_frames is not None and emitted >= max_frames:
+                                return
+                            if emitted % 64 == 0:
+                                await asyncio.sleep(0)  # 大量追帧时让出事件循环
+                    offset = fh.tell() - len(tail)   # 回退未消费的半行字节
+                    last_activity = time.monotonic()
+                else:
+                    if _done():                      # 终态且已排空：收尾
                         yield _DONE
                         return
-                    yield _HEARTBEAT
-                    await asyncio.sleep(poll)
-                    continue
-            fh.seek(offset)
-            data = fh.read()
-            if data:
-                lines = data.split(b"\n")
-                if data.endswith(b"\n"):
-                    lines.pop()                  # 完整换行结尾：末元素是空串，不是一行
-                    tail = b""
-                else:
-                    tail = lines.pop()           # 半行：本轮不发，下轮从行首重读
-                for line in lines:
-                    cursor += 1
-                    if byte_offset is not None:
-                        offset += len(line) + 1
-                    text = line.decode("utf-8", errors="replace").strip()
-                    if text:
-                        yield _frame(offset if byte_offset is not None else cursor, text)
-                        emitted += 1
-                        if max_frames is not None and emitted >= max_frames:
-                            return
-                        if emitted % 64 == 0:
-                            await asyncio.sleep(0)  # 大量追帧时让出事件循环
-                offset = fh.tell() - len(tail)   # 回退未消费的半行字节
-                idle = 0.0
-            else:
-                if _done():                      # 终态且已排空：收尾
-                    yield _DONE
-                    return
-                idle += poll
-                if idle >= heartbeat:
-                    idle = 0.0
-                    yield _HEARTBEAT
-            await asyncio.sleep(poll)
-    finally:
-        if fh is not None:
-            fh.close()
-
-
-# 主链路（master/gateway/runtime）不是「子 Agent 实例」，面板里不单列
-_NON_WORKER = ("master", "gateway", "runtime", "system", "user")
-
-
-def _is_worker(actor: str) -> bool:
-    return bool(actor) and not any(
-        actor == name or actor.startswith(f"{name}-") for name in _NON_WORKER)
-
-
-def agent_models(path: Path, *, limit: int = 8000) -> dict[str, Any]:
-    """按实例汇总最近一次真实模型调用（面板兜底：翻历史也能看到用了什么）。
-
-    SSE 只在事件到达那一刻有意义；打开面板晚了、或用旧记录，实时流里
-    就没有这条 model.started。这里直接读审计尾部，把每个子 Agent 最近一次
-    调用的模型与渠道（供应商/base_url）算出来。
-    """
-    rows: dict[str, dict[str, Any]] = {}
-    try:
-        with path.open("rb") as fh:
-            size = fh.seek(0, 2)
-            start = max(0, size - 4 * 1024 * 1024)
-            fh.seek(start)
-            data = fh.read()
-    except OSError:
-        return {"agents": []}
-    lines = data.splitlines()
-    if start:
-        lines = lines[1:]          # 首行可能被切入点截断
-    for raw in lines[-limit:]:
-        if b"model.started" not in raw and b"model.failed" not in raw:
-            continue
-        try:
-            record = json.loads(raw.decode("utf-8", errors="replace"))
-        except ValueError:
-            continue
-        kind = str(record.get("type") or "")
-        if kind not in {"model.started", "model.failed", "model.call_finished"}:
-            continue
-        actor = str(record.get("actor") or "")
-        if not _is_worker(actor):
-            continue
-        detail = record.get("detail") or {}
-        model = str(detail.get("model") or "")
-        if not model:
-            continue
-        row = rows.setdefault(actor, {"actor": actor, "model": model,
-                                      "provider_ref": "", "base_url": "",
-                                      "calls": 0, "last_ts": ""})
-        row["model"] = model
-        row["calls"] += 1
-        row["last_ts"] = str(record.get("ts") or row["last_ts"])
-        for field in ("provider_ref", "base_url"):
-            value = str(detail.get(field) or "")
-            if value:
-                row[field] = value
-    return {"agents": sorted(rows.values(), key=lambda r: r["actor"])}
+                    if time.monotonic() - last_activity >= heartbeat:
+                        last_activity = time.monotonic()
+                        yield _HEARTBEAT
+                await wait_for_write()
+        finally:
+            if fh is not None:
+                fh.close()

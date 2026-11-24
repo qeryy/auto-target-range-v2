@@ -11,7 +11,7 @@ import sqlite3
 import time
 import weakref
 import xml.etree.ElementTree as ET
-from datetime import UTC, date, datetime
+from datetime import date, datetime, timezone
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, ClassVar
@@ -57,7 +57,8 @@ SEARCH_SCHEMA: dict[str, Any] = {"type": "function", "function": {
     }, "required": ["query", "reason"]}}}
 SEARCH_SPEC = ToolSpec(name="web_search", kind=ToolKind.BUILTIN, risk=RiskLevel.READONLY,
     automatic_replay=False, internet_search=True, description="Exa 公开资料检索（格式化、来源/时间、跨会话缓存）",
-    allowed_params=set(SEARCH_SCHEMA["function"]["parameters"]["properties"]))
+    allowed_params=set(SEARCH_SCHEMA["function"]["parameters"]["properties"]),
+    required_params=("query", "reason"))
 
 
 def _failure(message: str, *, timed_out: bool = False) -> ToolResult:
@@ -83,11 +84,9 @@ def _parameters(query: str, num_results: int, include_domains: list[str] | None,
         if not host or len(host) > 253 or any(c not in "abcdefghijklmnopqrstuvwxyz0123456789.-" for c in host):
             raise ValueError("include_domains 填域名，不含协议、路径或参数")
         domains.append(host)
-    if published_after and (
-        not isinstance(published_after, str)
-        or date.fromisoformat(published_after).isoformat() != published_after
-    ):
-        raise ValueError("published_after 必须是 YYYY-MM-DD")
+    if published_after:
+        if not isinstance(published_after, str) or date.fromisoformat(published_after).isoformat() != published_after:
+            raise ValueError("published_after 必须是 YYYY-MM-DD")
     return {"query": " ".join(query.split()), "num_results": num_results,
             "include_domains": sorted(set(domains)), "published_after": published_after}
 
@@ -286,7 +285,7 @@ class SearchService:
                 data = json.loads(body)
         if not isinstance(data, dict):
             raise ValueError("搜索服务返回格式不正确")
-        return _format(params, data, datetime.now(UTC).isoformat(timespec="seconds"))
+        return _format(params, data, datetime.now(timezone.utc).isoformat(timespec="seconds"))
 
     async def _fetch_free(self, params: dict[str, Any]) -> str:
         """官方免密 MCP 不发送账户凭据；失败不降级到付费 API。"""
@@ -325,7 +324,7 @@ class SearchService:
                 if not rows:
                     raise ValueError("免费检索未返回可解析的来源；未调用付费 API")
                 data = {"results": rows}
-            return _format(params, data, datetime.now(UTC).isoformat(timespec="seconds"),
+            return _format(params, data, datetime.now(timezone.utc).isoformat(timespec="seconds"),
                            provider="exa-free-mcp")
         except (McpError, TimeoutError) as exc:
             raise ValueError("免费检索暂不可用；未自动调用付费 API。请依据实际阻塞决定是否付费检索") from exc
@@ -375,7 +374,7 @@ class SearchService:
             rows.append({"title": item.findtext("title") or "", "url": url,
                          "publishedDate": "",  # RSS pubDate 可能是检索时间，不能当文章发布时间。
                          "text": item.findtext("description") or ""})
-        return _format(params, {"results": rows}, datetime.now(UTC).isoformat(timespec="seconds"),
+        return _format(params, {"results": rows}, datetime.now(timezone.utc).isoformat(timespec="seconds"),
                        provider="public-search-curl")
 
     async def _load(self, key: str, params: dict[str, Any], refresh: bool, paid: bool,
@@ -467,16 +466,17 @@ def search_service(config: SearchConfig, root: Path, *, api_key: str | None = No
     return services[identity]
 
 
-async def web_search(*, search: SearchService | None = None, mode: RunMode | None = None, **params: Any) -> ToolResult:
-    # 内置上下文里的 guard/limiter 等不属于模型参数，不向搜索服务转发。
-    if mode == RunMode.COMPETITION:
+async def web_search(*, _search: SearchService | None = None, _run_mode: RunMode | None = None, **params: Any) -> ToolResult:
+    # 运行身份经保留键注入（registry 分发），模型参数（query/reason 等）
+    # 不与内置上下文争名，也不向搜索服务转发。
+    if _run_mode == RunMode.COMPETITION:
         return _failure("智能体模式禁止公开网页搜索，Exa 不可用")
-    if search is None or not search.config.enabled:
+    if _search is None or not _search.config.enabled:
         return _failure("公开搜索未启用；在 MCP 管理页启用搜索后可使用免费检索，付费请求另需密钥与 blocker")
     request = {key: params[key] for key in SEARCH_SPEC.allowed_params if key in params}
     if not {"query", "reason"}.issubset(request):
         return _failure("需要 query 关键词和 reason 信息缺口说明")
-    return await search.search(**request)
+    return await _search.search(**request)
 
 
 def effective_search(config: SearchConfig, resources: Any) -> tuple[SearchConfig, str]:

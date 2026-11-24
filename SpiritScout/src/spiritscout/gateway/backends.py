@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import abc
 import asyncio
-import contextlib
 import copy
 import inspect
 import json
@@ -17,7 +16,8 @@ from typing import Any
 from spiritscout.config.settings import ModelEntry
 from spiritscout.gateway.attempts import current_attempt_trace, tracked_request
 from spiritscout.gateway.capabilities import EndpointCapabilities
-from spiritscout.gateway.credentials import api_key_for
+from spiritscout.gateway.litellm_runtime import load_litellm
+from spiritscout.gateway.metering import backend_usage, merge_usage, normalize_usage
 
 # 流式增量回调：(kind, text) -> None | Awaitable[None]
 DeltaCallback = Callable[[str, str], Any]
@@ -34,24 +34,14 @@ _TRUNCATED_TOOL_ARGS_NOTE = (
 
 
 def cache_usage(usage: Any) -> dict[str, int | None]:
-    """兼容 SDK 对象和字典；未提供的指标保留 None，不能伪造零命中。"""
-    def get(obj: Any, key: str) -> Any:
-        return obj.get(key) if isinstance(obj, dict) else getattr(obj, key, None)
-
-    details = get(usage, "prompt_tokens_details") or get(usage, "input_tokens_details")
-    read = get(details, "cached_tokens")
-    if read is None:
-        read = get(usage, "cache_read_input_tokens")
-    if read is None:
-        read = get(usage, "prompt_cache_hit_tokens")
-    write = get(usage, "cache_creation_input_tokens")
-    return {"cached_input_tokens": read if type(read) is int and read >= 0 else None,
-            "cache_write_tokens": write if type(write) is int and write >= 0 else None}
+    """保留旧接口；全部协议共用同一份缓存字段归一化。"""
+    normalized = normalize_usage(usage)
+    return {key: normalized.get(key) for key in ("cached_input_tokens", "cache_write_tokens")}
 
 
 async def emit_delta(on_delta: DeltaCallback | None, kind: str, text: str) -> None:
     """投递一个流式增量（回调失败不影响主链——增量只是观感，不是数据）。"""
-    if on_delta is None or not text:
+    if on_delta is None or (not text and kind != "reset"):
         return
     try:
         out = on_delta(kind, text)
@@ -106,30 +96,21 @@ def normalize_tool_calls(raw: Any) -> list[dict[str, Any]]:
     return out
 
 
-def _merge_stray_system_messages(messages: list[dict[str, Any]]) -> None:
-    """把出现在消息序列中后段的 system 消息并入第一条 system（就地修改）。
-
-    现场：LM Studio 的 Qwen3.5 聊天模板在 system 不位于开头时直接抛
-    「System message must be at the beginning」（模板 raise_exception，
-    HTTP 400/500）。CTF 求解器会把常驻材料块作为第二条 system 插进消息列表，
-    llama-server 对此宽容，LM Studio 严格校验——同一份代码前者能跑后者全炸。
-    合并而不是丢弃：材料内容一条不少，只是并进主 system 的文本末尾。
-    """
-    first = next((m for m in messages if m.get("role") == "system"), None)
-    if first is None:
-        return
-    first_index = messages.index(first)
-    merged: list[int] = []
-    for index, message in enumerate(messages):
-        if index <= first_index or message.get("role") != "system":
+def encode_failed_tool_history(messages: list[dict[str, Any]]) -> None:
+    """只编码发送副本中的坏历史，避免 llama.cpp 在渲染模板前拒绝整个请求。"""
+    for message in messages:
+        if message.get('role') != 'assistant':
             continue
-        if message.get("content"):
-            head = first.get("content") or ""
-            sep = "\n\n" if head else ""
-            first["content"] = f"{head}{sep}{message['content']}"
-        merged.append(index)
-    for index in reversed(merged):
-        del messages[index]
+        for call in message.get('tool_calls') or []:
+            function = call.get('function') or {}
+            raw = function.get('arguments')
+            if not isinstance(raw, str):
+                continue
+            try:
+                json.loads(raw)
+            except (ValueError, RecursionError):
+                # 这是失败调用的记录，不猜补缺失参数，也不重新执行。原历史/审计保留原串。
+                function['arguments'] = json.dumps({'_invalid_json_not_executed': raw}, ensure_ascii=False)
 
 
 class ChatBackend(abc.ABC):
@@ -175,22 +156,20 @@ def extract_json(text: str) -> Any:
         pass
     fence = _re.search(r"```(?:json)?\s*([\[{].*?[\]}])\s*```", text, _re.DOTALL)
     candidates = [fence.group(1)] if fence else []
-    for open_ch, close_ch in (("{", "}"), ("[", "]")):
-        start = text.find(open_ch)
-        if start < 0:
-            continue
-        depth = 0
-        for i in range(start, len(text)):
-            if text[i] == open_ch:
-                depth += 1
-            elif text[i] == close_ch:
-                depth -= 1
-                if depth == 0:
-                    candidates.append(text[start:i + 1])
-                    break
     for cand in candidates:
         try:
             return _json.loads(cand)
+        except ValueError:
+            continue
+    decoder = _json.JSONDecoder()
+    # 保留对象优先于数组的兼容顺序；标准解码器正确处理字符串中的括号和转义。
+    for open_ch in ("{", "["):
+        start = text.find(open_ch)
+        if start < 0:
+            continue
+        try:
+            value, _ = decoder.raw_decode(text, start)
+            return value
         except ValueError:
             continue
     raise ValueError(f"模型输出中未找到可解析的 JSON: {text[:160]!r}")
@@ -263,14 +242,15 @@ class LiteLLMBackend(ChatBackend):
         reasoning_effort: str = "",
         _retry_truncated: bool = False,
     ) -> dict[str, Any]:
-        import litellm  # 延迟导入
+        litellm = await load_litellm()
         # litellm 认不出供应商时往终端打红色 Provider List 横幅——纯提示
         # 噪音（真实错误仍会抛 BadRequestError），官方开关一次关掉
         litellm.suppress_debug_info = True
 
         messages = copy.deepcopy(messages)
         tools = copy.deepcopy(tools)
-        _merge_stray_system_messages(messages)
+        if entry.local_runtime == 'llama_cpp':
+            encode_failed_tool_history(messages)
         if entry.prompt_caching == "anthropic_ephemeral":
             if not anthropic:
                 raise ValueError("显式 Anthropic 缓存需要 anthropic_messages 协议")
@@ -295,10 +275,7 @@ class LiteLLMBackend(ChatBackend):
             "messages": messages,
             "temperature": temperature,
             "timeout": timeout,
-            # 重发由网关自己判（见 gateway._is_transient）：SDK 内部重试不看错误类型，
-            # 会把「上下文装不下」这种必然失败的请求重复发两遍。实测本地端点一次
-            # 推理几十秒，一次超窗因此变成三次等待，整轮白耗。
-            "num_retries": 0,
+            "num_retries": 0,  # 由网关统一退避、审计与取消，避免 SDK 叠加隐式重试。
         }
         if max_tokens is not None:
             kwargs["max_tokens"] = max_tokens
@@ -308,15 +285,17 @@ class LiteLLMBackend(ChatBackend):
             kwargs["max_tokens"] = _ANTHROPIC_MIN_MAX_TOKENS
         if entry.base_url:
             kwargs["api_base"] = entry.base_url
-        key = api_key_for(entry)     # 本机端点用占位密钥，远端没配就是空
-        if key:
-            kwargs["api_key"] = key
+        if entry.api_key:
+            kwargs["api_key"] = entry.api_key
+        elif entry.local_runtime == "llama_cpp" and entry.base_url and not anthropic:
+            # OpenAI SDK 要求非空 key；显式本地端点用占位值，避免读取宿主云端凭据。
+            kwargs["api_key"] = "no-key"
         # 发给 litellm 的模型名必须带可路由前缀：裸名解析不出供应商时
         # litellm 打红字横幅且调用必败（前缀规则见 _routed_model_name）
         kwargs["model"] = self._routed_model_name(
             entry.model, entry.base_url, anthropic=anthropic)
         self._apply_effort(kwargs, reasoning_effort, anthropic=anthropic)
-        if tools and getattr(entry, "native_tool_calls", True):
+        if tools:
             kwargs["tools"] = tools
             if tool_choice:
                 kwargs["tool_choice"] = tool_choice
@@ -330,10 +309,9 @@ class LiteLLMBackend(ChatBackend):
             # 流式响应可能不含 usage 块，token 计数会归零
             kwargs["stream_options"] = {"include_usage": True}
 
-        for option in ("stream_options", "response_format", "tools"):
+        for option in ("stream_options", "response_format"):
             if option in kwargs and self._capabilities.unsupported(entry, anthropic, option):
                 kwargs.pop(option)
-                kwargs.pop("tool_choice", None)
         rejected: dict[str, Exception] = {}
         requested_at = time.perf_counter()
         try:
@@ -351,14 +329,6 @@ class LiteLLMBackend(ChatBackend):
             if not retried and kwargs.get("response_format") and self._json_mode_unsupported(exc):
                 kwargs.pop("response_format", None)
                 rejected["response_format"] = exc
-                retried = True
-            if (not retried and kwargs.get("tools")
-                    and self._tool_parse_broken(exc)):
-                # 端点解析 tool_calls 时自己崩了：去掉 tools 重发一次，
-                # 让模型把 JSON 写进正文，交给 inline call 恢复。
-                kwargs.pop("tools", None)
-                kwargs.pop("tool_choice", None)
-                rejected["tools"] = exc
                 retried = True
             if not retried and self._tool_args_truncated(exc) and not _retry_truncated:
                 return await self._reissue_truncated_call(
@@ -393,9 +363,7 @@ class LiteLLMBackend(ChatBackend):
         return {
             "content": choice.message.content or "",
             "reasoning": str(getattr(choice.message, "reasoning_content", "") or ""),
-            **cache_usage(usage),
-            "prompt_tokens": int(getattr(usage, "prompt_tokens", 0) or 0),
-            "completion_tokens": int(getattr(usage, "completion_tokens", 0) or 0),
+            **backend_usage(normalize_usage(usage)),
             "tool_calls": normalize_tool_calls(
                 getattr(choice.message, "tool_calls", None)),
             "finish_reason": str(getattr(choice, "finish_reason", "") or ""),
@@ -421,18 +389,6 @@ class LiteLLMBackend(ChatBackend):
         """litellm 协议层工具参数解析失败的特征串（Anthropic tool invoke）。"""
         return "Failed to parse tool call arguments" in str(exc)
 
-    @staticmethod
-    def _tool_parse_broken(exc: Exception) -> bool:
-        """端点自己的 JSON 解析器就崩了——不是额度不够，加大 max_tokens 也没用。
-
-        现场：llama.cpp 的 llama-server 在工具参数较长时（实测 1100 字符上下）
-        直接报 ``json.exception.parse_error ... invalid string``，参数是它自己
-        拼出来的半截 JSON。这类端点不能再走「原样重发」，必须去掉 ``tools``
-        让它把 JSON 写在正文里，由 inline call 恢复机制接手。
-        """
-        msg = str(exc)
-        return "json.exception.parse_error" in msg or "Failed to parse tool call arguments as JSON:" in msg
-
     # ------------------------------------------------------------ 流式累积
 
     async def _consume_stream(
@@ -446,15 +402,15 @@ class LiteLLMBackend(ChatBackend):
         content_parts: list[str] = []
         reasoning_parts: list[str] = []
         tool_slots: dict[int, dict[str, Any]] = {}
-        usage: Any = None
+        usage: dict[str, int] = {}
         finish_reason = ""
         first_delta_ms = None
         started = started if started is not None else time.perf_counter()
         async for chunk in stream:
             if getattr(chunk, "usage", None):
-                usage = chunk.usage
+                merge_usage(usage, normalize_usage(chunk.usage))
                 if (trace := current_attempt_trace.get()) is not None:
-                    trace.usage(usage)
+                    trace.usage(chunk.usage)
             choices = getattr(chunk, "choices", None) or []
             if not choices:
                 continue
@@ -506,9 +462,7 @@ class LiteLLMBackend(ChatBackend):
             "first_delta_ms": first_delta_ms,
             "content": "".join(content_parts),
             "reasoning": "".join(reasoning_parts),
-            **cache_usage(usage),
-            "prompt_tokens": int(getattr(usage, "prompt_tokens", 0) or 0),
-            "completion_tokens": int(getattr(usage, "completion_tokens", 0) or 0),
+            **backend_usage(usage),
             "tool_calls": normalize_tool_calls(ordered),
             "finish_reason": finish_reason,
         }
@@ -527,7 +481,7 @@ class LiteLLMBackend(ChatBackend):
         tool_choice: str | None = None,
         reasoning_effort: str = "",
     ) -> dict[str, Any]:
-        import litellm  # 延迟导入
+        litellm = await load_litellm()
 
         # messages 协议 → Responses 协议：system 提升为 instructions，其余入
         # input。多轮工具对话必须显式转 function_call / function_call_output
@@ -559,7 +513,20 @@ class LiteLLMBackend(ChatBackend):
                     "output": str(m.get("content", "") or ""),
                 })
             else:
-                input_items.append({"role": role, "content": m.get("content", "")})
+                content = m.get("content", "")
+                if isinstance(content, list):
+                    parts = []
+                    for part in content:
+                        if part.get("type") == "text":
+                            parts.append({"type": "input_text", "text": part.get("text", "")})
+                        elif part.get("type") == "image_url":
+                            image = part.get("image_url") or {}
+                            parts.append({"type": "input_image", "image_url": image.get("url", ""),
+                                          "detail": image.get("detail", "auto")})
+                        else:
+                            raise ValueError("Responses 不支持此多模态内容类型")
+                    content = parts
+                input_items.append({"role": role, "content": content})
         # 工具清单同步转 Responses 形状：扁平 {name,description,parameters}，
         # 不带 Chat Completions 的 function 包装层
         responses_tools = [
@@ -575,6 +542,7 @@ class LiteLLMBackend(ChatBackend):
             "input": input_items,
             "temperature": temperature,
             "timeout": timeout,
+            "num_retries": 0,
         }
         if max_tokens is not None:
             kwargs["max_output_tokens"] = max_tokens
@@ -582,10 +550,9 @@ class LiteLLMBackend(ChatBackend):
             kwargs["instructions"] = instructions
         if entry.base_url:
             kwargs["api_base"] = entry.base_url
-        key = api_key_for(entry)     # 本机端点用占位密钥，远端没配就是空
-        if key:
-            kwargs["api_key"] = key
-        if tools and getattr(entry, "native_tool_calls", True):
+        if entry.api_key:
+            kwargs["api_key"] = entry.api_key
+        if tools:
             kwargs["tools"] = tools
             if tool_choice:
                 kwargs["tool_choice"] = tool_choice
@@ -637,9 +604,7 @@ class LiteLLMBackend(ChatBackend):
             "content": content,
             "reasoning": "".join(reasoning_parts),
             # Responses 协议 usage 字段名是 input_tokens/output_tokens
-            **cache_usage(usage),
-            "prompt_tokens": int(getattr(usage, "input_tokens", 0) or 0),
-            "completion_tokens": int(getattr(usage, "output_tokens", 0) or 0),
+            **backend_usage(normalize_usage(usage)),
             "tool_calls": normalize_tool_calls(raw_calls),
             "finish_reason": str(getattr(resp, "status", "") or ""),
         }
@@ -875,8 +840,10 @@ class MockBackend(ChatBackend):
             # 步骤决策：mock 透传骨架候选（等价称职 LLM 的保守裁剪），
             # 保证离线 e2e 走 LLM 主路径且行为与骨架一致
             candidates: list[str] = []
-            with contextlib.suppress(ValueError):
+            try:
                 candidates = list(json.loads(user).get("candidate_payloads", []))
+            except ValueError:
+                pass
             return json.dumps(
                 {"payloads": [{"payload": p, "purpose": "mock 透传骨架候选"}
                               for p in candidates],
@@ -929,8 +896,10 @@ class MockBackend(ChatBackend):
             # 智能模式路由：mock 无语义能力，按装配层兜底判定回显，
             # 保证离线 e2e 走 LLM 路由主路径且行为确定（G10）
             guess = "src"
-            with contextlib.suppress(ValueError):
+            try:
                 guess = str(json.loads(user).get("fallback_guess") or "src")
+            except ValueError:
+                pass
             return json.dumps({"mode": guess, "rationale": "mock：按兜底判定"},
                               ensure_ascii=False)
         if role == "route_budget":
@@ -951,8 +920,10 @@ class MockBackend(ChatBackend):
             # 覆盖「LLM 提议 → 规则校验 → 执行 → 观察记录」全链路）；
             # 已见到 Flag 则收尾（等价称职 LLM 的完成判定）
             flags_found: list = []
-            with contextlib.suppress(ValueError):
+            try:
                 flags_found = list(json.loads(user).get("flags_found") or [])
+            except ValueError:
+                pass
             if flags_found:
                 return json.dumps(
                     {"analysis": "mock：Flag 已取得，调查完成",
@@ -992,6 +963,10 @@ def entry_role_safe(role: str) -> str:
 def backend_for(entry: ModelEntry, mock_backend: MockBackend | None = None, *,
                 capabilities: EndpointCapabilities | None = None) -> ChatBackend:
     """按 provider 选择后端。provider=mock 时共用注入的 MockBackend 实例。"""
+    if entry.provider == "ollama":
+        from spiritscout.gateway.ollama import OllamaBackend
+
+        return OllamaBackend()
     if entry.provider == "mock":
         return mock_backend or MockBackend()
     return LiteLLMBackend(capabilities=capabilities)

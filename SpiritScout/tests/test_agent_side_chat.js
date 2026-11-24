@@ -2,25 +2,59 @@
 const assert=require('node:assert/strict');
 const fs=require('node:fs');
 const vm=require('node:vm');
-function element(){return {dataset:{},hidden:false,value:'',innerHTML:'',textContent:'',disabled:false,scrollTop:0,scrollHeight:0,clientHeight:0,classList:{toggle(){}},listeners:{},addEventListener(type,fn){this.listeners[type]=fn;},querySelector(s){return get(s);},querySelectorAll(){return [];},focus(){}};}
+function element(){return {dataset:{},hidden:false,value:'',innerHTML:'',textContent:'',disabled:false,scrollTop:0,scrollHeight:0,clientHeight:0,classList:{toggle(){}},listeners:{},setAttribute(key,value){this[key]=value;},addEventListener(type,fn){this.listeners[type]=fn;},querySelector(s){return get(s);},querySelectorAll(){return [];},contains(target){return target===this.child;},focus(){context.document.activeElement=this;}};}
 const elements=new Map();
 function get(s){if(!elements.has(s))elements.set(s,element());return elements.get(s);}
 const requests=[],S={cur:'parent',view:'session',tab:'chat',sessions:[]};
 let nextResponse=null;
-const context=vm.createContext({S,$:get,esc:String,mdRender:String,actorName:String,document:{activeElement:null},openSession(){throw Error('不应跳离主会话');},setTimeout(){return 1;},clearTimeout(){},api:async(url,options)=>{
+const context=vm.createContext(require('./helpers/i18n').context({S,$:get,esc:String,mdRender:String,actorName:String,document:{activeElement:null},openSession(){throw Error('不应跳离主会话');},setTimeout(){return 1;},clearTimeout(){},api:async(url,options)=>{
  requests.push({url,body:options && JSON.parse(options.body)});
  if(nextResponse)return nextResponse;
  if(url.endsWith('/conversation'))return {session:{status:'completed',side_session:{task_id:'task'}},messages:[{role:'user',content:'第一问'},{role:'assistant',content:'第一答'}]};
  return {session_id:'child',side_session:{actor:'recon',parent_session_id:'parent'}};
-}});
-vm.runInContext(fs.readFileSync('src/spiritscout/web/static/js/agent-side-chat.js','utf8')+'\nglobalThis.chat=AgentSideChat;',context);
+}}));
+vm.runInContext(fs.readFileSync('src/spiritscout/web/static/js/agent-side-chat.js','utf8')+'\nglobalThis.chat=AgentSideChat;globalThis.rail=SessionRail;',context);
 const agent={actor:'recon',taskId:'task',status:'执行中',tasks:new Map([['task',{id:'task'}]])};
 const input=get('textarea'),form=get('form');
+const preferences=new Map();
+context.localStorage={getItem:key=>preferences.get(key),setItem:(key,value)=>preferences.set(key,value)};
 const tick=()=>new Promise(resolve=>setImmediate(resolve));
 (async()=>{
- context.chat.init();context.chat.sync([agent],{mode:'src'});context.chat.select('recon');
+ preferences.set('ss-session-rail-collapsed','false');
+ context.rail.init();
+ context.rail.begin('parent');
+ assert.equal(get('#session-rail-toggle')['aria-expanded'],'false','新会话默认正文优先');
+ assert.equal(preferences.get('ss-session-rail-collapsed'),'false','默认阅读布局不覆盖用户偏好');
+ context.rail.setCollapsed(false);
+ context.rail.begin('parent');
+ assert.equal(get('#session-rail-toggle')['aria-expanded'],'true','同一会话刷新保留主动展开');
+ input.value='未发送的草稿';
+ const rail=get('.session-rail');rail.child=input;context.document.activeElement=input;
+ context.rail.begin('another');
+ assert.equal(rail.inert,true,'收起即时禁止消息栏交互');
+ assert.equal(context.document.activeElement,get('#session-rail-toggle'),'收起先将焦点移回按钮');
+ context.rail.setCollapsed(false);assert.equal(rail.inert,false,'展开恢复交互');
+ context.rail.setCollapsed(true);
+ assert.equal(get('#session-rail-toggle')['aria-expanded'],'false','切换会话收起辅助实况');
+ assert.equal(input.value,'未发送的草稿');
+ assert.equal(requests.length,0,'阅读布局不请求模型或发送消息');
+ preferences.clear();
+ context.chat.init();
+ assert.equal(get('#session-rail-toggle')['aria-expanded'],'false','首次进入默认收起');
+ context.chat.sync([{...agent,taskId:''}],{mode:'src'});context.chat.select('recon');
+ assert.equal(get('#session-rail-toggle')['aria-expanded'],'true','主动打开旁路时展开整栏');
+ input.value='旁路草稿';input.listeners.input({target:input});
+ const callsBefore=requests.length;
+ get('#session-rail-toggle').listeners.click();
+ assert.equal(get('#session-rail-toggle')['aria-expanded'],'false');
+ assert.equal(preferences.get('ss-session-rail-collapsed'),'true');
+ assert.equal(input.value,'旁路草稿','收起保留输入草稿');
+ assert.equal(requests.length,callsBefore,'折叠不发送消息或更改任务');
+ get('#session-rail-toggle').listeners.click();
+ assert.equal(input.value,'旁路草稿');
+ assert.equal(get('#agent-side-chat').hidden,false,'展开仍为原旁路会话');
  input.value='第一问';input.listeners.input({target:input});await form.listeners.submit({preventDefault(){}});await tick();
- assert.deepEqual(requests.find(r=>r.url.endsWith('/agent-sessions')).body,{actor:'recon',task_id:'task',mission:'第一问'});
+ assert.deepEqual(requests.find(r=>r.url.endsWith('/agent-sessions')).body,{actor:'recon',task_id:'',mission:'第一问'});
  assert.equal(S.cur,'parent');assert.match(get('.side-chat-messages').innerHTML,/第一答/);
  input.value='继续聊';input.listeners.input({target:input});await form.listeners.submit({preventDefault(){}});await tick();
  assert.deepEqual(requests.find(r=>r.url.endsWith('/messages')).body,{content:'继续聊'});
@@ -32,5 +66,5 @@ const tick=()=>new Promise(resolve=>setImmediate(resolve));
  input.value='旧会话问题';input.listeners.input({target:input});const sending=form.listeners.submit({preventDefault(){}});
  S.cur='another';context.chat.sync([agent],{mode:'src'});context.chat.select('recon');input.value='新会话草稿';input.listeners.input({target:input});
  release({});await sending;assert.equal(input.value,'新会话草稿');assert.equal(S.cur,'another');
- console.log('inline side chat: create, reply, resume payload, mode guard and navigation race passed');
+ console.log('inline side chat: rail collapse, preference and draft retention, create, reply, mode guard and navigation race passed');
 })().catch(error=>{console.error(error);process.exitCode=1;});

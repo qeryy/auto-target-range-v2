@@ -5,25 +5,43 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
+import ssl
 import sys
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
+import httpx
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.sse import sse_client
 from mcp.client.stdio import stdio_client
 from mcp.client.streamable_http import streamablehttp_client
+from mcp.shared import session as mcp_session
 from mcp.types import Implementation
 
 from spiritscout import __version__
 from spiritscout.config.settings import McpServerConfig
+from spiritscout.platform_support import app_root, is_frozen
 from spiritscout.tools.spec import RiskLevel
 
 _HANDSHAKE_TIMEOUT = 60.0        # 握手：子进程冷启动 + initialize + tools/list
+_CLOSE_TIMEOUT = 10.0
 _SESSION_READ_TIMEOUT = 3600.0   # 会话级默认读超时（单次调用超时另行覆盖）
 _CLIENT_INFO = Implementation(name="spiritscout", version=__version__)
+
+
+def _redact_notification_warning(record: logging.LogRecord) -> bool:
+    # MCP SDK 通过 root logger 写入验证失败的通知原文，其中可能有请求头或凭据。
+    if (record.pathname == mcp_session.__file__ and isinstance(record.msg, str)
+            and record.msg.startswith("Failed to validate notification:")):
+        record.msg = "MCP 通知校验失败，已忽略该通知"
+        record.args = ()
+        record.exc_info = record.exc_text = None
+    return True
 
 
 def resolve_mcp_risk(server: McpServerConfig, tool: dict[str, Any]) -> RiskLevel:
@@ -58,7 +76,7 @@ class McpError(RuntimeError):
 
 
 def _project_root() -> Path:
-    return Path(__file__).resolve().parents[3]
+    return app_root()
 
 
 def _resolve_command(command: str) -> str:
@@ -94,6 +112,9 @@ class McpClient:
         self._task: asyncio.Task[None] | None = None
         self._ready: asyncio.Future[None] | None = None
         self._fatal: BaseException | None = None
+        self._closing = False
+        self._close_lock = asyncio.Lock()
+        self._inflight: asyncio.Future[dict[str, Any]] | None = None
 
     # ---- 传输（子类实现）：返回官方 SDK 的异步上下文管理器
 
@@ -102,9 +123,17 @@ class McpClient:
 
     # ---- 对外接口
 
+    @property
+    def connected(self) -> bool:
+        """仅检查本地会话任务，不发网络探针或工具调用。"""
+        return self._task is not None and not self._task.done()
+
     async def start(self) -> list[dict[str, Any]]:
         """连接 + 握手 + 拉取工具清单；失败抛 McpError（调用方留痕跳过）。"""
+        logging.getLogger().addFilter(_redact_notification_warning)
         loop = asyncio.get_running_loop()
+        self._closing = False
+        self._fatal = None
         self._ready = loop.create_future()
         self._task = loop.create_task(self._serve(), name=f"mcp[{self.name}]")
         try:
@@ -115,12 +144,14 @@ class McpClient:
                 f"MCP[{self.name}] 握手超时（{_HANDSHAKE_TIMEOUT:.0f}s）") from exc
         if self._fatal is not None:
             raise McpError(f"MCP[{self.name}] 连接失败: {str(self._fatal)[:300]}")
+        if self._closing:
+            raise McpError(f"MCP[{self.name}] 会话已关闭")
         return self.tools
 
     async def call(self, tool: str, arguments: dict[str, Any] | None = None,
                    *, timeout: float | None = None) -> dict[str, Any]:
         """调用远程工具，归一为 {"text": str, "is_error": bool}。"""
-        if self._task is None or self._task.done():
+        if self._closing or self._task is None or self._task.done():
             raise McpError(f"MCP[{self.name}] 会话未建立或已断开")
         loop = asyncio.get_running_loop()
         future: asyncio.Future[dict[str, Any]] = loop.create_future()
@@ -129,16 +160,29 @@ class McpClient:
         return await future
 
     async def close(self) -> None:
-        if self._task is None:
-            return
-        if not self._task.done():
-            await self._requests.put(None)
+        # 并发关闭只让一个等待方取消连接，避免重复取消打断 SDK 资源回收。
+        async with self._close_lock:
+            task = self._task
+            if task is None:
+                return
+            self._closing = True
             try:
-                await asyncio.wait_for(asyncio.shield(self._task), 10)
-            except TimeoutError:
-                self._task.cancel()
-                await asyncio.gather(self._task, return_exceptions=True)
-        self._task = None
+                if not task.done():
+                    await self._requests.put(None)
+                    try:
+                        settled = asyncio.gather(task, return_exceptions=True)
+                        await asyncio.wait_for(asyncio.shield(settled), _CLOSE_TIMEOUT)
+                    except TimeoutError:
+                        task.cancel()
+                        await asyncio.gather(task, return_exceptions=True)
+                    except asyncio.CancelledError:
+                        # 关闭等待被取消，也须先由连接所有者退出 SDK 上下文。
+                        task.cancel()
+                        await asyncio.gather(task, return_exceptions=True)
+                        raise
+            finally:
+                if task.done() and self._task is task:
+                    self._task = None
 
     # ---- 常驻会话任务
 
@@ -170,8 +214,14 @@ class McpClient:
         except BaseException as exc:  # noqa: BLE001 —— 连接/会话故障：唤醒等待者
             self._fatal = exc
         finally:
+            self._closing = True
             if self._ready is not None and not self._ready.done():
                 self._ready.set_result(None)   # start() 检查 _fatal
+            # 在途请求已不在队列里；断连/取消后必须单独结算，副作用不可假定未发生。
+            if self._inflight is not None and not self._inflight.done():
+                self._inflight.set_exception(McpError(
+                    f"MCP[{self.name}] 在途调用中断，执行结果未知"))
+            self._inflight = None
             while not self._requests.empty():
                 item = self._requests.get_nowait()
                 if item is None or item[0].done():
@@ -187,6 +237,7 @@ class McpClient:
             future, tool, arguments, timeout = item
             if future.done():
                 continue
+            self._inflight = future
             try:
                 result = await session.call_tool(
                     tool, arguments,
@@ -197,12 +248,14 @@ class McpClient:
                 if not future.done():
                     future.set_exception(McpError(
                         f"MCP[{self.name}].{tool} 调用失败: {str(exc)[:300]}"))
+                self._inflight = None
                 continue
             if not future.done():
                 future.set_result({
                     "text": "\n".join(_content_texts(result))[:16000],
                     "is_error": bool(result.isError),
                 })
+            self._inflight = None
 
 
 class McpStdioClient(McpClient):
@@ -211,44 +264,127 @@ class McpStdioClient(McpClient):
     def __init__(self, name: str, *, command: str, args: list[str],
                  env: dict[str, str] | None = None, timeout: float = 180.0):
         super().__init__(name, timeout=timeout)
+        self.capture_stderr = False
+        self._stderr_tail = b''
         self._params = StdioServerParameters(
             command=_resolve_command(command), args=list(args),
             env=dict(env) if env else None)
 
     def _connect(self) -> Any:
+        if self.capture_stderr:
+            return self._quiet_connect()
         return stdio_client(self._params)
+
+    @property
+    def diagnostic_stderr(self) -> str:
+        return self._stderr_tail.decode('utf-8', errors='replace')
+
+    @asynccontextmanager
+    async def _quiet_connect(self) -> AsyncIterator[Any]:
+        """非阻塞排空子进程 stderr，只保留 4 KiB 尾部，成功预检不刷终端。"""
+        read_fd, write_fd = os.pipe()
+        try:
+            os.set_blocking(read_fd, False)
+        except (OSError, NotImplementedError):
+            os.close(read_fd)
+            os.close(write_fd)
+            async with stdio_client(self._params) as streams:
+                yield streams
+            return
+        writer = os.fdopen(write_fd, 'w')
+        def read_available() -> bool:
+            for _ in range(16):
+                try:
+                    chunk = os.read(read_fd, 4096)
+                except BlockingIOError:
+                    return True
+                if not chunk:
+                    return False
+                self._stderr_tail = (self._stderr_tail + chunk)[-4096:]
+            return True
+        async def drain() -> None:
+            while read_available():
+                await asyncio.sleep(.02)
+        draining = asyncio.create_task(drain(), name=f'mcp-stderr[{self.name}]')
+        try:
+            async with stdio_client(self._params, errlog=writer) as streams:
+                yield streams
+        finally:
+            writer.close()
+            draining.cancel()
+            await asyncio.gather(draining, return_exceptions=True)
+            try:
+                read_available()
+            finally:
+                os.close(read_fd)
+
+
+class ChromeMcpClient(McpStdioClient):
+    """只拉取目录；首次实际调用才准备共享 Chrome，避免无网页交互的任务启动浏览器。"""
+
+    def __init__(self, *args: Any, **kwargs: Any):
+        super().__init__(*args, **kwargs)
+        self._browser_lock = asyncio.Lock()
+        self._browser_ready = False
+
+    async def call(self, tool: str, arguments: dict[str, Any] | None = None,
+                   *, timeout: float | None = None) -> dict[str, Any]:
+        env = dict(self._params.env or {})
+        if env.get("SPIRITSCOUT_CHROME_MODE", "cdp") == "cdp" and not self._browser_ready:
+            async with self._browser_lock:
+                if not self._browser_ready:
+                    from spiritscout.tools.browser_desktop import ensure_browser
+                    from spiritscout.tools.chrome_mcp import cdp_endpoint
+
+                    await asyncio.to_thread(ensure_browser,
+                        cdp_endpoint(env.get("SPIRITSCOUT_CHROME_CDP_URL", "")), env)
+                    self._browser_ready = True
+        return await super().call(tool, arguments, timeout=timeout)
 
 
 class McpHttpClient(McpClient):
     """Streamable HTTP 传输：POST 到单一端点，应答 JSON 或 SSE 流。"""
 
     def __init__(self, name: str, *, url: str,
-                 headers: dict[str, str] | None = None, timeout: float = 180.0):
+                 headers: dict[str, str] | None = None, timeout: float = 180.0,
+                 proxy_environment: dict[str, str] | None = None):
         super().__init__(name, timeout=timeout)
         self._url = url
         self._headers = dict(headers or {})
+        self._proxy_environment = dict(proxy_environment or {})
 
     def _connect(self) -> Any:
         return streamablehttp_client(
             self._url, headers=self._headers or None,
             timeout=max(self.timeout, 30.0),
-            sse_read_timeout=max(self.timeout, 300.0))
+            sse_read_timeout=max(self.timeout, 300.0),
+            **({'httpx_client_factory': self._http_client} if self._proxy_environment else {}))
+
+    def _http_client(self, **kwargs):
+        env = self._proxy_environment
+        return httpx.AsyncClient(**kwargs, trust_env=False, follow_redirects=True,
+            proxy=env['HTTPS_PROXY'], verify=ssl.create_default_context(cafile=env['SSL_CERT_FILE']))
 
 
 class McpSseClient(McpClient):
     """旧版 SSE 传输：GET 长连接收事件，POST 到消息端点发请求。"""
 
     def __init__(self, name: str, *, url: str,
-                 headers: dict[str, str] | None = None, timeout: float = 180.0):
+                 headers: dict[str, str] | None = None, timeout: float = 180.0,
+                 proxy_environment: dict[str, str] | None = None):
         super().__init__(name, timeout=timeout)
         self._url = url
         self._headers = dict(headers or {})
+        self._proxy_environment = dict(proxy_environment or {})
 
     def _connect(self) -> Any:
         return sse_client(
             self._url, headers=self._headers or None,
             timeout=max(self.timeout, 30.0),
-            sse_read_timeout=max(self.timeout, 300.0))
+            sse_read_timeout=max(self.timeout, 300.0),
+            **({'httpx_client_factory': self._http_client} if self._proxy_environment else {}))
+
+    _http_client = McpHttpClient._http_client
 
 
 def build_client(spec: Any) -> McpClient:
@@ -259,24 +395,51 @@ def build_client(spec: Any) -> McpClient:
         if not spec.url:
             raise McpError(f"MCP[{spec.name}] http 传输缺少 url")
         return McpHttpClient(spec.name, url=spec.url,
-                             headers=dict(spec.headers or {}), timeout=timeout)
+                             headers=dict(spec.headers or {}), timeout=timeout,
+                             proxy_environment=spec.env if spec.env.get('SPIRITSCOUT_EGRESS_SOCKET') else None)
     if transport in ("sse", "sse-legacy"):
         if not spec.url:
             raise McpError(f"MCP[{spec.name}] sse 传输缺少 url")
         return McpSseClient(spec.name, url=spec.url,
-                            headers=dict(spec.headers or {}), timeout=timeout)
+                            headers=dict(spec.headers or {}), timeout=timeout,
+                            proxy_environment=spec.env if spec.env.get('SPIRITSCOUT_EGRESS_SOCKET') else None)
     if not spec.command:
         raise McpError(f"MCP[{spec.name}] stdio 传输缺少 command")
     command = spec.command
+    args = list(spec.args or [])
     env = dict(spec.env or {})
-    if command in {"python", "python3"} and list(spec.args[:2]) == ["-m", "spiritscout.tools.chrome_mcp"]:
+    chrome_mcp = args[:2] == ["-m", "spiritscout.tools.chrome_mcp"]
+    if command in {"python", "python3"} and chrome_mcp:
         # launch.sh 直接调用 venv 解释器、不激活 PATH；本项目模块沿用当前解释器。
         command = sys.executable
-    if list(spec.args[:2]) == ["-m", "spiritscout.tools.chrome_mcp"]:
-        # SDK 的子进程环境默认仅继承基础键；只显式转交该适配器的连接配置。
+    if chrome_mcp:
+        if is_frozen() and command == sys.executable:
+            # 单文件程序没有模块入口，由主入口转交 Chrome MCP 子命令。
+            args = ["--run-chrome-mcp", *args[2:]]
+        # SDK 只继承基础环境；显式转交连接配置与当前桌面的显示连接。
         env = {**{key: os.environ[key] for key in (
             "SPIRITSCOUT_CHROME_CDP_URL", "SPIRITSCOUT_CHROME_MCP_CLI",
-            "SPIRITSCOUT_CHROME_EXECUTABLE") if key in os.environ}, **env}
+            "SPIRITSCOUT_CHROME_EXECUTABLE", "SPIRITSCOUT_CHROME_PROFILE_DIR",
+            "DISPLAY", "WAYLAND_DISPLAY", "XDG_RUNTIME_DIR", "XAUTHORITY",
+            "DBUS_SESSION_BUS_ADDRESS") if key in os.environ}, **env}
+        env["SPIRITSCOUT_CHROME_DEFER_START"] = "1"
+        client_type = ChromeMcpClient
+        if env.get('SPIRITSCOUT_BROWSER_ACCOUNT'):
+            from spiritscout.tools.browser_accounts import AccountChromeMcpClient
+
+            client_type = AccountChromeMcpClient
+        if env.get('SPIRITSCOUT_EGRESS_SOCKET'):
+            from spiritscout.tools.egress_isolation import isolate_command
+
+            wrapped = isolate_command([_resolve_command(command), *args], env, isolate_pids=False)
+            command, args = wrapped[0], wrapped[1:]
+        return client_type(spec.name, command=command, args=args,
+                               env=env, timeout=timeout)
+    if env.get('SPIRITSCOUT_EGRESS_SOCKET'):
+        from spiritscout.tools.egress_isolation import isolate_command
+
+        wrapped = isolate_command([_resolve_command(command), *args], env, isolate_pids=False)
+        command, args = wrapped[0], wrapped[1:]
     return McpStdioClient(spec.name, command=command,
-                          args=list(spec.args or []),
+                          args=args,
                           env=env, timeout=timeout)

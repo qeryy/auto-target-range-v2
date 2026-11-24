@@ -35,6 +35,55 @@ class ContextProjectionTests(unittest.TestCase):
         payload = {"constraints": "不得丢弃" * 1000}
         self.assertEqual(json.loads(compact_json(payload, max_chars=100)), payload)
 
+    def test_large_asset_context_keeps_chat_messages_and_attachment_paths_exact(self) -> None:
+        mission = "根据已收集资产和我选择的优先策略排序，对本次选定目标开展 SRC 测试，保留可复现证据。"
+        protected = {
+            "instruction": "按任务契约核验，必须输出 status=completed/incomplete 及 evidence_refs，不输出其他协议。",
+            "new_messages": [mission, "优先测试预发环境，不修改真实订单"],
+            "chat_history": [{"role": "user", "content": mission},
+                             {"role": "assistant", "content": "已带入选定的资产清单"}],
+            "attachments": ["/session/attachments/collected-assets.csv"],
+            "world_state": {"assets": [{"value": f"api-{i}.fixture.test"} for i in range(198)]},
+        }
+        payload = {**protected, "observations": "旧输出" * 10000}
+        result = json.loads(compact_json(payload, max_chars=1000))
+        for key, value in protected.items():
+            self.assertEqual(result[key], value)
+        self.assertLess(len(result["observations"]), len(payload["observations"]))
+        self.assertEqual(payload["new_messages"][0], mission)
+        # 不触发投影的请求保持逐字节一致，不扰动已有缓存前缀。
+        small = {key: value for key, value in protected.items() if key != "world_state"}
+        self.assertEqual(compact_json(small), json.dumps(
+            small, ensure_ascii=False, separators=(",", ":"), sort_keys=True))
+
+    def test_public_exploration_contract_survives_long_observations(self) -> None:
+        from spiritscout.gateway.progress import EXPLORATION_PROGRESS_GUIDANCE
+
+        payload = {'exploration_display': EXPLORATION_PROGRESS_GUIDANCE,
+                   'observations': '已获取的旧观察' * 5000}
+        result = json.loads(compact_json(payload, max_chars=300))
+        self.assertEqual(result['exploration_display'], EXPLORATION_PROGRESS_GUIDANCE)
+        self.assertLess(len(result['observations']), len(payload['observations']))
+
+    def test_only_framework_display_reminders_shorten_when_native_history_is_large(self) -> None:
+        from spiritscout.gateway.progress import (
+            EXPLORATION_PROGRESS_GUIDANCE,
+            FORMAT_GUIDANCE,
+        )
+
+        original_user = '保留用户原话' * 1000
+        messages = [{'role': 'system', 'content': '系统约定'},
+                    {'role': 'user', 'content': original_user},
+                    {'role': 'user', 'content': EXPLORATION_PROGRESS_GUIDANCE, '_context_contract': True}]
+        for _ in range(5):
+            messages.extend([{'role': 'user', 'content': FORMAT_GUIDANCE, '_progress_reminder': True},
+                             {'role': 'assistant', 'content': '公开进展'}])
+        compact_history(messages, max_chars=1000)
+        self.assertEqual(messages[1]['content'], original_user)
+        self.assertEqual(messages[2]['content'], EXPLORATION_PROGRESS_GUIDANCE)
+        self.assertLess(len(messages[3]['content']), len(FORMAT_GUIDANCE))
+        self.assertEqual(messages[-2]['content'], FORMAT_GUIDANCE)
+
     def test_competition_tasks_and_platform_receipts_survive_soft_budget(self) -> None:
         """规划器必须拿到完整题目 ID 与已完成预检，不能裁成单字符。"""
         protected = {
@@ -98,7 +147,7 @@ class ContextProjectionTests(unittest.TestCase):
         self.assertLess(len(json.dumps(result)), len(json.dumps(source)) // 10)
 
     def test_user_reply_reaches_later_stages_even_after_many_other_clues(self) -> None:
-        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temp:
+        with tempfile.TemporaryDirectory() as temp:
             bb = Blackboard(Path(temp) / "bb.db")
             self.addCleanup(bb.close)
             bb.write(BlackboardLayer.TOPOLOGY, "business-context", {"facts": [], "evidence": []})
@@ -112,7 +161,7 @@ class ContextProjectionTests(unittest.TestCase):
             self.assertEqual(shared_context(bb)["version"], first["version"] + 1)
 
     def test_session_findings_reach_sub_agents_as_facts(self) -> None:
-        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temp:
+        with tempfile.TemporaryDirectory() as temp:
             bb = Blackboard(Path(temp) / "bb.db")
             self.addCleanup(bb.close)
             bb.write(BlackboardLayer.ASSET, "a1", {
@@ -130,7 +179,7 @@ class ContextProjectionTests(unittest.TestCase):
             self.assertIn("登录表单在 /login", str(result["findings"]["clues"]["sample"]))
 
     def test_findings_absent_when_blackboard_has_no_results_yet(self) -> None:
-        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temp:
+        with tempfile.TemporaryDirectory() as temp:
             bb = Blackboard(Path(temp) / "bb.db")
             self.addCleanup(bb.close)
             self.assertNotIn("findings", shared_context(bb))

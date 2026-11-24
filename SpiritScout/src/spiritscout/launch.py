@@ -2,13 +2,6 @@
 
 授权范围 / 授权对象 / 赛题清单 / 赛制规则的解析与校验只在此处维护，
 避免多处事实源漂移（同源原则）。
-
-两类校验的性质不同，不要混为一谈：
-- **硬校验**（SRC 需要目标 URL、赛制规则冲突）：缺的东西模型问也变不出来，
-  在创建时拦下比让它带着空目标跑一轮更有意义；
-- **不做完备性校验**（CTF 的赛题清单/URL/附件/平台档案）：用户点了执行就
-  交给灵枢，任务原文本身就是材料。缺的信息它会在运行期自己开口问，这比让
-  用户在表单上反复猜「到底缺哪一项」好。
 """
 
 from __future__ import annotations
@@ -36,10 +29,15 @@ class LaunchRequest:
     mode: RunMode | None = None
     target: str | None = None
     extra_scope: list[str] = field(default_factory=list)
+    excluded_assets: list[str] = field(default_factory=list)
     platform: str | None = None
     allow_sensitive: bool = False
     rps: float = 10.0
     flag_format: str | None = None
+    generate_wp: bool = False
+    multiple_answers: bool = False
+    ctf_type_hints: list[str] = field(default_factory=list)
+    ctf_type_note: str = ""
     challenges_yaml: str | None = None      # CTF/渗透赛赛题 YAML 文本
     platform_yaml: str | None = None        # 平台档案 YAML 文本（托管题/跑分平台）
     rules_yaml: str | None = None           # 渗透赛赛制规则 YAML 文本
@@ -54,12 +52,13 @@ class LaunchPlan:
     """装配产物：可直接传给 runtime 三个入口。"""
 
     authorization: Authorization
-    target: str                             # SRC 目标 / CTF 占位 "ctf://challenges"
+    target: str                             # SRC 目标可为空 / CTF 占位 "ctf://challenges"
     challenges: list[dict]
     rules: object | None                    # CompetitionRules（仅渗透赛）
     flag_patterns: list[str] | None
     mission: str = ""                       # 任务意图原文（喂主 Agent 规划）
     platform_profile: dict | None = None    # 平台档案（含凭据；对运行时直供）
+    generate_wp: bool = False               # 智能体模式结束后按普通 CTF 生成 WP
     mode_auto: bool = False                 # 智能模式：待 LLM 路由复核
     needs_mode_routing: bool = False        # 输入未明确声明模式时才需要 LLM 语义裁决
     source_request: LaunchRequest | None = None  # 重建计划用（LLM 改判时）
@@ -70,7 +69,14 @@ class LaunchPlan:
 _URL_RE = re.compile(
     r"https?://[^\s，。；：、！？（）【】《》「」『』\"'<>()]+", re.IGNORECASE)
 _DOMAIN_RE = re.compile(
-    r"\b(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,}\b", re.IGNORECASE)
+    r"(?<![a-z0-9_-])(?:\*\.)?(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+"
+    r"[a-z]{2,}(?![a-z0-9_-])", re.IGNORECASE)
+_TARGET_CLAUSE_BOUNDARY_RE = re.compile(r"[,，。；;！!？?\n\r]")
+_TARGET_EXCLUSION_RE = re.compile(
+    r"(?:不收取|不接收|不测试|不要测试|无需测试|不在范围|不属于范围|"
+    r"排除|除外|禁止(?:测试|访问|探测)?)",
+    re.IGNORECASE,
+)
 
 # 这里只识别用户已经明确写出的任务类型，不从漏洞名、URL 或业务词猜模式。
 # 中文紧邻英文缩写时 ``\b`` 不可靠，因此使用 ASCII 标识符边界。
@@ -87,19 +93,46 @@ _SRC_DECLARATION_RE = re.compile(
     r"漏洞赏金|漏洞挖掘|授权渗透(?:测试)?|安全评估")
 
 
+def _mention_is_excluded(text: str, start: int, end: int) -> bool:
+    """只在目标所在短句判断明确排除语义，避免把后续规则误套到前一目标。"""
+    left = max((match.end() for match in _TARGET_CLAUSE_BOUNDARY_RE.finditer(
+        text, 0, start)), default=0)
+    boundary = _TARGET_CLAUSE_BOUNDARY_RE.search(text, end)
+    right = boundary.start() if boundary else len(text)
+    return bool(_TARGET_EXCLUSION_RE.search(text[left:right]))
+
+
 def extract_targets(mission: str) -> tuple[list[str], list[str]]:
-    """从自然语言任务意图提取（URL 列表, 域名列表）——用户告诉主 Agent 的
-    用户提到的资产落成授权事实，测试边界仍由模型结合原文理解。"""
-    urls = [u.rstrip("/").rstrip(".,;") for u in _URL_RE.findall(mission or "")]
+    """从自然语言任务意图提取明确授权的（URL 列表, 域名列表）。
+
+    被用户明确标注为不收取、排除或不测试的目标仍保留在任务原文中供模型理解，
+    但不能仅因被提及就升级为结构化授权范围。
+    """
+    text = mission or ""
+    url_spans: list[tuple[int, int]] = []
+    urls: list[str] = []
+    for match in _URL_RE.finditer(text):
+        url_spans.append(match.span())
+        if _mention_is_excluded(text, *match.span()):
+            continue
+        value = match.group(0).rstrip("/").rstrip(".,;")
+        if value not in urls:
+            urls.append(value)
     domains: list[str] = []
-    for m in _DOMAIN_RE.findall(mission or ""):
-        if not any(m in u for u in urls) and m not in domains:
-            domains.append(m)
-    dedup_urls: list[str] = []
-    for u in urls:
-        if u not in dedup_urls:
-            dedup_urls.append(u)
-    return dedup_urls, domains
+    for match in _DOMAIN_RE.finditer(text):
+        if any(start <= match.start() < end for start, end in url_spans):
+            continue
+        value = match.group(0)
+        if not _mention_is_excluded(text, *match.span()) and value not in domains:
+            domains.append(value)
+    return urls, domains
+
+
+def _wildcard_url_domain(value: str) -> str:
+    """通配符 URL 只表达子域集合，不能成为可直接请求的 URL 前缀。"""
+    parsed = urlparse(value)
+    host = (parsed.hostname or "").lower().rstrip(".")
+    return host if host.startswith("*.") else ""
 
 
 def parse_challenges_yaml(text: str) -> list[dict]:
@@ -185,8 +218,8 @@ def fallback_mode(req: LaunchRequest) -> RunMode:
     if declared is not None:
         return declared
     if req.has_uploads and not extract_targets(req.mission or "")[0]:
-        # 只有附件、没有目标 URL：SRC 无处安放目标，只能按赛题处理
-        # （附件文件由创建流程注入赛题载荷；运行期 LLM 路由仍可改判）
+        # 旧自动入口对纯附件默认按离线赛题装配；显式 SRC 不走此兜底。
+        # 附件文件由创建流程注入赛题载荷，运行期 LLM 路由仍可改判。
         return RunMode.CTF
     return RunMode.SRC
 
@@ -201,6 +234,7 @@ def prepare_launch(req: LaunchRequest) -> LaunchPlan:
     """
     mission = (req.mission or "").strip()
     m_urls, m_domains = extract_targets(mission)
+    inferred_wildcard_domain = ""
     mode_auto = req.mode is None
     # 智能模式下模式与意图一律交由 LLM 路由裁决——声明词正则只在模型
     # 不可用时作兜底参考（fallback_guess），不在运行期代替模型决策
@@ -209,47 +243,36 @@ def prepare_launch(req: LaunchRequest) -> LaunchPlan:
         req = LaunchRequest(**{**req.__dict__, "mode": fallback_mode(req)})
     if mission and not req.target and m_urls:
         req = LaunchRequest(**{**req.__dict__, "target": m_urls[0]})
-    elif mission and not req.target and m_domains:
-        # 纯域名授权（如 SRC「*.bilibili.com」清单）同样要有工作入口，
-        # 否则 plan.target 落到 ctf:// 占位符，侦察/测绘步骤全打在伪协议上
-        req = LaunchRequest(**{**req.__dict__, "target": "https://" + m_domains[0]})
-    # 目标硬校验只对用户显式选择的模式生效。智能模式（mode_auto）下
-    # 不在创建时拦——「你好」这类普通对话、纯规则说明都不该被目标
-    # 校验挡在门外；意图（对话/规则/任务）由运行期 LLM 路由裁决，
-    # 真任务缺目标时灵枢会主动向用户询问。
-    # 用户显式选择 SRC 的纯附件分析无需网络目标，也不改判成 CTF。
-    if (req.mode == RunMode.SRC and not req.target
-            and not req.has_uploads and not mode_auto):
-        hint = ("；任务描述中未识别到目标 URL——请写明 http(s):// 地址"
-                if mission else "——或在任务描述中写明目标")
-        raise SpiritScoutError(f"SRC 模式需要目标 URL{hint}")
-    # CTF 不做输入完备性校验：用户点了执行就交给灵枢。缺赛题清单、URL、
-    # 附件、平台档案都不在创建时拦——任务原文本身就是材料，模型能从中
-    # 判断要做什么；确实缺信息它会自己开口问，这比让用户在表单上反复
-    # 猜「到底缺哪一项」好。
-
+    elif mission and not req.target and m_domains and req.mode != RunMode.AWDP:
+        # 任务中已有纯域名时补齐工作入口；无目标的 SRC 则保留空值。
+        # AWDP 修补只认附件，任务文本里的文件名（如 fix.tar.gz）不是目标。
+        inferred_wildcard_domain = m_domains[0] if m_domains[0].startswith("*.") else ""
+        req = LaunchRequest(**{**req.__dict__,
+                               "target": "https://" + m_domains[0].removeprefix("*.")})
     challenges = (parse_challenges_yaml(req.challenges_yaml)
                   if req.challenges_yaml else [])
-    if req.mode == RunMode.CTF and not challenges and m_urls:
-        # 任务描述推导赛题清单：每个 URL 合成一题，方向由分类器按
-        # 任务描述关键词判定（misc 兜底），赛题入口自动并入授权范围
-        challenges = [
-            {"id": f"mission-{i + 1}", "title": f"任务描述赛题 {urlparse(u).hostname or u}",
-             "url": u, "description": mission[:500]}
-            for i, u in enumerate(m_urls)
-        ]
-    elif req.mode == RunMode.CTF and not challenges and req.has_uploads:
-        # 只有附件的赛题（离线题常态）：题目壳由装配合成，附件文件由
-        # 会话创建流程注入 attachments 字段——此处不知道落地路径
-        challenges = [{"id": "mission-1", "title": "任务附件赛题",
-                       "description": mission[:500]}]
-    elif req.mode == RunMode.CTF and not challenges:
-        # 什么都没有：仍然开工。拿任务原文当题面，行首一句作标题；
-        # 全空时给个中性壳，交给灵枢在运行期决定做什么。
-        first_line = (mission.strip().splitlines() or [""])[0].strip()
-        challenges = [{"id": "mission-1",
-                       "title": (first_line[:80] or "CTF 任务"),
-                       "description": mission[:500]}]
+    if req.mode in (RunMode.CTF, RunMode.AWDP) and not challenges:
+        # 任务里的 URL 可能是题目实例，也可能只是平台入口——不写死捆绑成
+        # 赛题地址：任务原文完整进描述，URL 的角色由模型读了判断。入口经
+        # extract_targets 并入授权范围（用户原话即授权边界），不因不绑题而丢失
+        description = mission or (f"任务入口：{req.target}" if req.target else "")
+        if description or req.has_uploads:
+            challenges = [{"id": "mission-1",
+                           "title": "任务描述赛题" if description else "任务附件赛题",
+                           "description": description}]
+        else:
+            raise SpiritScoutError(
+                "CTF 模式需要赛题内容——粘贴赛题 YAML，写明赛题 URL，上传题目附件，"
+                "或提供平台档案（托管题由平台列题）")
+
+    if req.mode in (RunMode.CTF, RunMode.AWDP) and len(challenges) == 1:
+        types = list(dict.fromkeys(value.strip() for value in req.ctf_type_hints if value.strip()))
+        note = req.ctf_type_note.strip()
+        if types or note:
+            challenges[0]["user_type_hints"] = {"types": types, "extra": note, "source": "user",
+                                                "binding": "direction_hint_only"}
+    if req.mode in (RunMode.CTF, RunMode.AWDP) and len(challenges) == 1 and not req.platform_yaml:
+        challenges[0]["multiple_answers"] = req.multiple_answers
 
     rules = None
     if req.mode == RunMode.COMPETITION:
@@ -283,15 +306,24 @@ def prepare_launch(req: LaunchRequest) -> LaunchPlan:
         except ValueError as exc:
             raise SpiritScoutError(f"平台档案校验失败: {exc}") from exc
 
-    # 授权范围：默认限定目标 URL 前缀（最小授权原则）；extra_scope 可追加
-    allowed_urls = [req.target.rstrip("/")] if req.target else []
+    # 授权范围：确定性 URL/域名采用封闭范围；通配符 URL 仅转换为子域范围，
+    # 不把 apex 根域或同组织其他域名隐式加入测试目标。
+    target_wildcard = (_wildcard_url_domain(req.target) if req.target else "") \
+        or inferred_wildcard_domain
+    allowed_urls = ([req.target.rstrip("/")] if req.target and not target_wildcard else [])
     allowed_domains: list[str] = []
+    if target_wildcard:
+        allowed_domains.append(target_wildcard)
     for extra in req.extra_scope:
-        (allowed_urls if extra.startswith(("http://", "https://"))
-         else allowed_domains).append(extra)
+        wildcard = _wildcard_url_domain(extra) if extra.startswith(("http://", "https://")) else ""
+        (allowed_domains if wildcard else allowed_urls if extra.startswith(("http://", "https://"))
+         else allowed_domains).append(wildcard or extra)
     # 任务意图提取出的目标并入授权范围（用户原话即授权边界）
     for u in m_urls:
-        if u not in allowed_urls:
+        wildcard = _wildcard_url_domain(u)
+        if wildcard and wildcard not in allowed_domains:
+            allowed_domains.append(wildcard)
+        elif not wildcard and u not in allowed_urls:
             allowed_urls.append(u)
     for d in m_domains:
         if d not in allowed_domains:
@@ -310,7 +342,11 @@ def prepare_launch(req: LaunchRequest) -> LaunchPlan:
 
     # 赛方原始规则只传入模型上下文，不编译为后端禁打列表。
     scope = Scope(
+        scope_mode="hybrid" if req.mode == RunMode.SRC else "explicit",
+        organization_domains=list(allowed_domains) if req.mode == RunMode.SRC else [],
         allowed_domains=allowed_domains, allowed_urls=allowed_urls,
+        denied=list(dict.fromkeys(req.excluded_assets)),
+        excluded_assets=list(dict.fromkeys(req.excluded_assets)),
         testing_rules=(req.rules_yaml or "") if rules is not None else "",
         max_requests_per_second=req.rps,
         allow_sensitive_actions=req.allow_sensitive,
@@ -319,17 +355,18 @@ def prepare_launch(req: LaunchRequest) -> LaunchPlan:
         local_analysis=True,
         notes="启动装配授权声明",
     )
-    # SRC 的工作目标必须落在真实资产上：显式 target 优先；没有时从装配后的
-    # 授权范围取第一个 URL/域名（续传合并 extra_scope 的常见场景）——否则
-    # 会落到 CTF 占位符 "ctf://challenges"，侦察/测绘把 "challenges" 当主机名。
+    # SRC 已知工作目标优先取显式 target，其次从装配后的
+    # 授权范围取第一个 URL/域名；未知时保留空值，交给模型规划和澄清，
+    # 不填入 CTF 占位符 "ctf://challenges"。
     # 多域目标由规划节点各自指定 target（见 MasterAgent._task_target）。
-    target = req.target or ""
+    target = ("https://" + target_wildcard.removeprefix("*.")
+              if target_wildcard else req.target or "")
     if req.mode == RunMode.SRC and (
             not target or target.startswith("ctf://")):
         if allowed_urls:
             target = allowed_urls[0]
         elif allowed_domains:
-            target = "https://" + allowed_domains[0]
+            target = "https://" + allowed_domains[0].removeprefix("*.")
     authorization = Authorization(
         auth_id=new_id("auth"), mode=req.mode, scope=scope,
         target_description=target or (
@@ -346,6 +383,7 @@ def prepare_launch(req: LaunchRequest) -> LaunchPlan:
         flag_patterns=flag_patterns,
         mission=mission,
         platform_profile=platform_profile,
+        generate_wp=req.generate_wp,
         mode_auto=mode_auto,
         needs_mode_routing=needs_mode_routing,
         source_request=req if mode_auto else None,

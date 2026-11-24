@@ -10,6 +10,7 @@ from __future__ import annotations
 import abc
 import asyncio
 import contextlib
+import os
 import shlex
 import time
 import uuid
@@ -18,7 +19,8 @@ from typing import Any
 
 from spiritscout.core.audit import AuditLogger, NullAuditLogger
 from spiritscout.core.exceptions import ToolExecutionError
-from spiritscout.platform_support import TreeGuard, kill_process_tree, process_options
+from spiritscout.platform_support import kill_process_tree, process_options
+from spiritscout.tools.output import command_output
 from spiritscout.tools.spec import ToolKind, ToolResult, ToolSpec
 
 
@@ -37,7 +39,7 @@ async def _wait_parent(proc: asyncio.subprocess.Process) -> None:
 
 
 async def _read_capped(stream: asyncio.StreamReader | None,
-                       cap: int) -> tuple[bytes, int]:
+                       cap: int, channel: str = "stdout") -> tuple[bytes, int]:
     """流式读取限内存：只保留头尾窗口，超出部分读走即弃。
 
     持续把管道读空，进程得以自然收尾（不因管道塞满被自己的输出卡死）；
@@ -55,6 +57,9 @@ async def _read_capped(stream: asyncio.StreamReader | None,
         if not chunk:
             break
         total += len(chunk)
+        observe = command_output.get()
+        if observe is not None:
+            observe(channel, chunk)
         if len(head) < head_cap:
             take = chunk[:head_cap - len(head)]
             head.extend(take)
@@ -82,45 +87,47 @@ class ToolExecutor(abc.ABC):
         """
         started = time.perf_counter()
         rollback = _RollbackStack()
-        # start_new_session：独立进程组，超时/取消可整组终止。
-        # guard：直接子进程退出后也要收口后代——Windows 没有进程组语义，
-        # 父进程一死 `taskkill /T` 就找不到树（详见 platform_support.TreeGuard）。
-        guard = TreeGuard()
+        # start_new_session：独立进程组，超时/取消可整组终止
+        proxy_env = {}
+        if getattr(self, "traffic_workspace", None):
+            from spiritscout.traffic.proxy import tool_environment
+
+            proxy_env = await tool_environment(self.traffic_workspace)
         try:
+            from spiritscout.tools.egress_isolation import isolate_command
+
+            cmd = isolate_command(cmd, proxy_env)
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                env={**os.environ, **proxy_env} if proxy_env else None,
                 **process_options(),
             )
         except OSError as exc:
-            guard.close()
             # 启动失败也是工具结果；取消异常不在此吞掉。
             return ToolResult(tool=spec.name, ok=False,
                               returncode=127 if isinstance(exc, FileNotFoundError) else 126,
                               error=f"工具启动失败: {exc}",
                               duration_ms=(time.perf_counter() - started) * 1000)
-        guard.attach(proc.pid)
         rollback.track_process(proc)
         # 流式限幅读取：内存只留头尾窗口，超出部分读走即弃——进程得以
         # 自然收尾（不因管道塞满卡死），内存也不随输出体量增长
         out_task = asyncio.create_task(
             _read_capped(proc.stdout, self.max_output_chars))
         err_task = asyncio.create_task(
-            _read_capped(proc.stderr, self.max_output_chars))
+            _read_capped(proc.stderr, self.max_output_chars, "stderr"))
         try:
-            async with guard.tracking():
-                try:
-                    await asyncio.wait_for(_wait_parent(proc), timeout=spec.timeout_seconds)
-                    timed_out = False
-                except TimeoutError:
-                    timed_out = True
-                    _kill_process_group(proc)
-                    with contextlib.suppress(BaseException):
-                        await asyncio.wait_for(proc.wait(), timeout=5)
+            try:
+                await asyncio.wait_for(_wait_parent(proc), timeout=spec.timeout_seconds)
+                timed_out = False
+            except TimeoutError:
+                timed_out = True
+                _kill_process_group(proc)
+                with contextlib.suppress(BaseException):
+                    await asyncio.wait_for(proc.wait(), timeout=5)
         except BaseException:
-            # 取消/异常路径同样不留活口；tracking 退出时已收口后代，
-            # 这里只补父进程与管道的清理，然后原样抛出
+            # 取消/异常路径同样不留活口：整组清理后原样抛出
             _kill_process_group(proc)
             with contextlib.suppress(BaseException):
                 await asyncio.wait_for(proc.wait(), timeout=5)
@@ -129,8 +136,8 @@ class ToolExecutor(abc.ABC):
             with contextlib.suppress(BaseException):
                 await asyncio.gather(out_task, err_task, return_exceptions=True)
             raise
-        # 普通 CLI 调用不拥有跨调用后台服务：直接子进程收尾后立即收口同组后代，
-        # 再读完已产生的输出，避免延迟写入和管道永久不关闭
+        # 普通 CLI 调用不拥有跨调用后台服务；直接子进程收尾后立即收口
+        # 同组后代，再读完已产生的输出，避免延迟写入和管道永久不关闭。
         _kill_process_group(proc)
         try:
             (stdout_b, _), (stderr_b, _) = await asyncio.wait_for(
@@ -142,7 +149,6 @@ class ToolExecutor(abc.ABC):
             stdout_b = stderr_b = b""
         finally:
             _kill_process_group(proc)
-            guard.close()
             out_task.cancel()
             err_task.cancel()
             await asyncio.gather(out_task, err_task, return_exceptions=True)
@@ -338,5 +344,3 @@ def docker_available() -> bool:
     except (OSError, subprocess.TimeoutExpired):
         return False
     return proc.returncode == 0
-
-

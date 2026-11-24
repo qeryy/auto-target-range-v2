@@ -35,10 +35,6 @@ executor:                      # 工具执行器（CLI/Docker/MCP 三态）
   default_timeout_seconds: 240
   max_output_chars: 20000      # 输出窗口截断（防上下文污染）
   ctf_network_isolation: true  # CTF 模式网络隔离（硬约束；仅 executor.backend=docker 生效）
-  # shell/python 执行后端：auto=有 bwrap 用 bwrap，Windows/macOS 退 host；
-  # bwrap=强制命名空间沙箱；host=本机受限执行（工作目录锁定 + 环境白名单 + 超时杀进程树，
-  # 无文件系统隔离，仅本机自用/比赛机）
-  sandbox_backend: auto
   docker_memory_mb: 512        # Docker 沙箱加固：资源硬限额
   docker_cpus: 1.0
   docker_pids_limit: 256
@@ -66,20 +62,20 @@ experience:                    # 经验库（跨会话自我进化）：收尾�
   root: ""                     # 空=跟随工作区；Web 控制台自动指向共享目录
   distill_timeout_seconds: 120  # 收尾提炼单次 LLM 硬顶（秒），仅终态路径使用
   recall_limit: 6              # 会话开工注入的经验条数上限
-
-  distill_enabled: false
+  auto_distill: false
 report:
   template: src_standard       # 报告模板（4.6.2）
   output_format: markdown
   output_dir: .spiritscout/reports
 
 web:                            # Web 控制台：spiritscout 启动
-  host: 127.0.0.1               # 非回环绑定时必须启用管理员登录（见 auth_mode）
+  host: 127.0.0.1               # 非回环绑定必须配置管理员凭据
   port: 8000
   max_concurrent_sessions: 4    # 并发会话上限
-  auth_mode: none               # none=不登录直接进；password=启用管理员登录
   remote_auth_required: true
   password_env: SPIRITSCOUT_SERVER_PASSWORD
+  admin_username_env: SPIRITSCOUT_ADMIN_USERNAME
+  admin_password_env: SPIRITSCOUT_ADMIN_PASSWORD
 
 models_config_path: configs/models.yaml
 audit_log_path: .spiritscout/audit.jsonl
@@ -134,7 +130,7 @@ mcp_servers:
   - name: local-files             # 内置本地 MCP：目录浏览 / 读写 / 哈希（零依赖，跟灵枢一起发）
     enabled: false                # 默认关；控制台「MCP 接入」里点一下即可启用
     transport: stdio
-    command: .venv\Scripts\python.exe
+    command: python
     args: ["-m", "spiritscout.mcp.local_server", "--stdio", "--root", "."]
     timeout: 120                  # 本地文件操作，秒级返回就够
     default_risk: readonly        # 只读为主；write_file 由调用方声明 action

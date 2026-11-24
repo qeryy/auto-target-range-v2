@@ -54,10 +54,52 @@ def _auth() -> Authorization:
 
 
 class McpBackgroundStartupTests(unittest.IsolatedAsyncioTestCase):
-    async def test_slow_server_does_not_block_build_and_joins_later(self) -> None:
+    async def test_later_assembly_failure_reaps_clients_and_releases_workspace(self) -> None:
+        from spiritscout.infrastructure import _teardown_infra
+        from spiritscout.tools.run_lock import ExecutionRunLock
+
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            fast, slow = _fake_client(0.0), _fake_client(1.0)
+            started, cancelled = asyncio.Event(), asyncio.Event()
+            fast, slow = _fake_client(0.0), _fake_client(0.0)
+
+            async def blocked_start():
+                started.set()
+                try:
+                    await asyncio.Event().wait()
+                finally:
+                    cancelled.set()
+
+            slow.start = blocked_start
+            with (patch("spiritscout.tools.mcp_client.build_client",
+                        side_effect=lambda spec: fast if spec.name == "fast" else slow),
+                  patch("spiritscout.runtime._MCP_STARTUP_GRACE", 0.01),
+                  patch("spiritscout.infrastructure._register_builtin_tools",
+                        side_effect=RuntimeError("builtin registration failed")),
+                  patch("spiritscout.infrastructure._teardown_infra",
+                        wraps=_teardown_infra) as teardown):
+                with self.assertRaisesRegex(RuntimeError, "builtin registration failed"):
+                    await _build_infra(
+                        _cfg(root), [ModelEntry(model="test", provider="mock")], _auth())
+
+            self.assertTrue(started.is_set())
+            self.assertTrue(cancelled.is_set())
+            fast.close.assert_awaited()
+            slow.close.assert_awaited()
+            teardown.assert_awaited_once()
+            for name in ("blackboard", "experience", "knowledge", "bus"):
+                self.assertIsNotNone(teardown.call_args.kwargs[name])
+            # 初始化失败后同一工作区可重新启动，不留下运行锁。
+            lock = ExecutionRunLock(root, root / "bb.db")
+            try:
+                lock.acquire()
+            finally:
+                lock.close()
+
+    async def test_slow_server_does_not_block_build(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            fast, slow = _fake_client(0.0), _fake_client(10.0)
             with patch("spiritscout.tools.mcp_client.build_client",
                        side_effect=lambda spec: fast if spec.name == "fast" else slow), \
                  patch("spiritscout.runtime._MCP_STARTUP_GRACE", 0.2):
@@ -65,11 +107,25 @@ class McpBackgroundStartupTests(unittest.IsolatedAsyncioTestCase):
                 infra = await _build_infra(_cfg(root), [ModelEntry(model="test", provider="mock")], _auth())
                 try:
                     build_elapsed = time.monotonic() - t0
-                    # 慢服务器还在握，开工不被门控：构建耗时贴着宽限期而非贴着握手时长
-                    self.assertLess(build_elapsed, 0.8)
+                    # 构建还包含知识库播种、黑板等固定开销，改用远大于宽限期的
+                    # 慢握手（10s）判断：若被门控必然超过该阈值，避免 CI 机器
+                    # 固定开销波动导致 0.8s 一类的脆弱断言。
+                    self.assertLess(build_elapsed, 5.0)
                     # 快服务器开工前已并入，慢服务器尚未
                     self.assertIn("mcp__fast__probe", infra.mcp_tools)
                     self.assertNotIn("mcp__slow__probe", infra.mcp_tools)
+                finally:
+                    await infra.close()
+
+    async def test_slow_server_joins_later(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            fast, slow = _fake_client(0.0), _fake_client(1.0)
+            with patch("spiritscout.tools.mcp_client.build_client",
+                       side_effect=lambda spec: fast if spec.name == "fast" else slow), \
+                 patch("spiritscout.runtime._MCP_STARTUP_GRACE", 0.2):
+                infra = await _build_infra(_cfg(root), [ModelEntry(model="test", provider="mock")], _auth())
+                try:
                     # 后台续握完成：工具中途并入活目录且经注册表可调
                     await asyncio.gather(*infra.mcp_startup_tasks)
                     self.assertIn("mcp__slow__probe", infra.mcp_tools)

@@ -8,22 +8,26 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import dataclasses
 import hashlib
 import json
 import uuid
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from spiritscout.agents.profiles import AgentProfile, get_profile
+from spiritscout.agents.profiles import AgentProfile, common_src_tool, get_profile
+from spiritscout.core.attempts import AttemptLedger, exact_key
 from spiritscout.core.audit import AuditLogger, NullAuditLogger
 from spiritscout.core.exceptions import (
     PolicyViolation,
+    ScopeViolation,
     SpiritScoutError,
     ToolExecutionError,
 )
 from spiritscout.core.models import AgentType, RunMode
 from spiritscout.tools.executor import ToolExecutor
 from spiritscout.tools.invocation import (
+    ExecutionScope,
     InvocationContext,
     current_execution_scope,
     current_invocation,
@@ -37,6 +41,7 @@ from spiritscout.tools.spec import (
     ToolResult,
     ToolSpec,
 )
+from spiritscout.traffic.proxy import EgressUnavailable
 
 if False:  # TYPE_CHECKING 等价：避免运行时环（policy.engine 依赖 tools.spec）
     from spiritscout.policy.engine import PolicyEngine
@@ -54,21 +59,29 @@ class ToolRegistry:
         audit: AuditLogger | None = None,
         max_retries: int = 1,
         journal: ExecutionJournal | None = None,
+        attempts: AttemptLedger | None = None,
+        pause_gate: Any = None,
     ):
+        self.pause_gate = pause_gate
         self.executor = executor
         self.policy = policy
         self.audit = audit or NullAuditLogger()
         self.max_retries = max_retries
         self.journal = journal
+        self.attempts = attempts or AttemptLedger()
+        self._generation = 0
+        self._mutations = 0
         self._specs: dict[str, ToolSpec] = {}
         self._builtins: dict[str, BuiltinFn] = {}
 
     # ------------------------------------------------------------ 注册
 
     def register(self, spec: ToolSpec) -> None:
+        self._generation += 1
         self._specs[spec.name] = spec
 
     def register_builtin(self, name: str, fn: BuiltinFn, spec: ToolSpec | None = None) -> None:
+        self._generation += 1
         self._builtins[name] = fn
         if spec:
             self._specs[name] = spec
@@ -86,18 +99,41 @@ class ToolRegistry:
 
     async def call(self, name: str, params: dict[str, Any], **builtin_ctx) -> ToolResult:
         """每次调用独立编号，参数快照绑定审批；未决动作只留痕、不自动重放。"""
+        broker = getattr(self, "questions", None)
+        scope = current_execution_scope.get()
+        if broker is not None and scope is not None:
+            await broker.wait_for_task(scope.task_id)
+        if self.pause_gate is not None:
+            await self.pause_gate.wait()
         spec = self.get(name)
         params = copy.deepcopy(params)
+        purpose = builtin_ctx.pop("_purpose", "")
+        if spec.approval_purpose_param:
+            purpose = params.pop(spec.approval_purpose_param, purpose)
+        purpose = purpose.strip()[:1000] if isinstance(purpose, str) else ""
+        refresh = bool(builtin_ctx.pop("_fresh", False))
+        if name == "http_probe":
+            refresh = bool(params.pop("refresh", False)) or refresh
+        bypass = bool(builtin_ctx.pop("_dedup_bypass", False))
+        environment_id = str(builtin_ctx.pop("_environment_id", "") or "")
+        scope = current_execution_scope.get()
+        bypass = bypass or bool(scope and (scope.agent_id == "verifier" or scope.task_id.startswith("verify-")))
+        reusable = self._replay_safe(spec, params) and spec.reuse_ttl_seconds > 0 and not bypass
+        mutates = not self._replay_safe(spec, params)
+        if refresh or mutates:
+            self._generation += 1
         digest = hashlib.sha256(json.dumps(
             params, sort_keys=True, ensure_ascii=False, allow_nan=False).encode()).hexdigest()
         invocation_id = f"inv-{uuid.uuid4().hex}"
         replay_safe = self._replay_safe(spec, params)
         context = InvocationContext(invocation_id, digest,
             (lambda action, allow: self.journal.approval(invocation_id, action, allow))
-            if self.journal is not None else None)
+            if self.journal is not None else None, purpose=purpose, tool_name=name)
         token = current_invocation.set(context)
         phase = "not_started"
         registered = False
+        if mutates:
+            self._mutations += 1
 
         def transition(status: str) -> None:
             nonlocal phase
@@ -111,9 +147,49 @@ class ToolRegistry:
             if self.journal is not None:
                 self.journal.begin(invocation_id, name, digest,
                                    "safe" if replay_safe else "never_automatic",
-                                   params=params, scope=current_execution_scope.get())
+                                   params=params, scope=(dataclasses.replace(scope or ExecutionScope(), environment_id=environment_id)
+                                                        if environment_id else scope))
                 registered = True
-            result = await self._call(name, params, transition=transition, **builtin_ctx)
+            async def perform() -> ToolResult:
+                result = await self._call(name, params, transition=transition,
+                                          preauthorized=reusable, **builtin_ctx)
+                if result.invocation_id and result.invocation_id != invocation_id:
+                    result.source_invocation_id = result.source_invocation_id or result.invocation_id
+                result.invocation_id = invocation_id
+                return result
+
+            denied = await self._authorize(name, params, transition) if reusable else None
+            if denied is not None:
+                result = denied
+            elif reusable and not refresh and not self._mutations:
+                guard = builtin_ctx.get("guard") or getattr(self.policy, "guard", None)
+                scope_model = getattr(guard, "scope", None)
+                auth = scope_model.model_dump(mode="json") if callable(getattr(scope_model, "model_dump", None)) else {}
+                approved = guard.approved_targets() if callable(getattr(guard, "approved_targets", None)) else []
+                derived = (guard.derived_readonly_resources()
+                           if callable(getattr(guard, "derived_readonly_resources", None)) else [])
+                auth = ({**auth, "approved": sorted(approved),
+                         "derived_readonly": sorted(derived)}
+                        if isinstance(auth, dict)
+                        and isinstance(approved, (set, frozenset, list, tuple))
+                        and isinstance(derived, (set, frozenset, list, tuple)) else {})
+                key_parameters = {**params, "method": str(params.get("method", "GET")).upper()} if name == "http_probe" else params
+                key = exact_key(name, "", key_parameters, {
+                    "identity": scope.identity_id if scope else "",
+                    "environment": environment_id or (scope.environment_id if scope else ""),
+                    "workspace": str(builtin_ctx.get("workspace_scope") or ""),
+                    "generation": self._generation, "authorization": auth,
+                    "run": self.journal.run_id if self.journal is not None else id(self)})
+                result, reuse = await self.attempts.execute(key, perform, ttl=spec.reuse_ttl_seconds)
+                if reuse != "executed":
+                    result.source_invocation_id = result.source_invocation_id or result.invocation_id
+                    result.reuse = reuse
+                    transition("running")
+                    self.audit.log("attempt.reused", scope.agent_id if scope else "registry", {
+                        "key": key, "invocation_id": invocation_id, "source_invocation_id": result.source_invocation_id,
+                        "kind": reuse})
+            else:
+                result = await perform()
             result.invocation_id = invocation_id
             result.execution_status = ("denied" if phase != "running" else
                                        "succeeded" if result.ok else "failed")
@@ -123,6 +199,12 @@ class ToolRegistry:
                 self.journal.transition(invocation_id, result.execution_status,
                                         effect=result.effect_status, result=result)
             return result
+        except EgressUnavailable as exc:
+            result = ToolResult(tool=name, ok=False, returncode=-3, error=str(exc), invocation_id=invocation_id,
+                                execution_status='failed', effect_status='none')
+            if self.journal is not None and registered:
+                self.journal.transition(invocation_id, 'failed', effect='none', result=result)
+            return result
         except (Exception, asyncio.CancelledError) as exc:
             if self.journal is not None and registered:
                 status = "cancelled" if isinstance(exc, asyncio.CancelledError) else "unknown"
@@ -131,6 +213,9 @@ class ToolRegistry:
             raise
         finally:
             current_invocation.reset(token)
+            if mutates:
+                self._mutations -= 1
+                self._generation += 1
 
     @staticmethod
     def _replay_safe(spec: ToolSpec, params: dict[str, Any]) -> bool:
@@ -141,9 +226,7 @@ class ToolRegistry:
                 and (spec.name != "http_probe" or str(params.get("method", "GET")).upper()
                      in {"GET", "HEAD", "OPTIONS"}))
 
-    async def _call(self, name: str, params: dict[str, Any], *,
-                    transition: Callable[[str], None], **builtin_ctx) -> ToolResult:
-        """统一调用入口：工具权限与危险动作审批 → 执行/重试 → 结构化结果。"""
+    async def _authorize(self, name: str, params: dict[str, Any], transition: Callable[[str], None]) -> ToolResult | None:
         spec = self.get(name)
         # 行为声明在统一入口校验，不能依赖某个 Agent 的包装函数。
         # MCP 的 action 可能是远端业务参数；其风险仍由工具规格门把关。
@@ -161,20 +244,41 @@ class ToolRegistry:
             try:
                 action = ActionCategory(raw_action).value
             except (ValueError, TypeError):
-                # 纠错要说清「你给的是哪个词」——只说合法清单，模型分不清是拼错、
-                # 还是自己心里那个近义词不在表里，容易原地重试把回合烧光。
                 return ToolResult(tool=name, ok=False, returncode=-4,
-                                  error="action 类别未知（收到 "
-                                  + repr(str(raw_action)[:40]) + "），请如实声明："
-                                  + ", ".join(a.value for a in ActionCategory)
-                                  + "；纯静态分析、读文件、跑只读脚本请填 analysis")
+                                  error="action 类别未知，请如实声明："
+                                  + ", ".join(a.value for a in ActionCategory))
         if required and action is None:
             return ToolResult(tool=name, ok=False, returncode=-4,
                               error=f"缺少 {spec.action_param} 行为声明，请根据本次实际操作补充后重试")
         if action not in (None, ActionCategory.ANALYSIS.value) and self.policy is None:
             return ToolResult(tool=name, ok=False, returncode=-3,
                               error="敏感动作缺少策略与即时审批通道，未执行")
-        if spec.allowed_params:
+        missing = [key for key in spec.required_params
+                   if key not in params or params[key] is None
+                   or (isinstance(params[key], str) and not params[key].strip())]
+        if missing:
+            return ToolResult(
+                tool=name, ok=False, returncode=-4,
+                error=f"缺少必填参数: {', '.join(missing)}。请按工具目录补充后重试",
+                parsed={"parameter_error": True, "missing": missing},
+            )
+        guard = getattr(self.policy, "guard", None)
+        scope = getattr(guard, "scope", None)
+        if guard is not None and getattr(scope, "scope_mode", "explicit") != "explicit":
+            for target_param in spec.target_params:
+                target = params.get(target_param)
+                if not isinstance(target, str) or not target.strip():
+                    continue
+                try:
+                    if name == "dns_resolve":
+                        guard.check_discovery_target(target)
+                    else:
+                        guard.check_execution_target(target)
+                except ScopeViolation as exc:
+                    return ToolResult(tool=name, ok=False, returncode=-5,
+                                      error=f"资产范围策略拦截: {exc}",
+                                      parsed={"scope_status": guard.asset_decision(target)})
+        if spec.allowed_params or spec.strict_params:
             unknown = set(params) - spec.allowed_params
             if unknown:
                 reason = f"工具 {name} 非法参数: {sorted(unknown)}"
@@ -184,22 +288,55 @@ class ToolRegistry:
             try:
                 if (not self.policy.automatic_approval
                         and self.policy.requires_approval(spec, action)):
+                    context = current_invocation.get()
+                    if spec.kind == ToolKind.MCP and (not context or not context.purpose
+                            or context.purpose in {name, action}):
+                        field = spec.approval_purpose_param or "_purpose"
+                        return ToolResult(tool=name, ok=False, returncode=-4,
+                            error=f"本次操作需要用户审批。请先在 {field} 中用自然语言说明："
+                                  "对什么目标做什么操作、为什么需要，以及可能影响；只写函数名不够。")
                     transition("awaiting_approval")
                 await self.policy.ensure_tool_allowed(
                     spec, action=action)
             except PolicyViolation as exc:
                 self.audit.log("tool.denied", "registry", {"tool": name, "reason": str(exc)})
-                return ToolResult(tool=name, ok=False, error=str(exc), returncode=-3)
+                # 平台拦截与目标防御同形不同因：明示语义，避免模型把审批/策略
+                # 拒绝当成目标 WAF 去改写绕过（换路线才是正解）
+                return ToolResult(tool=name, ok=False, returncode=-3,
+                                  error=f"平台策略拦截（非目标防御；请换路线或缩小动作，不要尝试绕过）：{exc}")
+        return None
+
+    async def _call(self, name: str, params: dict[str, Any], *,
+                    transition: Callable[[str], None], preauthorized: bool = False, **builtin_ctx) -> ToolResult:
+        """统一调用入口：工具权限与危险动作审批 → 执行/重试 → 结构化结果。"""
+        # 可复用调用已在查缓存前逐次授权；实际执行不能再次写同一调用的审批记录。
+        denied = None if preauthorized else await self._authorize(name, params, transition)
+        if denied is not None:
+            return denied
+        spec = self.get(name)
         attempts = 0
         last: ToolResult | None = None
         # 侵入性工具不自动重放，避免网络抖动把一次有副作用的调用变成两次。
         replay_safe = self._replay_safe(spec, params)
         retry_limit = self.max_retries if replay_safe else 0
-        transition("running")
         while attempts <= retry_limit:
+            broker = getattr(self, "questions", None)
+            scope = current_execution_scope.get()
+            if broker is not None and scope is not None:
+                await broker.wait_for_task(scope.task_id)
+            if self.pause_gate is not None:
+                await self.pause_gate.wait()
+            transition("running")
             attempts += 1
             if name in self._builtins:
-                last = await self._builtins[name](**params, **builtin_ctx)
+                # 普通工具数据由模型传入；保留运行身份只能由调用上下文注入。
+                arguments = {**builtin_ctx, **params}
+                for reserved in ("_run_mode", "_lightweight_local", "_scan_control"):
+                    if reserved in builtin_ctx:
+                        arguments[reserved] = builtin_ctx[reserved]
+                    else:
+                        arguments.pop(reserved, None)
+                last = await self._builtins[name](**arguments)
             elif spec.kind in (ToolKind.CLI, ToolKind.DOCKER):
                 last = await self.executor.run(spec, params)
             elif spec.kind == ToolKind.MCP:
@@ -244,6 +381,9 @@ class AgentToolView:
             spec = self._registry._specs.get(name)
             if is_search_tool(name) or (spec is not None and spec.internet_search):
                 return False
+        mode = getattr(self._registry.policy, "mode", None)
+        if mode == RunMode.SRC and common_src_tool(name):
+            return True
         if self.profile.allows_tool(name):
             return True
         if self.profile.key in {AgentType.MASTER, AgentType.SECRETARY, AgentType.REPORT}:
@@ -274,4 +414,6 @@ class AgentToolView:
                 "reason": reason,
             })
             return ToolResult(tool=name, ok=False, error=reason, returncode=-5)
+        if self.profile.key == AgentType.VERIFIER:
+            builtin_ctx["_dedup_bypass"] = True
         return await self._registry.call(name, params, **builtin_ctx)

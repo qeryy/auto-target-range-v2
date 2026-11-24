@@ -10,7 +10,45 @@ import fnmatch
 from dataclasses import dataclass
 from typing import Literal
 
-from spiritscout.core.models import AgentType
+from spiritscout.core.models import AgentType, RunMode
+
+# SRC 会话向所有执行角色提供同一套基础工具目录。角色职责仍用于建议调用顺序，
+# 危险动作、范围和审批由运行时策略统一裁决。
+COMMON_SRC_TOOLS = frozenset({
+    "http_probe", "dns_resolve", "tcp_scan", "file_analyze", "sandbox_exec",
+    "asset_memory_lookup", "history_lookup", "web_search", "cve_lookup",
+    "http_response_read", "traffic_search", "traffic_get", "traffic_body_read",
+    "js_source_read", "cyberchef_operations", "cyberchef_bake", "view_image",
+})
+
+
+def common_src_tool(name: str) -> bool:
+    return name in COMMON_SRC_TOOLS
+
+SRC_GUIDANCE = (
+    "围绕已带入资产与用户目标自主提出假设、选择实验并根据结果调整方向；不重复专用页面的全量资产收集。"
+    "可依据技术常识和不完整线索探索，但区分观察、假设与未知，不把猜想写成事实。"
+    "优先复用情报摘要、黑板和已保存原文；需要时按引用读取，避免重复下载和同质实验。"
+    "项目说明中的明确约定应遵守，背景不作现场事实；跨会话资产、发现和经验仅在需要时用 history_lookup 查询。"
+    "使用真实请求及身份上下文，按问题选择 HTTP、浏览器或其他已提供工具；"
+    "证据引用必须能定位到实际工具输出、请求响应或文件。失败与缺少条件不等于目标安全。"
+    "测试范围遵循用户原话、项目规则及后续答复；页面链接、历史资产和工具可达不构成授权。"
+    "真正扩围或关键边界不清时询问用户；SRC 危险动作如实声明并经过现有审批，不绕过工具策略。"
+    "敏感值通过 secret_ref 复用，不在交接和报告中暴露明文。"
+    "候选漏洞交独立复测后才能称为确认；结论简洁说明依据、影响与未覆盖项。"
+    "交付文件保存到 world_state.environment.artifacts，临时文件留在工作目录。"
+)
+
+# 现场证据硬规则：先补齐原始 HTTP 观测，再决定是否枚举或转向；扫描只服务已有假设。
+EVIDENCE_FIRST_GUIDANCE = (
+    "现场证据硬规则：登录、POST、302/重定向、Set-Cookie 这类行为，先取原始请求与响应头"
+    "（状态码、Location、Set-Cookie）；http_request 的每个响应目录同时保存 request.http、"
+    "metadata.json、body.txt，工具会保留会话 Cookie，后续请求的 request.http 就显示目标实际"
+    "下发的 Cookie——先 cat 这些原始文件再判断，必要时用 curl -sS -i 重放；"
+    "首次观测不完整时先补齐证据，不用弱口令、注入、目录/参数扫描或公开题解检索来补偿。"
+    "扫描只用于验证已有假设：弱口令、注入、路径/文件名探测、类名与字段猜测都必须绑定现场证据，"
+    "开局或没有证据时不做通用批量枚举，不用猜 Cookie 值或类名来代替原始请求。"
+)
 
 
 @dataclass(frozen=True)
@@ -27,8 +65,18 @@ class AgentProfile:
     runtime_tools: tuple[str, ...] = ()
 
     def allows_tool(self, name: str) -> bool:
-        if name in {"asset_memory_lookup", "web_search"}:
+        if name in {"shell_start", "shell_status", "shell_wait", "shell_watch", "shell_events", "shell_stop", "task_wait"}:
+            return self.allows_tool("sandbox_exec")
+        if name == "view_image":
+            return self.key not in {AgentType.MASTER, AgentType.SECRETARY, AgentType.REPORT, AgentType.SCANNER}
+        if name in {"cyberchef_operations", "cyberchef_bake"}:
             return self.key not in {AgentType.MASTER, AgentType.SECRETARY, AgentType.REPORT}
+        if name in {"http_response_read", "traffic_search", "traffic_get", "traffic_body_read", 'js_source_read'}:
+            return self.allows_tool("http_probe")
+        if name in {"asset_memory_lookup", "web_search", "cve_lookup"}:
+            return self.key not in {AgentType.MASTER, AgentType.SECRETARY, AgentType.REPORT}
+        if name == "history_lookup":
+            return self.key not in {AgentType.SECRETARY, AgentType.REPORT}
         return any(fnmatch.fnmatchcase(name, pattern)
                    for pattern in self.runtime_tools)
 
@@ -47,13 +95,17 @@ class AgentProfile:
 
 
 PROFILES: tuple[AgentProfile, ...] = (
+    AgentProfile(AgentType.JS_REVERSE, '析微', 'JavaScript 静态逆向、接口线索与敏感常量分析',
+        ('src',), 'available', True, '以脚本实证交接假设，敏感常量用 secret_ref 复用。',
+        ('读取授权脚本', '分析接口与配置', '发布 JS_INTEL'),
+        ('授权内脚本读取', 'JS_INTEL', '会话秘密引用'), ('http_probe',)),
     AgentProfile(
         AgentType.VERIFIER, "鉴真", "独立危害复测：依据用户规则排除误报，确认实际影响后收录",
         ("src", "ctf", "competition"), "available", True,
         "不沿用发现者的结论。基于用户原文和独立请求区分实际危害、静态回显、权限控制与证据不足。",
         ("读取候选与用户规则", "独立复测并保留对照", "核对实际危害与规则", "确认、拒收或待补证"),
         ("HTTP 对照复测", "按需接入的 MCP", "询问用户", "独立证据链"),
-        ("http_probe",),
+        ("http_probe", "metasploit_scan", "mcp__playwright__*", "mcp__yakit__*"),
     ),
     AgentProfile(
         AgentType.SECRETARY, "秘书", "只读参谋：审视证据、提示遗漏与重复工作，由灵枢决定采纳",
@@ -65,34 +117,41 @@ PROFILES: tuple[AgentProfile, ...] = (
     AgentProfile(
         AgentType.MASTER, "灵枢", "安全测试负责人：界定目标、编排证据驱动的任务图并终审结论",
         ("src", "ctf", "competition"), "available", True,
-        "像负责任的渗透测试组长：先弄清业务和证据覆盖，再提假设和分工，不用漏洞名称代替分析。",
+        "像负责任的渗透测试负责人：先建立目标模型和证据缺口，再提出可证伪假设并选择最省成本的分工。",
         ("确认授权与业务目标", "检查业务上下文覆盖缺口", "按证据分派专项验证", "复现、评估影响并收敛"),
         ("黑板态势", "DAG 调度", "风险审批", "证据终审"),
     ),
     AgentProfile(
         AgentType.BUSINESS_CONTEXT, "知行", "业务体验分析：真实走访业务流程、观测接口交易并建模角色/对象/状态",
         ("src", "competition"), "available", True,
-        "先当真实用户，后当安全人员。只把实际看到、实际发生的内容写成事实；"
-        "证据不足就进未知，不猜角色、权限或隐藏接口。",
+        "先当真实用户，后当安全人员；只把实际观察到的内容写成事实，证据不足就记为未知。",
         ("访问入口并阅读功能语义", "以用户动线走访核心流程", "记录观测到的接口与交易", "分离事实、假设与未知"),
-        ("真实浏览器走访（渲染后页面与网络请求）", "HTTP 只读探测", "请求记录解析", "接口/交易登记", "业务上下文黑板"),
+        ("HTTP 只读探测", "按需浏览器交互（动态渲染、登录态与网络请求）", "请求记录解析", "接口/交易登记", "业务上下文黑板"),
         ("http_probe", "mcp__playwright__*", "record_endpoint"),
     ),
     AgentProfile(
         AgentType.RECON, "斥候", "证据导向的攻击面测绘：指纹、导航、表单、公开文档与明确授权服务",
-        ("src", "competition"), "available", True,
-        "像侦察员而非字典扫描器：基于首页、指纹、robots 和业务上下文逐步扩展。",
+        ("competition",), "available", True,
+        "发现与理解攻击面；结合任务、现场线索和技术常识选择有价值的探测，区分猜想与观察。",
         ("建立基线", "提取真实链接与表单", "根据指纹补充最小化探测", "记录资产和可交接线索"),
         ("HTTP 只读探测", "DNS 解析", "robots.txt", "指纹分析"),
         ("http_probe", "dns_resolve"),
     ),
     AgentProfile(
+        AgentType.SCANNER, "探微", "按主控派遣验证目标，结果写入黑板供专项角色核实",
+        ("src", "ctf", "competition"), "available", True,
+        "依据用户授权、规则和现场选择目标与模板；命中是待验证线索，不自动扩围。",
+        ("理解目标与规则", "按需选择扫描", "保存原始证据", "共享线索"),
+        ("HTTP 基线与证据验证", "Nuclei", "HTTP 探测", "扫描原始输出"),
+        ("nuclei_scan", "metasploit_scan", "http_probe", "sandbox_exec"),
+    ),
+    AgentProfile(
         AgentType.WEB_VULN, "破壁", "Web 安全测试：从已观测业务端点和参数中构造最小对照实验",
         ("src", "competition"), "available", True,
-        "把每个漏洞当成需要证伪的假设：先基线，再单变量测试，最后独立复现和说明业务影响。",
+        "自主发现并检验安全假设，依据漏洞性质选择实验，保留真实请求和支持、反驳证据。",
         ("读取业务上下文", "选择有证据的入口与参数", "基线/控制组/变异组对比", "交给独立复核（鉴真）"),
         ("HTTP 对照探测", "请求记录端点", "Yakit MCP（如已接入）", "漏洞证据链"),
-        ("http_probe", "mcp__yakit__*"),
+        ("http_probe", "mcp__yakit__*", "mcp__playwright__*"),
     ),
     AgentProfile(
         AgentType.CTF_WEB, "蛛丝", "CTF Web：先完整使用题目网站，再从页面和流量证据推导解题路径",
@@ -100,17 +159,15 @@ PROFILES: tuple[AgentProfile, ...] = (
         "先理解题目应用怎么用，不从预设考点清单开始猜。",
         ("体验正常功能", "记录请求/响应与状态", "根据异常提假设", "用最少步骤验证 Flag"),
         ("HTTP 请求", "本地沙箱", "附件分析", "知识库", "Yakit MCP"),
-        ("http_probe", "sandbox_exec", "local_tool", "file_analyze", "mcp__yakit__*",
-           "mcp__local-files__*"),
+        ("http_probe", "sandbox_exec", "file_analyze", "mcp__yakit__*"),
     ),
     AgentProfile(
         AgentType.CTF_PWN, "破壳", "CTF Pwn：二进制保护、攻击面和利用原语的证据驱动分析",
         ("ctf", "competition"), "available", True,
-        "先做文件识别、保护与危险函数审计，再按实际原语构建利用，不套通用 payload。",
+        "先做文件识别、保护与危险函数审计，再按实际原语构建最小利用，不套通用 payload。",
         ("识别架构与保护", "定位可控输入和崩溃证据", "构建最小 PoC", "稳定化并提取 Flag"),
         ("本地沙箱", "checksec", "危险函数", "IDA MCP", "pwntools"),
-        ("http_probe", "sandbox_exec", "local_tool", "file_analyze", "mcp__ida__*",
-           "mcp__local-files__*"),
+        ("http_probe", "sandbox_exec", "file_analyze", "mcp__ida__*"),
     ),
     AgentProfile(
         AgentType.CTF_REVERSE, "回溯", "CTF 逆向：从文件结构、字符串、输入校验和控制流还原程序语义",
@@ -118,26 +175,23 @@ PROFILES: tuple[AgentProfile, ...] = (
         "以程序真实行为为准；静态线索和动态输出相互验证。",
         ("识别格式与架构", "提取关键字符串/函数", "还原校验算法", "脚本化验证结果"),
         ("附件分析", "本地沙箱", "算法线索", "IDA MCP"),
-        ("http_probe", "sandbox_exec", "local_tool", "file_analyze", "mcp__ida__*",
-           "mcp__local-files__*"),
+        ("http_probe", "sandbox_exec", "file_analyze", "mcp__ida__*"),
     ),
     AgentProfile(
         AgentType.CTF_CRYPTO, "译码", "CTF 密码：识别编码层、算法结构、密钥关系与可验证数学弱点",
         ("ctf", "competition"), "available", True,
-        "先区分编码、加密和压缩，再根据题面参数选择攻击，不无依据枚举算法。",
+        "结合实际数据结构、题面参数和数学关系自主分析编码、加密与压缩问题。",
         ("完整读题与参数", "识别数据层级", "推导可验证弱点", "用代码重现明文/Flag"),
         ("递归解码", "古典密码", "Python 沙箱", "z3/sympy/pycryptodome"),
-        ("http_probe", "sandbox_exec", "local_tool", "file_analyze",
-           "mcp__local-files__*"),
+        ("http_probe", "sandbox_exec", "file_analyze"),
     ),
     AgentProfile(
         AgentType.CTF_MISC, "拾遗", "CTF Misc：文件、流量、图像、音频和多层容器的取证式分析",
         ("ctf", "competition"), "available", True,
-        "保留原始文件，先识别格式和层次，每次解包/解码都记录输入与产物。",
+        "文件、流量、图像与容器均可作为分析材料，原件与派生产物保持可追溯。",
         ("文件类型与元数据", "字符串/嵌套文件", "流量与隐写分析", "产物交叉验证"),
         ("附件分析", "深层字符串", "本地沙箱", "scapy/binwalk/PIL"),
-        ("http_probe", "sandbox_exec", "local_tool", "file_analyze",
-           "mcp__local-files__*"),
+        ("http_probe", "sandbox_exec", "file_analyze"),
     ),
     AgentProfile(
         AgentType.REPORT, "书记", "只读报告编纂：仅收录通过核验的结论并保留复现链",
@@ -148,27 +202,26 @@ PROFILES: tuple[AgentProfile, ...] = (
     ),
     AgentProfile(
         AgentType.PORT_SCAN, "听风", "端口与服务测绘：授权主机上的 TCP 存活面与服务指纹",
-        ("src", "competition"), "available", True,
-        "像测绘员而非爆破器：先解析授权主机，再按端口清单做连接级探测，"
-        "每个开放端口给出服务证据（横幅/HTTP 指纹）。",
-        ("解析授权主机", "常用端口连接探测", "服务横幅与 HTTP 指纹", "资产归并"),
+        ("competition",), "available", True,
+        "在授权范围内发现和辨识服务；按任务目标、已有线索或合理探索选择端口，无需预先证明服务存在。",
+        ("读取现场资产与指纹", "形成有依据的端口假设", "服务横幅与 HTTP 指纹", "资产归并"),
         ("TCP 端口扫描", "HTTP 探测", "DNS 解析"),
         ("tcp_scan", "http_probe", "dns_resolve"),
     ),
     AgentProfile(
-        AgentType.HOST_VULN, "贯甲", "主机与服务审计：对已发现服务做暴露面与弱配置核验",
+        AgentType.HOST_VULN, "贯甲", "主机与服务调查：按需辨识端口与协议，并核验暴露面与弱配置",
         ("src", "competition"), "available", True,
-        "对每个已观测服务给出核验结论：管理面/调试面暴露有内容证据才算命中，"
+        "复用资产文件和已有服务证据；按任务价值与现场缺口选择必要的端口、协议调查，避免重复全量测绘。"
+        "管理面/调试面暴露有内容证据才算命中，"
         "服务指纹与响应头弱项写成线索。",
         ("读取服务清单", "管理面/调试面暴露核验", "服务指纹与响应头弱项", "候选漏洞提交"),
         ("HTTP 探测", "TCP 端口扫描", "暴露面核验"),
         ("http_probe", "tcp_scan", "dns_resolve"),
     ),
     AgentProfile(
-        AgentType.POST_EXPLOIT, "深耕", "凭据线索与横向测绘：汇总凭据证据、测绘授权范围内的相邻服务",
+        AgentType.POST_EXPLOIT, "深耕", "授权内的凭据线索分析、访问关系验证与相邻服务测绘",
         ("src", "competition"), "available", True,
-        "只做只读测绘与线索汇总：凭据类证据按位置与类型登记（值打码），"
-        "横向仅限授权范围内主机；不做任何破坏性动作。",
+        "结合已有身份、秘密引用与现场线索验证访问和信任关系；敏感值打码，范围与动作审批仍生效。",
         ("凭据线索汇总（值打码）", "授权内相邻主机测绘", "同服务横向比对", "拓扑交付"),
         ("HTTP 探测", "TCP 端口扫描", "黑板只读"),
         ("http_probe", "tcp_scan", "dns_resolve"),
@@ -184,21 +237,33 @@ def get_profile(agent: AgentType | str) -> AgentProfile:
     return PROFILE_BY_TYPE[key]
 
 
-def agent_system_prompt(agent: AgentType | str, *, allow_search: bool = True) -> str:
-    common, role = agent_prompt_parts(agent, allow_search=allow_search)
+def agent_system_prompt(agent: AgentType | str, *, allow_search: bool = True,
+                        mode: RunMode | str | None = None) -> str:
+    common, role = agent_prompt_parts(agent, allow_search=allow_search, mode=mode)
     return role + common
 
 
-def agent_prompt_parts(agent: AgentType | str, *, allow_search: bool = True) -> tuple[str, str]:
-    """返回通用契约和角色说明；旧入口仍按原顺序拼接，已有提示词不变。"""
+def agent_prompt_parts(agent: AgentType | str, *, allow_search: bool = True,
+                       mode: RunMode | str | None = None) -> tuple[str, str]:
+    """返回通用执行契约和角色职责，不把展示用 workflow 注入为解题流程。"""
     profile = get_profile(agent)
-    workflow = " → ".join(profile.workflow)
     tools = "、".join(profile.display_tools)
     probe = (
         "环境能力：工具面只表职责方向；实际命令与库以执行为准，需要确认时"
         "用 `command -v`、`--version` 或 `python -c 'import ...'` 探测，"
         "不要凭记忆假设。\n"
     ) if profile.allows_tool("sandbox_exec") else ""
+    # 能力偏好事实（同 CyberChef 句式）：说明工具在手时的优选路径，
+    # 不规定解题流程——采纳与否仍由模型按现场判断
+    ida_note = (
+        "反编译与函数级分析优先 IDA MCP：先 mcp_search 检索工具与参数，"
+        "再用 mcp_call 加载附件、读伪代码和交叉引用；命令行反汇编用于"
+        "快速补位与交叉验证。\n"
+    ) if any(p.startswith("mcp__ida__") for p in profile.runtime_tools) else ""
+    dbg_note = (
+        "动态调试直接用 pwndbg 命令（内置插件的 gdb，参数用法同 gdb）。\n"
+    ) if profile.key == AgentType.CTF_PWN else ""
+    from spiritscout.tools.cve import GUIDANCE as CVE_GUIDANCE
     from spiritscout.tools.web_search import SEARCH_GUIDANCE
 
     search_note = ("智能体模式禁止公开网页搜索，不使用 Exa 或其他外部搜索服务；只使用赛题现场和已有资料。"
@@ -208,42 +273,43 @@ def agent_prompt_parts(agent: AgentType | str, *, allow_search: bool = True) -> 
     role = (
         f"你是灵枢（SpiritScout）智能体集群的「{profile.name}」（{profile.key.value}）。"
         f"职责：{profile.duty}。\n"
-        f"专业思维：{profile.mindset}\n"
-        f"标准流程：{workflow}。\n"
+        f"职责视角：{profile.mindset}\n"
         f"可用工具面：{tools}。只使用当前实际提供的工具，不声称已执行"
         f"未调用的工具。\n"
-        f"{probe}{search_note}\n"
+        f"{probe}{ida_note}{dbg_note}{search_note}\n"
+        + (CVE_GUIDANCE if profile.allows_tool("cve_lookup") else
+           "已观测产品、版本或 CVE 出现情报缺口时，派专项角色使用 cve_lookup；先读本地库，比赛模式只读本地。"
+           if profile.key == AgentType.MASTER else "")
     )
-    common = (
-        "输出只包含当前阶段需要的决策和证据引用；不复述已给出的任务、授权、"
-        "业务背景或整段工具返回。简单参数选择和无异常响应判断简洁完成，"
-        "遇到矛盾或高价值证据再深入推理；无新事实时明确指出缺口，避免重复生成相同计划。"
-        "必须把输出分成已观测事实、待验证假设和信息缺口；"
-        "没有请求/响应、文件或工具结果支撑的内容不得写成事实。"
+    common = SRC_GUIDANCE if mode == RunMode.SRC else (
+        '优先读取 world_state.intelligence_summary：其中统一汇总扫描资产、JS 静态接口、技术指纹、'
+        '失败证据和漏洞候选；先按 blackboard_ref 定位，再用 blackboard_read 读取必要原文，'
+        '不要在已有负证据上重复空转。SRC 的脚本、静态接口和 source map 统一登记在资产图；'
+        'asset_intelligence 仅保留旧调用方所需的 JS 子集。'
+        '敏感常量只以 secret_ref 交接；HTTP 工具可通过 secret_headers 按 Header 名注入秘密引用，'
+        '不要索取、复制或猜测秘密明文，引用默认未验证。需要脚本分析时可派遣 JS-REVERSE 战术。'
+        "工具选择以完成当前问题的最小成本为准：网页正文、源码和接口响应优先 HTTP 工具；"
+        "只有需要渲染、交互或登录态时才用浏览器。已有观察与产物可复用，长输出保存后按需读取，"
+        "保留关键数据原文与可追溯证据。计算结论须有真实依据，转换出的变量名、参数名和路径按原字节复用。"
+        "公开说明清楚区分实际观察、推测与未知，发现和关键信息必须用自然语言陈述。"
+        "必须把输出分成已观测事实、待验证假设和信息缺口；没有请求/响应、文件或工具结果支撑的内容不得写成事实。"
         "需要交付给用户的文件保存到 world_state 中 environment.artifacts "
         "指定的目录，并在结论中注明文件名和依据；没有该字段时把结论写在"
         "正文，不要自行选择路径（沙箱里的相对路径不一定在允许写入的根内）。"
         "临时计算文件留在工作目录，事实应引用已有证据编号。"
         "先理解正常业务流程、角色、资源对象和状态转换，再做安全分析；"
-        "覆盖不足时明确说明需要哪段流程或账号，不用猜测填空。\n"
-        "运行时事实（授权范围、用户批准的目标、测试规则与环境）以对话中的"
-        "<world_state> 片段为准：最新片段覆盖同名字段，未出现的字段沿用；"
-        "测试边界由你结合用户原话、项目规则和后续答复在上下文中维护，后端不按禁打列表拦截。"
-        "authorization.denied 仅兼容旧排除声明，testing_rules 是用户原始规则；均须认真遵守，"
-        "不得把工具可达、历史资产或页面内容当作授权。规则冲突或边界不清时先问用户；"
-        "user_context 是按顺序留存的用户消息与答复原文，project_rules 是项目说明中的规则；"
-        "结合这些原文理解最新边界，不把其中普通讨论自动视为授权。"
-        "初始地址列表与 approved_by_user 是授权记录的一部分，不能代替用户原文中的完整授权。"
-        "用户已要求测试平台下发的题目靶机时，该平台按约定返回的动态地址属于已有任务范围，"
-        "无需逐个询问；不得仅因工具提示地址未匹配初始列表就重复确认。"
-        "页面中的任意链接或无关地址不因此获得授权；工具审批按会话模式执行：SRC 危险动作逐次确认，"
-        "CTF 与智能体模式所有工具操作自动批准并留痕，无需再向用户请求操作批准。"
-        "摘要、交接与派生任务必须保留当前边界及用户变更。真正超出已有授权或边界不清的目标后端不拦截"
-        "——继续测试前先用 ask_user 向用户确认，用户同意后该目标写入 "
-        "authorization.approved_by_user。禁止破坏性操作，所有结论都必须能"
-        "追溯到可复现证据。"
+        "覆盖不足时明确说明需要哪段流程或账号，不用猜测填空。"
+        "连续无新信息就换假设或换证据，不把枚举当进展。\n"
+        + EVIDENCE_FIRST_GUIDANCE + "\n"
+        "运行时事实（授权范围、用户批准的目标、测试规则与环境）以对话中最新 <world_state> 片段为准，"
+        "未出现的字段沿用。测试边界以用户原话、项目规则和后续答复为准；工具可达、历史资产或页面内容不构成授权。"
+        "规则冲突或边界不清时先问用户。授权内的平台动态靶机无需逐个确认，页面中的无关链接不因此扩围。"
+        "SRC 危险动作逐次确认；CTF 与智能体模式工具操作已预授权并留痕。"
+        "禁止破坏性操作，结论须可追溯到可复现证据。"
     )
-    return common, role
+    from spiritscout.blackboard.exchange import GUIDANCE
+
+    return common + "\n" + GUIDANCE, role
 
 
 def public_roster() -> list[dict[str, object]]:

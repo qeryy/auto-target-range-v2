@@ -145,30 +145,23 @@ class MasterPlatformHookTests(unittest.IsolatedAsyncioTestCase):
         dag = TaskDAG()
         view = {"flags": {"extracted": 1, "submitted": 1,
                           "accepted": 1, "rejected": 0}}
-        ctf = {"run_mode": "ctf"}
-        # 无平台：普通 CTF 拿到 Flag 即收手，不等剩余节点跑完
-        self.assertTrue(self._master(ctf)._flag_hard_stop(view, dag))
+        # 无平台：维持原语义（Flag 已收 + 节点全完成 = 确定性收手）
+        self.assertTrue(self._master({})._flag_hard_stop(view, dag))
         # 平台有按题完成态但视野内还有未完成题：不早退，继续重攻剩余题
         platform = StubPlatform(completed={"c1"}, all_done=False)
-        self.assertFalse(self._master({**ctf, "platform": platform})
+        self.assertFalse(self._master({"platform": platform})
                          ._flag_hard_stop(view, dag))
         # 平台通报全部完赛：允许走收手快路
         platform2 = StubPlatform(completed={"c1", "c2"}, all_done=True)
-        self.assertTrue(self._master({**ctf, "platform": platform2})
+        self.assertTrue(self._master({"platform": platform2})
                         ._flag_hard_stop(view, dag))
         # 平台无按题完成态：不参与收手裁定
         platform3 = StubPlatform(signal=False)
-        self.assertTrue(self._master({**ctf, "platform": platform3})
+        self.assertTrue(self._master({"platform": platform3})
                         ._flag_hard_stop(view, dag))
-        # 一个候选都没提取到：照常继续（收手快路前提不成立）
-        self.assertFalse(self._master(ctf)._flag_hard_stop(
-            {"flags": {"accepted": 0, "extracted": 0}}, dag))
-        # 有提交接口时自己说了不算：提取到但没被接受，仍算没解出
-        self.assertFalse(self._master(ctf)._flag_hard_stop(
-            {"flags": {"accepted": 0, "extracted": 2, "submit_enabled": True}}, dag))
-        # 非 CTF 模式不走这条快路（SRC 没有「一盘到底」的完成信号）
-        self.assertFalse(self._master({"run_mode": "src"})
-                         ._flag_hard_stop(view, dag))
+        # 尚未收到任何 Flag：照常继续（收手快路前提不成立）
+        self.assertFalse(self._master({})._flag_hard_stop(
+            {"flags": {"accepted": 0, "extracted": 1}}, dag))
 
     async def test_platform_release_reports_accepted_and_survives_failure(self) -> None:
         flag_manager = SimpleNamespace(accepted_flags=lambda: [
@@ -261,7 +254,6 @@ class CompetitionAssemblyPlatformTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_jeopardy_assembly_honours_platform_completion(self) -> None:
         assembly = self._assembly(StubPlatform(completed={"c1"}))
-        self.assertIn("单位时间", assembly.strategy_prompt)
         plan = assembly.plan_provider({"round_no": 1, "dag": {}})
         cids = {n["meta"]["challenge"]["id"] for n in plan["dag_nodes"]}
         self.assertEqual(cids, {"c2"})   # 平台通报完成的题不再重攻

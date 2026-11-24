@@ -8,14 +8,13 @@ import os
 import sqlite3
 import threading
 import uuid
-from contextlib import closing, suppress
+from contextlib import closing
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from spiritscout.core.sqlite_ro import ro_uri
 from spiritscout.gateway.cache import cache_summary
 
 
@@ -24,6 +23,21 @@ class UsageCall(BaseModel):
     tokens: int = Field(default=0, ge=0)
     cost_usd: float = Field(default=0, ge=0, allow_inf_nan=False)
     model: str = ""
+    model_key: str = ""
+    provider_ref: str = ""
+    api_format: str = ""
+    configured_context_window: int | None = Field(default=None, ge=0)
+    requested_reasoning_effort: str | None = None
+    sent_reasoning_effort: str | None = None
+    estimated_cost_usd: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+    usd_pricing_status: str = ""
+    usd_rate_snapshot: dict[str, float | None] = Field(default_factory=dict)
+    billing_scheme: str = 'manual'
+    billing_plan: str = ''
+    pricing_snapshot: dict[str, Any] = Field(default_factory=dict)
+    pricing_status: str = ''
+    estimated_plan_credits_min: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+    estimated_plan_credits_max: float | None = Field(default=None, ge=0, allow_inf_nan=False)
     mode: str = ""
     call_id: str = ""
     runtime_version: str = ""
@@ -32,6 +46,8 @@ class UsageCall(BaseModel):
     unreported_attempts: int | None = Field(default=None, ge=0)
     reported_attempt_input_tokens: int | None = Field(default=None, ge=0)
     reported_attempt_output_tokens: int | None = Field(default=None, ge=0)
+    usage_status: str = "unknown"
+    call_status: str = ""
     input_tokens: int = Field(default=0, ge=0)
     output_tokens: int = Field(default=0, ge=0)
     cached_input_tokens: int | None = Field(default=None, ge=0)
@@ -43,6 +59,7 @@ class UsageCall(BaseModel):
     reused_prefix_bytes: int | None = Field(default=None, ge=0)
     new_suffix_bytes: int | None = Field(default=None, ge=0)
     context_parts: dict[str, int] = Field(default_factory=dict)
+    cache_diagnostics: dict[str, Any] = Field(default_factory=dict)
     cache_scope: str = ""
     task_id: str = ""
     route_id: str = ""
@@ -86,27 +103,27 @@ class UsageLedger:
             if not conn.execute("SELECT 1 FROM baseline WHERE id=1").fetchone():
                 baseline: dict[str, Any] = {"used_tokens": 0}
                 if legacy and legacy.is_file():
-                    with suppress(OSError, ValueError):
+                    try:
                         baseline = UsageSnapshot.model_validate_json(legacy.read_bytes()).model_dump()
+                    except (OSError, ValueError):
+                        pass
                 conn.execute("INSERT OR IGNORE INTO baseline VALUES(1,?)", (json.dumps(baseline),))
             conn.commit()
         os.chmod(self.path, 0o600)
 
-    def append(self, entry: dict[str, Any]) -> bool:
-        """记一笔；返回是否真的新增（同 call_id 重复写返回 False，用于并库计数）。"""
+    def append(self, entry: dict[str, Any]) -> None:
         row = UsageCall.model_validate({**entry, "call_id": entry.get("call_id") or uuid.uuid4().hex}).model_dump()
         with closing(sqlite3.connect(self.path, timeout=10)) as conn, conn:
             conn.execute("PRAGMA synchronous=FULL")
-            cur = conn.execute("INSERT OR IGNORE INTO calls(call_id,data) VALUES(?,?)",
-                               (row["call_id"], json.dumps(row, ensure_ascii=False, separators=(",", ":"))))
-        return cur.rowcount > 0
+            conn.execute("INSERT OR IGNORE INTO calls(call_id,data) VALUES(?,?)",
+                         (row["call_id"], json.dumps(row, ensure_ascii=False, separators=(",", ":"))))
 
     def read(self) -> dict[str, Any]:
         return read_usage(self.path.with_suffix(".json"), ledger=self.path) or {"used_tokens": 0}
 
 
 def _load_ledger(path: Path) -> dict[str, Any]:
-    with closing(sqlite3.connect(ro_uri(path), uri=True)) as conn:
+    with closing(sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)) as conn:
         conn.execute("BEGIN")
         base = UsageSnapshot.model_validate_json(conn.execute("SELECT data FROM baseline WHERE id=1").fetchone()[0]).model_dump()
         rows = [UsageCall.model_validate_json(row[0]).model_dump()
@@ -124,24 +141,12 @@ def _load_ledger(path: Path) -> dict[str, Any]:
     return base
 
 
-@lru_cache(maxsize=512)
-def _cache_key(path: Path) -> str:
-    """账本缓存键：真实路径字符串。
-
-    ``Path.resolve()`` 在 Windows 上要一次系统调用；同一个账本会被反复读，
-    这里按原始路径记住归一化结果（工作区内路径不会变）。
-    """
-    try:
-        return str(path.resolve())
-    except OSError:                     # 还没建出来的账本按原样当键
-        return str(path)
-
-
 class _FileCache:
     def __init__(self) -> None:
         self.lock = threading.Lock()
         self.version: tuple[Any, ...] | None = None
         self.snapshot: dict[str, Any] | None = None
+        self.summary: dict[str, Any] | None = None
 
 
 @lru_cache(maxsize=256)
@@ -150,42 +155,40 @@ def _file_cache(path: str, ledger: bool) -> _FileCache:
     return _FileCache()
 
 
-def _cached_read(path: str, ledger: bool, version: tuple[Any, ...]) -> dict[str, Any]:
+def _cached_read(path: str, ledger: bool, version: tuple[Any, ...], *,
+                 include_calls: bool = True) -> dict[str, Any]:
     cache = _file_cache(path, ledger)
     with cache.lock:
         if cache.version != version or cache.snapshot is None:
             snapshot = (_load_ledger(Path(path)) if ledger else
                         UsageSnapshot.model_validate_json(Path(path).read_bytes()).model_dump())
             snapshot["cache"] = cache_summary(snapshot["call_series"])
+            cache.summary = {key: value for key, value in snapshot.items() if key != "call_series"}
             cache.snapshot, cache.version = snapshot, version
-        return cache.snapshot
+        return cache.snapshot if include_calls else cache.summary
 
 
 def read_usage(legacy: Path, *, ledger: Path | None = None,
-               readonly: bool = False) -> dict[str, Any] | None:
-    """原子替换、WAL 追加和同长度改写都会失效；默认不让调用方修改缓存本体。
-
-    ``readonly=True`` 直接把缓存本体交出去，**调用方不得改动返回值**（也不要嵌进
-    会被后续修改的结构里）。深拷贝一份上百笔的调用序列要 8 ms 左右，而统计页、
-    仪表盘、状态面这些地方只是读一遍就序列化——纯读的地方传 ``readonly=True``，
-    轮询时的开销从毫秒级掉到微秒级。会长期持有或改写的调用（如把结果存进会话
-    摘要）必须用默认的拷贝语义。
-    """
+               include_calls: bool = True,
+               call_fields: frozenset[str] | None = None) -> dict[str, Any] | None:
+    """返回独立快照；列表可省略明细，统计页可只复制所需的调用字段。"""
     ledger = ledger or legacy.with_suffix(".db")
-    # 先看新式账本，没有再退回旧 JSON：每次只 stat 该 stat 的那个文件，
-    # 附加的 -wal 也只在账本存在时才去量（轮询时的系统调用能省一半）
-    version = file_version(ledger)
-    if version:
-        version = (version, file_version(Path(str(ledger) + "-wal")))
-        path, is_ledger = ledger, True
+    if ledger.is_file():
+        path = ledger
+        version = (file_version(path), file_version(Path(str(path) + "-wal")))
+        is_ledger = True
+    elif legacy.is_file():
+        path, version, is_ledger = legacy, (file_version(legacy),), False
     else:
-        legacy_version = file_version(legacy)
-        if not legacy_version:
-            return None
-        path, version, is_ledger = legacy, (legacy_version,), False
+        return None
     try:
-        snapshot = _cached_read(_cache_key(path), is_ledger, version)
-        return snapshot if readonly else copy.deepcopy(snapshot)
+        snapshot = _cached_read(str(path.resolve()), is_ledger, version, include_calls=include_calls)
+        if include_calls and call_fields is not None:
+            result = copy.deepcopy({key: value for key, value in snapshot.items() if key != "call_series"})
+            result["call_series"] = [copy.deepcopy({key: value for key, value in row.items() if key in call_fields})
+                                     for row in snapshot.get("call_series", [])]
+            return result
+        return copy.deepcopy(snapshot)
     except (OSError, ValueError, sqlite3.Error, TypeError):
         return None
 
@@ -200,61 +203,3 @@ def bind_usage(gateway: Any, legacy: Path) -> UsageLedger:
             gateway.audit.log("usage.persist_failed", "gateway", {"error": str(exc)[:300]})
     gateway.budget.on_call = record
     return ledger
-
-
-def shared_ledger_path(cfg: Any) -> Path:
-    """用量账本落点：**基础工作区**，不是会话工作区。
-
-    会话工作区（``sessions/<id>/``）随会话归档与清理一起消失；账本落在里面，
-    「用量」页读的共享库就永远是 0——题型跑完、token 花掉，页面上什么都没有。
-    ``_session_cfg`` 已经把基础工作区写在 ``workspace.guard_root``（它本来就要
-    指控制面根，好让沙箱连 vault、兄弟会话、审计一起遮），这里直接用它；
-    单机 CLI 没有这层重定向时退回 ``workspace.root``。
-    """
-    ws = getattr(cfg, "workspace", None)
-    base = str(getattr(ws, "guard_root", "") or "").strip()
-    return Path(base or str(getattr(ws, "root", "") or ".")) / "usage.json"
-
-
-def absorb_session_ledgers(target: str | Path, sessions_dir: str | Path) -> int:
-    """把会话目录里遗留的账本并进共享库，返回并入笔数。
-
-    0.36.5 及以前 ``runtime`` 把账本绑在会话工作区，于是解题的调用记在
-    ``sessions/<id>/usage.db``，而页面读共享库——同一批 token 两处都看不到；
-    会话被清理后文件也没了。这里做一次性并库，``append`` 按 ``call_id``
-    去重（``INSERT OR IGNORE``），重复执行无副作用。
-
-    ``target`` 是**旧式 json 路径**（和 ``bind_usage`` 同口径），真正的库是
-    同名 ``.db``。0.36.6 曾直接拿 ``target`` 当库路径，于是在工作区里多出一个
-    名叫 ``usage.json`` 的 SQLite 文件——读取侧优先认 ``.db``，那两个库谁都
-    看不到对方，合并结果等于白做。
-    """
-    shared = UsageLedger(Path(target).with_suffix(".db"))
-    source_dir = Path(sessions_dir)
-    merged = 0
-    if not source_dir.is_dir():
-        return 0
-    for legacy in sorted(source_dir.glob("*/usage.db")):
-        if not legacy.is_file() or legacy.resolve() == shared.path.resolve():
-            continue
-        for row in _read_ledger_rows(legacy):
-            if shared.append(row):
-                merged += 1
-    return merged
-
-
-def _read_ledger_rows(path: Path) -> list[dict[str, Any]]:
-    """读一本旧账本里的逐笔记录；读不动就当没有（不拖累启动）。"""
-    rows: list[dict[str, Any]] = []
-    try:
-        with closing(sqlite3.connect(ro_uri(path), uri=True)) as conn:
-            for (data,) in conn.execute("SELECT data FROM calls ORDER BY seq"):
-                try:
-                    entry = json.loads(data)
-                except (TypeError, ValueError):
-                    continue
-                if isinstance(entry, dict):
-                    rows.append(entry)
-    except (OSError, sqlite3.Error):
-        return []
-    return rows

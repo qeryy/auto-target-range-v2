@@ -6,7 +6,7 @@ const path = require("node:path");
 const vm = require("node:vm");
 
 const source = fs.readFileSync(path.join(__dirname, "../src/spiritscout/web/static/js/views.js"), "utf8");
-const renderer = source.slice(source.indexOf("let dashRenderVersion"), source.indexOf("function renderSessionHead()"));
+const renderer = source.slice(source.indexOf("const fmtK ="), source.indexOf("function renderSessionHead()"));
 const nodes=new Map();
 const node=selector=>{
   if(!nodes.has(selector)) nodes.set(selector,{innerHTML:"",textContent:"",hidden:false,dataset:{},querySelector:node,querySelectorAll:()=>[]});
@@ -19,16 +19,21 @@ const metrics = {
   total_tokens: 123, total_cost: 0.25, running: 0,
   daily: { "2026-10-15": 123 }, per_model: { "audit-model": 123 },
 };
-const context = vm.createContext({
+const context = vm.createContext(require('./helpers/i18n').context({
   S: state, $: () => box, api: async () => metrics,
   esc: value => String(value), toast: () => {}, MODE_CN:{}, STATUS_CN:{},
-});
-vm.runInContext(fs.readFileSync(path.join(__dirname,"../src/spiritscout/web/static/js/count.js"),"utf8"),context);
+}));
+const coreSource=fs.readFileSync(require("node:path").join(__dirname,"../src/spiritscout/web/static/js/core.js"),"utf8");
+context.atob=atob;context.TextDecoder=TextDecoder;context.Uint8Array=Uint8Array;
+vm.runInContext(coreSource.slice(coreSource.indexOf("function modelDisplayName("),coreSource.indexOf("async function api(")),context);
 vm.runInContext(fs.readFileSync(path.join(__dirname,"../src/spiritscout/web/static/js/dashboard.js"),"utf8"),context);
 vm.runInContext(renderer, context);
 
 (async () => {
-  await vm.runInContext("renderDash()", context);
+  const firstRender = vm.runInContext("renderDash()", context);
+  assert.match(box.innerHTML, /dash-console/, "请求返回前先显示页面结构");
+  assert.equal(node(".dash-updated").textContent, "正在读取…");
+  await firstRender;
   assert.match(html(), /audit-model/);
   assert.match(html(), /2026-10-15/);
   assert.match(html(), /\$0\.250/);
@@ -37,17 +42,17 @@ vm.runInContext(renderer, context);
   context.api = () => new Promise(resolve => pending.push(resolve));
   const older = vm.runInContext("renderDash()", context);
   const newer = vm.runInContext("renderDash()", context);
-  pending[1]({ ...metrics, per_model: { "latest-model": 456 } });
+  assert.equal(pending.length, 1, "同一时段的并发刷新共用一个请求");
+  pending[0]({ ...metrics, per_model: { "latest-model": 456 } });
   await newer;
   const latest = html();
-  pending[0]({ ...metrics, per_model: { "stale-model": 10 } });
   await older;
   assert.equal(html(), latest, "迟到的旧响应不能覆盖新统计");
   assert.match(latest, /latest-model/);
 
   const abandoned = vm.runInContext("renderDash()", context);
   state.view = "home";
-  pending[2](metrics);
+  pending[1](metrics);
   await abandoned;
   assert.equal(html(), latest, "离开页面后不再绘制旧请求");
   assert.equal(vm.runInContext("Dashboard.clock(1792944000)",context).includes("2026"),true);
@@ -59,6 +64,22 @@ vm.runInContext(renderer, context);
   context.api=async()=>metrics;
   await vm.runInContext("renderDash()",context);
   assert.equal(node("details").open,true,"统计刷新保留趋势明细展开状态");
+  // 模拟浏览器替换趋势 HTML 时销毁嵌套滚动容器，不能用同一个假节点掩盖归零。
+  const trend=node('.dash-trend');let trendHTML=trend.innerHTML;
+  Object.defineProperty(trend,'innerHTML',{get:()=>trendHTML,set:value=>{
+    trendHTML=value;nodes.delete('.dash-table-scroll');nodes.delete('.dash-chart-viewport');node('details').open=false;
+  }});
+  const table=node('.dash-table-scroll');table.scrollTop=137;table.scrollLeft=43;
+  node('.dash-chart-viewport').scrollLeft=56;
+  await vm.runInContext('renderDash()',context);
+  assert.equal(node('.dash-table-scroll'),table,'相同数据保留趋势 DOM');
+  context.api=async()=>({...metrics,daily:{'2026-10-15':124}});
+  await vm.runInContext('renderDash()',context);
+  assert.notEqual(node('.dash-table-scroll'),table,'趋势变化确实触发更新');
+  assert.equal(node('.dash-table-scroll').scrollTop,137);
+  assert.equal(node('.dash-table-scroll').scrollLeft,43);
+  assert.equal(node('.dash-chart-viewport').scrollLeft,56);
+  assert.equal(node('details').open,true,'数据变化保留展开状态');
   box.onchange({target:{dataset:{dashField:"sort"},value:"cost"}});
   context.sortRows=[
     {session_id:"low",selected:{cost:{cny_max:1}},recent_hour:{cost:{cny_max:99}}},
@@ -104,6 +125,13 @@ vm.runInContext(renderer, context);
   assert.equal(floating.style.left,"268px","提示围绕柱体居中");
   box.onpointerout(hover);
   assert.equal(floating.hidden,true,"离开柱体隐藏提示");
+  context.newMetrics={generated_at:1792944000,total_tokens:120,summary:{tokens:120,input_tokens:100,output_tokens:20,calls:2,sdk_attempts:3,usage_reported_calls:1,usage_incomplete_calls:1,unreported_attempts:1,cost:{},cache:{cached_input_tokens:60,uncached_input_tokens:20,hit_rate:.75}},sessions:[],alerts:[],findings:[],cache_windows:{},cache_groups:{model:[{name:"fixture",tokens:120,calls:2}]},trend:[]};
+  vm.runInContext("Dashboard.render($(null),newMetrics)",context);
+  assert.match(node(".dash-composition").innerHTML,/缓存未测量输入/);
+  assert.match(node(".dash-composition").innerHTML,/缓存未测量输入 20 Token/);
+  assert.match(node(".dash-models").innerHTML,/fixture/);
+  assert.match(node(".dash-overview").innerHTML,/3 次 SDK 请求/);
+  assert.match(node(".dash-health").innerHTML,/计量完整 1 \/ 2/);
   console.log("dashboard live metrics, Beijing clock, unknown values and response ordering: passed");
 })().catch(error => {
   console.error(error);

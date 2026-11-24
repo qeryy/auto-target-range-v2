@@ -1,179 +1,84 @@
-"""FastAPI 控制台：会话、配置、状态快照、SSE 和静态页面。
+"""FastAPI 控制台装配：认证、生命周期、会话控制和静态页面。
 
-启动请求由 launch.prepare_launch 校验，运行期测试边界由模型结合用户上下文维护。"""
+请求模型、状态投影、只读会话查询、模型配置及文件路由按职责分离；保留原请求模型
+和 _read_state 的导入路径。启动请求仍由 launch.prepare_launch 校验。
+"""
 
 from __future__ import annotations
 
-import json
-import re
+import asyncio
+import contextlib
+import copy
 import sqlite3
+import sys
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager, suppress
-from datetime import UTC, datetime
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import (
     HTMLResponse,
+    JSONResponse,
+    PlainTextResponse,
+    RedirectResponse,
+    Response,
 )
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
 
 from spiritscout import __version__
 from spiritscout.config.settings import ModelEntry, SystemConfig
-from spiritscout.core.audit import AuditLogger
+from spiritscout.core.audit import AuditLogger, read_record
+from spiritscout.core.cleanup import finish_cleanup
 from spiritscout.core.exceptions import (
     ConfigurationError,
+    RuleConflictError,
     SpiritScoutError,
 )
+from spiritscout.core.models import RunMode
+from spiritscout.launch import LaunchRequest, prepare_launch
 from spiritscout.web import auth as web_auth
 from spiritscout.web import vault
-from spiritscout.web.routes.auth import mount_auth
-from spiritscout.web.routes.local_tools import mount_local_tools
-from spiritscout.web.routes.maintenance import mount_maintenance
-from spiritscout.web.routes.models import mount_models
-from spiritscout.web.routes.notify import mount_notify
-from spiritscout.web.routes.preferences import mount_preferences
-from spiritscout.web.routes.session_detail import mount_session_detail
-from spiritscout.web.routes.sessions import make_require, mount_sessions
-from spiritscout.web.routes.usage import mount_usage
-from spiritscout.web.sessions import (
-    SessionManager,
+from spiritscout.web.api_schemas import (
+    AgentSideSessionPayload,
+    ApprovalDecision,
+    LoginPayload,
+    QuestionAnswerPayload,
+    SessionCreatePayload,
+    SessionModelPayload,
+    SessionPatchPayload,
+    StorageCleanupPayload,
 )
+from spiritscout.web.file_routes import (
+    mount_artifact_routes,
+    mount_collaboration_routes,
+    mount_report_routes,
+    resolve_staged_uploads,
+)
+from spiritscout.web.model_routes import mount_agent_routes, mount_model_routes
+from spiritscout.web.session_queries import mount_session_read_routes
+from spiritscout.web.session_state import _read_state as _read_state
+from spiritscout.web.sessions import Session, SessionManager
 
 _STATIC = Path(__file__).parent / "static" / "index.html"
 _STATIC_DIR = Path(__file__).parent / "static"
 _LOGIN = _STATIC_DIR / "login.html"
 
+# 无管理员本机模式允许的 Host（DNS 重绑定防护）：正规本机访问只会用回环名
+_LOCAL_HOSTNAMES = frozenset({"127.0.0.1", "localhost", "::1"})
 
-class MergePayload(BaseModel):
-    """二次提炼：选定条目 + 相似度阈值（服务端会再复检一次）。
-
-    阈值默认 0.90（九成相似），页面上可改；越界的值由库层按 0.5–1.0 收口。
-    ids 不再设「一次 20 条」的上限：页面上「全选」勾的是整库可提炼条目，
-    分批的活由用户自己决定，后端只在复检时按两两相似度判合不合法。
-    """
-
-    ids: list[str] = Field(min_length=2, max_length=2000)
-    threshold: float = Field(default=0.90, ge=0.5, le=1.0)
+# 未登录也可访问：登录页、登录/登出接口、前端静态资源
+_PUBLIC_PATHS = frozenset({"/login", "/api/auth/login", "/api/auth/logout", "/api/updates/health"})
 
 
-class AbsorbPlanPayload(BaseModel):
-    """合并（交给模型）：勾选的条数没有上限，模型自己决定有没有可并入的分组。"""
-
-    ids: list[str] = Field(min_length=1, max_length=2000)
-
-
-def _set_yaml_bool(path: Path, section: str, key: str, value: bool) -> None:
-    """把 YAML 里 ``section.key`` 的布尔值改成 ``value``，保住注释。
-
-    整份 dump 回去会冲掉中文注释与手写顺序，所以逐行扫描：进到目标段后
-    命中键就改值；到段尾还没命中就补一行。不用跨行正则——那份写法在
-    「段头带注释 + 多行缩进」上会回溯到卡死。
-    """
-    text = path.read_text(encoding="utf-8")
-    newline = "\r\n" if "\r\n" in text else "\n"
-    literal = "true" if value else "false"
-    lines = text.splitlines()
-    out: list[str] = []
-    in_section = False
-    done = False
-    section_re = re.compile(r"^" + re.escape(section) + r"\s*:")
-    key_re = re.compile(r"^(\s+)" + re.escape(key) + r"\s*:\s*(true|false)\b(.*)$")
-
-    for line in lines:
-        if not in_section:
-            out.append(line)
-            if section_re.match(line):
-                in_section = True
-            continue
-
-        # 段内：顶格非空行 = 下一个段
-        if line.strip() and not line[:1].isspace():
-            if not done:
-                out.append(f"  {key}: {literal}")
-                done = True
-            in_section = False
-            out.append(line)
-            continue
-
-        m = key_re.match(line)
-        if m and not done:
-            out.append(f"{m.group(1)}{key}: {literal}{m.group(3)}")
-            done = True
-            continue
-        out.append(line)
-
-    if in_section and not done:
-        out.append(f"  {key}: {literal}")
-        done = True
-    if not done:
-        raise ValueError(f"{path} 里没有 {section} 段，无法写入 {key}")
-
-    path.write_text(newline.join(out) + newline, encoding="utf-8")
-
-
-class ExperienceModePayload(BaseModel):
-    """改大类载荷。"""
-    mode: str = ""
-
-
-class ExperienceImportRow(BaseModel):
-    """导入文件里的一行经验；多余字段忽略，不执行任何内容。"""
-    model_config = {"extra": "ignore"}
-    insight: str = ""
-    context: str = ""
-    tags: list[Any] = Field(default_factory=list)
-    source_model: str = ""
-
-
-class ExperienceImportPayload(BaseModel):
-    """导入文件的外层结构（兼容只给一个数组的情况由前端包装）。"""
-    model_config = {"extra": "ignore"}
-    insights: list[ExperienceImportRow] = Field(default_factory=list)
-
-
-class ExperienceSettingsPayload(BaseModel):
-    """经验提炼开关的写入载荷。"""
-    distill_enabled: bool
-
-
-class AbsorbApplyPayload(BaseModel):
-    """合并落库：只带用户确认过的分组；落库层保证只更新、不删除。"""
-
-    groups: list[dict[str, Any]] = Field(default_factory=list)
-
-
-class MergeRestorePayload(BaseModel):
-    """还原一次合并：给合并后的条目 id。"""
-
-    merged_id: str = Field(min_length=1, max_length=80)
-
-
-class ExperienceSyncPushPayload(BaseModel):
-    """把经验推到仓库：提交信息可留空（按条数自动写一条）。"""
-
-    message: str = Field(default="", max_length=200)
-
-
-def _iso_ts(value: Any) -> str:
-    """经验库里存的是 Unix 秒，前端按 ISO 字符串截前 19 位显示，统一转过去。"""
-    try:
-        return datetime.fromtimestamp(float(value), tz=UTC).isoformat()
-    except (TypeError, ValueError, OSError, OverflowError):
-        return ""
-
-
-
-
-
-
-
+def _is_public_path(path: str) -> bool:
+    return (path in _PUBLIC_PATHS or path == "/static"
+            or path.startswith("/static/"))
 
 
 def create_app(cfg: SystemConfig, models: list[ModelEntry], *,
-               max_concurrent: int = 4) -> FastAPI:
+               max_concurrent: int | None = None) -> FastAPI:
     loopback = cfg.web.host in ("127.0.0.1", "localhost", "::1")
     # 先把环境变量凭据导入管理员库，再判断是否启用登录——首次带 .env
     # 启动的非回环部署才不会误报“没有管理员”。
@@ -181,18 +86,13 @@ def create_app(cfg: SystemConfig, models: list[ModelEntry], *,
     admin_store.sync_from_env(cfg.web.password_env,
                               cfg.web.admin_username_env,
                               cfg.web.admin_password_env)
-    auth_mode = cfg.web.auth_mode
-    has_admins = admin_store.has_admins()
-    # 登录只由 auth_mode 决定：none 就真的不拦（本机工作台默认直接进），
-    # 库里残留的管理员账号不会把控制台重新锁上。
-    auth_enabled = auth_mode == "password" and has_admins
+    auth_enabled = admin_store.has_admins()
     if cfg.web.remote_auth_required and not loopback and not auth_enabled:
         raise ConfigurationError(
-            f"Web 控制台绑定 {cfg.web.host} 时必须启用管理员登录：把配置里的 "
-            f"web.auth_mode 设为 password，并在 .env 中设置 "
-            f"{cfg.web.admin_username_env} 与 "
-            f"{cfg.web.admin_password_env}（旧版 {cfg.web.password_env} 也兼容）；"
-            "只想本机用就把 host 改回 127.0.0.1，或把 remote_auth_required 设为 false")
+            f"Web 控制台绑定 {cfg.web.host} 时必须配置管理员凭据：在 .env 中"
+            f"设置 {cfg.web.admin_username_env} 与 "
+            f"{cfg.web.admin_password_env}（旧版 {cfg.web.password_env} 也兼容）"
+            "后重启")
     limiter = web_auth.LoginRateLimiter()
     vault.configure(cfg.workspace.root)   # 密钥库落在工作区（vault.db/vault.key）
     from spiritscout.resources.assistant import ResourceAssistant
@@ -202,73 +102,488 @@ def create_app(cfg: SystemConfig, models: list[ModelEntry], *,
 
     # 先建 store 再建 manager：两者共用同一迁移实例，避免并发跑一次性迁移
     resource_store = ResourceStore(resource_root(cfg), cfg.resources.freshness_hours)
+    from spiritscout.resources.skill_sync import sync_skills
+
+    skills_path = Path(__file__).resolve().parents[3] / "configs" / "skills.yaml"
+    if skills_path.is_file():
+        try:
+            sync_skills(resource_store, skills_path)
+        except Exception as exc:  # noqa: BLE001 - startup remains usable; registry can be repaired
+            print(
+                f"[spiritscout] 自定义技能同步失败（控制台继续启动）：{exc}",
+                file=sys.stderr,
+            )
     manager = SessionManager(cfg, models, max_concurrent=max_concurrent,
                              resources=resource_store)
     resource_assistant = ResourceAssistant(cfg, resource_store)
+    from spiritscout.web.storage import StorageCleaner
+    storage = StorageCleaner(manager)
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
-        # 监督协程在 lifespan 内启动（不隶属任何请求任务组），
-        # 关停时停掉所有未终态会话，避免孤儿任务
-        manager.start()
-        resource_assistant.start()
-        # 自定义技能的真源在版本库（configs/skills.yaml）：启动时同步进资源库。
-        # 工作区重建会带走 catalog.db，技能不能只活在里面（仓库里没有第二份）。
-        with suppress(OSError, ValueError, sqlite3.Error):
-            from spiritscout.resources.skill_sync import sync_skills
+        stopping = asyncio.Event()
+        http_started = getattr(_app.state, "_http_started", None)
 
-            sync_skills(resource_store, cfg.resources.skills_config)
-        # 旧版本把手动提炼写进了会话目录里的 experience.db：启动时并回共享库，
-        # 否则「经验库」页永远看不到那次提炼（并库幂等，目标库已有同文即跳过）
-        with suppress(OSError, sqlite3.Error):
-            from spiritscout.knowledge.experience import (
-                absorb_session_dbs,
-                shared_db_path,
-            )
+        async def wait_for_http() -> None:
+            # 产品入口在套接字监听后放行；直接嵌入 ASGI 时仍兼容其生命周期。
+            if http_started is not None:
+                await http_started.wait()
 
-            absorb_session_dbs(
-                shared_db_path(cfg),
-                Path(cfg.workspace.root) / "sessions")
-        # 读取已存在的资产，不启动旧会话或发起网络探测。
-        for path in (Path(cfg.workspace.root)/"sessions").glob("sess-*"):
-            with suppress(OSError, ValueError, sqlite3.Error):
-                resource_store.import_session(path)
-        yield
-        await resource_assistant.close()
-        await manager.aclose()
+        async def sync_history() -> None:
+            await wait_for_http()
+            for path in (Path(cfg.workspace.root) / "sessions").glob("sess-*"):
+                if stopping.is_set():
+                    break
+                try:
+                    await asyncio.to_thread(resource_store.import_session, path)
+                except (OSError, ValueError, sqlite3.Error) as exc:
+                    print(f"[spiritscout] 历史资产同步失败（{path.name}）："
+                          f"{type(exc).__name__}；原会话数据保留", file=sys.stderr)
+
+        async def prewarm_model_sdk() -> None:
+            await wait_for_http()
+            if stopping.is_set():
+                return
+            from spiritscout.gateway.litellm_runtime import load_litellm
+
+            try:
+                await load_litellm()
+            except Exception as exc:  # noqa: BLE001 — 首次调用仍保留原生错误。
+                print(f"[警告] 模型 SDK 预热失败（首次调用时重试）：{exc}",
+                      file=sys.stderr)
+
+        async def start_services() -> None:
+            await wait_for_http()
+            # 候选版本健康检查完成之前不启动自动任务或恢复模型作业。
+            while updater.busy():
+                await asyncio.sleep(.2)
+            manager.start()
+            traffic_capture.start_supervisor()
+            scheduler.start()
+            resource_assistant.start()
+            storage.start_maintenance()
+
+        manager.resource_sync_task = asyncio.create_task(
+            sync_history(), name="spiritscout-history-sync")
+        warmup = (asyncio.create_task(prewarm_model_sdk(), name="spiritscout-model-warmup")
+                  if any(model.provider not in {"mock", "ollama"} for model in models) else None)
+        _app.state.model_warmup = warmup
+        startup = asyncio.create_task(start_services())
+        try:
+            await updater.start()
+            yield
+        finally:
+            stopping.set()
+            if http_started is not None:
+                http_started.set()
+            async def close_services() -> None:
+                startup.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await startup
+                await updater.close()
+                await scheduler.close()
+                await manager.aclose()
+                # 先停止任务入口；取消等待不会停止线程，当前文件/SDK 加载结束后再收尾。
+                await finish_cleanup(manager.resource_sync_task)
+                if warmup is not None:
+                    await finish_cleanup(warmup)
+                await traffic_capture.aclose()
+                await proxy_benchmarks.close()
+                await close_manual_distills(manager)
+                await storage.close()
+                await resource_assistant.close()
+                await asset_campaigns.aclose()
+                await account_browsers.aclose()
+
+            await finish_cleanup(close_services())
 
     app = FastAPI(title="灵枢 SpiritScout 控制台", version=__version__,
                   lifespan=lifespan)
     app.state.manager = manager
+    from spiritscout.web.updates import mount_updates
+
+    updater = mount_updates(app, cfg, manager)
+    from spiritscout.web.scheduler import mount_scheduler
+
+    async def automation_launch(payload, run_id):
+        return await _create_session(SessionCreatePayload.model_validate(payload), automation_id=run_id)
+
+    scheduler = mount_scheduler(app, Path(cfg.workspace.root), manager, launch=automation_launch)
+    app.state.scheduler = scheduler
+    from spiritscout.web.background_tasks import mount_background_tasks
+
+    mount_background_tasks(app, manager)
+    app.state.storage = storage
     app.state.auth = admin_store
     app.state.auth_enabled = auth_enabled
     mount_resources(app, cfg, resource_store, resource_assistant)
+    from spiritscout.web.proxies import mount_proxies
+
+    proxy_benchmarks = mount_proxies(app, resource_store, manager)
+    from spiritscout.web.browser_accounts import mount_browser_accounts
+
+    account_browsers = mount_browser_accounts(app, cfg, resource_store)
     mount_projects(app, resource_store, manager)
+    from spiritscout.config import load_model_config
+    from spiritscout.web.asset_campaigns import mount_asset_campaigns
+
+    asset_campaigns = mount_asset_campaigns(
+        app, cfg, resource_store, models,
+        models_source=lambda: vault.apply_keys(load_model_config(cfg.models_config_path)),
+    )
+    from spiritscout.web.traffic import mount_traffic
+
+    traffic_capture = mount_traffic(app, resource_store, manager)
+    from spiritscout.web.console_insights import mount_console_insights
+    from spiritscout.web.session_experience import (
+        close_manual_distills,
+        mount_experience_routes,
+    )
+    from spiritscout.web.system_resources import mount_system_resources
+
+    mount_system_resources(app)
+    mount_console_insights(app, cfg, manager)
+    mount_experience_routes(app, cfg, manager)
+    from spiritscout.web.routes.local_tools import mount_local_tools
+
+    mount_local_tools(app, cfg=cfg)
     app.state.resources = resource_store
-    mount_auth(app, admin_store=admin_store, auth_enabled=auth_enabled,
-               limiter=limiter, loopback=loopback)
-    mount_maintenance(app, cfg=cfg)
-    mount_usage(app, cfg=cfg)
+
+    @app.get('/api/mcp/health')
+    def mcp_health() -> dict[str, Any]:
+        pool = manager._mcp_preflight
+        return {'servers': pool.snapshot() if pool is not None else []}
+
+    def _secure(response: Response) -> Response:
+        response.headers.setdefault("X-Content-Type-Options", "nosniff")
+        response.headers.setdefault("X-Frame-Options", "DENY")
+        response.headers.setdefault("Referrer-Policy", "same-origin")
+        return response
+
+    @app.middleware("http")
+    async def console_security(request: Request, call_next):
+        """统一的控制台安全边界。
+
+        管理员登录启用后，浏览器走签名 Cookie，API 客户端仍可用 Basic；
+        服务端永不下发 WWW-Authenticate，避免浏览器弹原生认证框。
+        跨站写防护始终启用——恶意网页同样能向本机回环地址提交表单。
+        """
+        path = request.url.path
+        # DNS 重绑定防护：无管理员的本机模式只接受回环 Host——恶意网页把
+        # 自有域名解析到 127.0.0.1 后，Host 与 Origin 都是攻击者域名，
+        # 下面的同源自洽检查分辨不出；远程访问应配置管理员凭据。
+        if loopback and not auth_enabled:
+            if (request.url.hostname or "").lower() not in _LOCAL_HOSTNAMES:
+                return _secure(PlainTextResponse(
+                    "拒绝非同源主机访问（本机控制台仅响应回环地址）",
+                    status_code=403))
+        username = ""
+        if auth_enabled:
+            username = admin_store.verify_session(
+                request.cookies.get(web_auth.SESSION_COOKIE, "")) or ""
+            if not username:
+                supplied = web_auth.parse_basic_header(
+                    request.headers.get("authorization", ""))
+                if supplied and admin_store.verify(*supplied):
+                    username = supplied[0]
+            if not username and not _is_public_path(path):
+                if path == "/api" or path.startswith("/api/"):
+                    return _secure(JSONResponse(
+                        {"detail": "需要管理员登录"}, status_code=401))
+                return _secure(RedirectResponse("/login", status_code=302))
+        request.state.authenticated = bool(username)
+        request.state.username = username
+        if request.method in {"POST", "PUT", "PATCH", "DELETE"}:
+            fetch_site = request.headers.get("sec-fetch-site", "").lower()
+            origin = request.headers.get("origin", "").rstrip("/")
+            expected = str(request.base_url).rstrip("/")
+            if fetch_site == "cross-site" or (origin and origin != expected):
+                return _secure(PlainTextResponse(
+                    "拒绝跨站写请求", status_code=403))
+        mutation = request.method in {"POST", "PUT", "PATCH", "DELETE"}
+        managed = mutation and not path.startswith(("/api/updates/", "/api/auth/"))
+        if managed and updater.busy():
+            return _secure(JSONResponse({"detail": "系统正在更新，暂不接受新的写入操作"}, status_code=503))
+        if managed:
+            updater.writes += 1
+        try:
+            return _secure(await call_next(request))
+        finally:
+            if managed:
+                updater.writes -= 1
+
+    # ------------------------------------------------------------ 登录
+
+    @app.get("/login", response_class=HTMLResponse)
+    async def login_page(request: Request) -> Response:
+        if not auth_enabled or request.state.authenticated:
+            return RedirectResponse("/", status_code=302)
+        return HTMLResponse(
+            _LOGIN.read_text(encoding="utf-8"),
+            headers={"Cache-Control": "no-store"})
+
+    @app.post("/api/auth/login")
+    def login(payload: LoginPayload, request: Request) -> Response:
+        if not auth_enabled:
+            return JSONResponse({"detail": "未配置管理员凭据"},
+                                status_code=400)
+        client = request.client.host if request.client else "unknown"
+        retry = limiter.retry_after(client)
+        if retry is not None:
+            return JSONResponse(
+                {"detail": "登录尝试过于频繁，请稍后再试"},
+                status_code=429, headers={"Retry-After": str(retry)})
+        username = payload.username.strip()
+        if (not username or len(username) > web_auth.MAX_USERNAME_LENGTH
+                or len(payload.password) > web_auth.MAX_PASSWORD_LENGTH
+                or not admin_store.verify(username, payload.password)):
+            limiter.failure(client)
+            return JSONResponse({"detail": "用户名或密码错误"},
+                                status_code=401)
+        limiter.reset(client)
+        forwarded = request.headers.get("x-forwarded-proto", "")
+        secure = (request.url.scheme == "https"
+                  or forwarded.split(",")[0].strip().lower() == "https")
+        response = JSONResponse({"ok": True, "username": username})
+        response.set_cookie(
+            web_auth.SESSION_COOKIE, admin_store.issue_session(username),
+            max_age=web_auth.SESSION_TTL_SECONDS, httponly=True,
+            samesite="lax", secure=secure, path="/")
+        response.headers["Cache-Control"] = "no-store"
+        return response
+
+    @app.post("/api/auth/logout", status_code=204)
+    async def logout() -> Response:
+        response = Response(status_code=204)
+        response.delete_cookie(web_auth.SESSION_COOKIE, path="/")
+        return response
 
     # ------------------------------------------------------------ 前端
 
     @app.get("/", response_class=HTMLResponse)
     async def index() -> HTMLResponse:
-        # 控制台外壳不进缓存：改完前端重启即生效，不用让人手动硬刷新
-        return HTMLResponse(_STATIC.read_text(encoding="utf-8"),
-                            headers={"Cache-Control": "no-store, must-revalidate"})
+        html = _STATIC.read_text(encoding="utf-8").replace(
+            "__SPIRITSCOUT_VERSION__", __version__)
+        if cfg.gateway.lightweight_local:
+            # 轻量部署标记：前端据此收窄模式入口（只留 CTF/AWDP）
+            html = html.replace(
+                "<head>", "<head><script>window.__SPIRITSCOUT_LIGHT__=true</script>", 1)
+        return HTMLResponse(html, headers={"Cache-Control": "no-store"})
 
-    app.mount("/static", StaticFiles(directory=_STATIC_DIR), name="static")
+    # 仅压缩公开静态资源；SSE 和文件下载保持原有流式传输行为。
+    app.mount("/static", GZipMiddleware(
+        StaticFiles(directory=_STATIC_DIR), minimum_size=1024, compresslevel=5,
+    ), name="static")
 
-    # 会话创建 / Agent 编队 / 会话列表在 web/routes/sessions.py
-    _require = make_require(manager)
-    mount_sessions(app, manager=manager, cfg=cfg, require=_require)
-    mount_models(app, cfg=cfg)
-    mount_notify(app, manager=manager)
-    mount_preferences(app, cfg=cfg)
-    mount_local_tools(app, cfg=cfg)
-    mount_session_detail(app, manager=manager, cfg=cfg, require=_require)
+    # ------------------------------------------------------------ 会话 CRUD
 
+    async def _create_session(payload: SessionCreatePayload, *, automation_id: str | None = None) -> dict[str, Any]:
+        # 安全相关布尔/数值在请求模型处强类型校验；其余字段透传。
+        # 授权模型：Web 在场即声明（G1 语义不变、勾选摩擦去除）——
+        # 创建行为本身即授权确认，human_confirmed 照旧落审计
+        payload = {**payload.model_dump(), "authorized": True}
+        # 智能模式：不传 mode / 传 auto → None，由 LLM 路由按任务描述裁决
+        raw_mode = str(payload.get("mode") or "").strip().lower()
+        if raw_mode in ("", "auto"):
+            mode = None
+        else:
+            try:
+                mode = RunMode(raw_mode)
+            except ValueError:
+                raise HTTPException(422, f"未知模式: {payload.get('mode')}") from None
+        if cfg.gateway.lightweight_local and (
+                mode in (RunMode.SRC, RunMode.COMPETITION) or mode is None):
+            # 轻量部署（Ollama 离线赛台）只承载 CTF 解题与 AWDP 修补；
+            # auto 路由可能落到 SRC，一并拒绝，前端已按部署收窄选项
+            raise HTTPException(
+                422, "轻量本地部署仅支持 CTF 解题与 AWDP 修补模式；"
+                     "SRC/智能体模式请使用正常部署")
+        from spiritscout.web.asset_handoff import resolve_handoff
+
+        await manager.wait_for_resources()
+        try:
+            snapshot = resolve_handoff(resource_store, payload)
+        except SpiritScoutError as exc:
+            raise HTTPException(422, str(exc)) from exc
+        if snapshot:
+            values = [item["value"] for item in snapshot["targets"]]
+            payload.update(target=values[0], scope=values,
+                           excluded_assets=list(dict.fromkeys([*payload["excluded_assets"], *snapshot["excluded_assets"]])),
+                           _asset_snapshot=snapshot)
+        staged = resolve_staged_uploads(cfg, payload)
+        if payload.get('browser_account_ids'):
+            if cfg.gateway.lightweight_local:
+                raise HTTPException(422, '浏览器账号用于常规部署；轻量模式保持独立')
+            from spiritscout.resources.browser_accounts import BrowserAccounts
+
+            try:
+                BrowserAccounts(resource_store).validate_selection(payload['browser_account_ids'])
+            except KeyError:
+                raise HTTPException(422, '选择的浏览器账号不存在，请刷新账号列表') from None
+            if not any(s.enabled and list(s.args[:2]) == ['-m', 'spiritscout.tools.chrome_mcp']
+                       for s in resource_store.effective_mcp(cfg.mcp_servers)):
+                raise HTTPException(422, '使用浏览器账号前请启用内置 Chrome MCP')
+        try:
+            plan = prepare_launch(LaunchRequest(
+                mode=mode,
+                target=payload.get("target") or None,
+                extra_scope=list(payload.get("scope") or []),
+                excluded_assets=list(payload.get("excluded_assets") or []),
+                platform=payload.get("platform") or None,
+                allow_sensitive=bool(payload.get("allow_sensitive", False)),
+                rps=float(payload.get("rps", 10.0)),
+                flag_format=payload.get("flag_format") or None,
+                generate_wp=payload.get("generate_wp", False),
+                multiple_answers=bool(payload.get("multiple_answers", False)),
+                ctf_type_hints=list(payload.get("ctf_type_hints") or []),
+                ctf_type_note=str(payload.get("ctf_type_note") or ""),
+                challenges_yaml=payload.get("challenges_yaml") or None,
+                platform_yaml=payload.get("platform_yaml") or None,
+                rules_yaml=payload.get("rules_yaml") or None,
+                contest_type=payload.get("contest_type"),
+                accept_rule_conflicts=bool(
+                    payload.get("accept_rule_conflicts", False)),
+                mission=payload.get("mission") or None,
+                has_uploads=bool(staged),
+            ))
+        except RuleConflictError as exc:
+            # 结构化冲突清单：前端据此弹出即时确认对话，确认后带
+            # accept_rule_conflicts 重发（合规门从表单前移到触发时刻）
+            raise HTTPException(422, {"code": "rule_conflict",
+                                      "message": str(exc),
+                                      "conflicts": exc.conflicts}) from exc
+        except SpiritScoutError as exc:
+            raise HTTPException(422, str(exc)) from exc
+        # 智能模式：会话先按装配兜底模式登记，LLM 路由改判后由执行体更新
+        normalized = dict(payload, mode=plan.authorization.mode.value,
+                          mode_auto=plan.mode_auto)
+        try:
+            session = await manager.create(normalized, plan, staged_files=staged,
+                **({"automation_id": automation_id} if automation_id else {}))
+        except SpiritScoutError as exc:   # 模型注册表为空/损坏（热加载）
+            raise HTTPException(422, str(exc)) from exc
+        return {**session.brief(), "request": session.request}
+
+    @app.post("/api/sessions", status_code=201)
+    async def create_session(payload: SessionCreatePayload) -> dict[str, Any]:
+        return await _create_session(payload)
+
+    @app.post("/api/sessions/{session_id}/model")
+    async def set_session_model(session_id: str, payload: SessionModelPayload) -> dict[str, Any]:
+        _require(session_id)
+        try:
+            session = manager.set_model(session_id, payload.model)
+        except SpiritScoutError as exc:
+            raise HTTPException(422, str(exc)) from exc
+        return session.brief()
+
+    @app.post("/api/sessions/{session_id}/agent-sessions", status_code=201)
+    async def create_agent_session(session_id: str, payload: AgentSideSessionPayload) -> dict[str, Any]:
+        from spiritscout.web.workbench import side_session_source
+
+        parent = _require(session_id)
+        try:
+            context = side_session_source(parent, payload.actor, payload.task_id)
+            mission = payload.mission.strip()
+            if not mission:
+                raise SpiritScoutError("请填写旁路任务")
+            plan = copy.deepcopy(parent.plan or manager._rebuild_plan(parent))
+            if plan is None:
+                raise SpiritScoutError("无法恢复原会话授权，请先恢复原会话")
+            if plan.authorization.mode.value != parent.mode:
+                raise SpiritScoutError("原会话模式与授权不一致，无法创建旁路")
+            plan.mission, plan.mode_auto, plan.needs_mode_routing = mission, False, False
+            request = {**copy.deepcopy(parent.launch_request), "mode": parent.mode,
+                       "mode_auto": False, "mission": mission, "target": parent.launch_request.get("target") or parent.target,
+                       "project_id": parent.project_id,
+                       "title": "旁路 · " + mission[:60], "side_agent": context["agent"],
+                       "side_context": context, "standing_rules": parent.standing_rules, "no_llm": False}
+            session = await manager.create(request, plan)
+        except (SpiritScoutError, ValueError, KeyError) as exc:
+            raise HTTPException(422, str(exc)) from exc
+        return {**session.brief(), "request": session.request}
+
+    mount_agent_routes(app, cfg)
+
+    def _require(session_id: str) -> Session:
+        session = manager.get(session_id)
+        if session is None:
+            raise HTTPException(404, f"会话不存在: {session_id}")
+        return session
+
+    mount_session_read_routes(app, manager, _require)
+
+    from spiritscout.web.agent_commands import mount_command_routes
+
+    mount_command_routes(app, manager)
+
+    @app.patch("/api/sessions/{session_id}")
+    async def patch_session(session_id: str,
+                            payload: SessionPatchPayload) -> dict[str, Any]:
+        """局部更新会话：只处理请求里显式出现的字段。
+
+        空标题 = 恢复自动摘要名；空 project_id = 移入未分类。两个字段
+        互不牵连——只移动项目不会顺手清掉用户自定义标题。
+        """
+        session = _require(session_id)
+        fields = payload.model_fields_set
+        if not fields:
+            raise HTTPException(422, "未提供要修改的字段")
+        if "title" in fields:
+            manager.rename(session_id, str(payload.title or ""))
+        if "project_id" in fields:
+            try:
+                manager.set_project(session_id, str(payload.project_id or ""))
+            except SpiritScoutError as exc:
+                raise HTTPException(422, str(exc)) from exc
+        return session.brief(include_summary=False)
+
+    mount_artifact_routes(app, _require)
+
+    @app.post("/api/sessions/{session_id}/stop")
+    async def stop_session(session_id: str) -> dict[str, Any]:
+        session = await manager.stop(session_id)
+        if session is None:
+            raise HTTPException(404, f"会话不存在: {session_id}")
+        return session.brief(include_summary=False)
+
+    @app.post("/api/sessions/{session_id}/pause")
+    async def pause_session(session_id: str) -> dict[str, Any]:
+        """协作式暂停：灵枢图节点与子 Agent 步骤在检查点挂起（在途动作跑完）。"""
+        try:
+            session = await manager.set_paused(session_id, True)
+        except SpiritScoutError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        if session is None:
+            raise HTTPException(404, f"会话不存在: {session_id}")
+        return session.brief(include_summary=False)
+
+    @app.post("/api/sessions/{session_id}/resume")
+    async def resume_paused_session(session_id: str) -> dict[str, Any]:
+        """从暂停继续（与「续传」不同：会话从未停止，只是检查点放行）。"""
+        try:
+            session = await manager.set_paused(session_id, False)
+        except SpiritScoutError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        if session is None:
+            raise HTTPException(404, f"会话不存在: {session_id}")
+        return session.brief(include_summary=False)
+
+    @app.post("/api/sessions/{session_id}/approvals/{approval_id}")
+    async def decide_approval(session_id: str, approval_id: str,
+                              payload: ApprovalDecision) -> dict[str, Any]:
+        """高风险动作即时确认裁决：{"allow": true|false}（严格布尔）。
+
+        允许 = 本次会话内该动作放行（后续同动作不再询问）；
+        拒绝 = 本次调用按策略违规拒绝（分支留痕后继续）。
+        """
+        session = manager.get(session_id)
+        if session is None:
+            raise HTTPException(404, f"会话不存在: {session_id}")
+        allow = payload.allow
+        if not session.approvals.decide(approval_id, allow):
+            raise HTTPException(409, f"待确认项不存在或已裁决: {approval_id}")
+        return {"approval_id": approval_id, "allow": allow}
 
     from spiritscout.web.dashboard import DashboardReader
 
@@ -277,378 +592,36 @@ def create_app(cfg: SystemConfig, models: list[ModelEntry], *,
     @app.get("/api/dashboard")
     def dashboard_data(period: str = Query("today", pattern="^(hour|today|7d|30d|all)$")) -> dict[str, Any]:
         """北京时间的执行、成果、费用与缓存总览；只读，不干预调度。"""
-        from spiritscout.knowledge.experience import read_recent, shared_db_path
+        from spiritscout.knowledge.experience import experience_db_path, read_recent
 
-        data = dashboard_reader.build(manager.list(), period=period,
-                                      usage_root=Path(cfg.workspace.root))
+        data = dashboard_reader.build(manager.list(), period=period)
         data["experience"] = read_recent(
-            shared_db_path(cfg), limit=8)
+            experience_db_path(cfg.experience.root, cfg.workspace.root), limit=8)
         return data
 
     @app.get("/api/experience")
     def experience_page(q: str = "", tag: str = "",
-                        limit: int = Query(50, ge=1, le=500),
-                        offset: int = Query(0, ge=0),
-                        include_merged: bool = False,
-                        mode: str = Query("", max_length=20)) -> dict[str, Any]:
+                        limit: int = Query(50, ge=1, le=200),
+                        offset: int = Query(0, ge=0)) -> dict[str, Any]:
         """经验提炼页：自我进化的全部产出（可检索/按标签过滤）+ 提炼过程记录。
 
         history 从各会话审计尾段提取 experience.distill 事件——含失败与
         跳过，让「学没学到、为什么没学到」对用户完全可见。
-        include_merged=true 时连「旧口径只标记不删除」的原件一起给出（可还原）；
-        新口径确认保留后原件已删除，不会再出现在这里。
         """
-        from spiritscout.knowledge.experience import read_page, shared_db_path
+        from spiritscout.knowledge.experience import experience_db_path, read_page
 
         data = read_page(
-            shared_db_path(cfg),
-            q=q, tag=tag, limit=limit, offset=offset,
-            include_merged=include_merged, mode=mode)
-        # 前端筛选按钮要的中文名（与首页三张卡一致）
-        from spiritscout.resources.skill_modes import MODE_LABELS
-
-        data["mode_labels"] = MODE_LABELS
-        data["mode"] = mode
+            experience_db_path(cfg.experience.root, cfg.workspace.root),
+            q=q, tag=tag, limit=limit, offset=offset)
         titles = {s.session_id: s.brief(include_summary=False)["title"]
                   for s in manager.list()}
         for item in data["items"]:
             item["source_title"] = titles.get(
                 str(item.get("source_session") or ""), "")
         data["history"] = _distill_history(cfg)
+        for event in data["history"]:
+            event["session_title"] = titles.get(str(event.get("session_id") or ""), "")
         return data
-
-    @app.get("/api/experience/merge/candidates")
-    def experience_merge_candidates(threshold: float = Query(0.90, ge=0.5, le=1.0),
-                                    limit: int = Query(20, ge=1, le=100)
-                                    ) -> dict[str, Any]:
-        """二次提炼候选：只给「整组两两都极相似」的组，供用户复核后再提炼。
-
-        threshold 是页面上的相似度（默认 90%，可自定义），服务端不做取舍。
-        """
-        from spiritscout.knowledge.experience import (
-            merge_candidates,
-            shared_db_path,
-        )
-
-        groups = merge_candidates(
-            shared_db_path(cfg),
-            threshold=threshold, limit=limit)
-        return {"threshold": threshold, "groups": groups, "count": len(groups)}
-
-    @app.post("/api/experience/merge/preview")
-    def experience_merge_preview(payload: MergePayload) -> dict[str, Any]:
-        """只算提炼结果，不动库：页面先给用户看这份稿子，确认保留才落库。"""
-        from spiritscout.knowledge.experience import (
-            merge_preview,
-            shared_db_path,
-        )
-
-        try:
-            return merge_preview(
-                shared_db_path(cfg), payload.ids, threshold=payload.threshold)
-        except SpiritScoutError as exc:
-            raise HTTPException(400, str(exc)) from exc
-
-    @app.post("/api/experience/merge")
-    def experience_merge(payload: MergePayload) -> dict[str, Any]:
-        """确认保留：提炼结果写入经验库，被提炼的原件在同一事务里删除。"""
-        from spiritscout.knowledge.experience import merge_insights, shared_db_path
-
-        try:
-            return merge_insights(
-                shared_db_path(cfg),
-                payload.ids, threshold=payload.threshold, confirm=True,
-                audit=AuditLogger(cfg.audit_log_path))
-        except SpiritScoutError as exc:
-            raise HTTPException(400, str(exc)) from exc
-
-    @app.post("/api/experience/merge/restore")
-    def experience_merge_restore(payload: MergeRestorePayload) -> dict[str, Any]:
-        """还原一次旧口径的「标记式」合并：原件解封，派生的合并条目移除。
-
-        新口径（确认保留后原件已删）没有可还原的东西，库里查不到原件就回 404。
-        """
-        from spiritscout.knowledge.experience import (
-            restore_merge,
-            shared_db_path,
-        )
-
-        try:
-            result = restore_merge(
-                shared_db_path(cfg),
-                payload.merged_id, audit=AuditLogger(cfg.audit_log_path))
-        except SpiritScoutError as exc:
-            raise HTTPException(500, str(exc)) from exc
-        if result is None:
-            raise HTTPException(404, f"没有这条合并记录: {payload.merged_id}")
-        return result
-
-    @app.post("/api/experience/absorb/preview")
-    async def experience_absorb_preview(payload: AbsorbPlanPayload) -> dict[str, Any]:
-        """合并（交给模型）：这些经验能不能并进已有的某一条。**不写库、不删任何条目。**
-
-        与「二次提炼」不同：提炼是组内极相似→压成一条并删原件；合并只是把内容
-        并进一条已有经验，被勾选的条目原样保留。
-        """
-        from spiritscout.config import load_model_config
-        from spiritscout.knowledge.absorb import plan_absorb
-        from spiritscout.knowledge.experience import shared_db_path
-        from spiritscout.web import vault as key_vault
-        from spiritscout.web.session_experience import _usable_models
-        from spiritscout.web.sessions import _conversation_gateway
-
-        try:
-            entries = key_vault.apply_keys(load_model_config(cfg.models_config_path))
-        except Exception:              # noqa: BLE001 —— 读不到配置就用启动快照
-            entries = list(models or [])
-        usable = _usable_models(entries)
-        if not usable:
-            raise HTTPException(
-                400, "没有配了 API Key 的渠道：先到「模型」页配一个，再回来合并")
-        audit = AuditLogger(cfg.audit_log_path)
-        gateway = _conversation_gateway(cfg, usable, audit)
-        timeout = int(getattr(cfg.experience, "distill_timeout_seconds", 90) or 90)
-        try:
-            return await plan_absorb(
-                gateway, shared_db_path(cfg), payload.ids,
-                timeout_seconds=timeout, audit=audit)
-        except SpiritScoutError as exc:
-            raise HTTPException(400, str(exc)) from exc
-
-    @app.post("/api/experience/absorb/apply")
-    def experience_absorb_apply(payload: AbsorbApplyPayload) -> dict[str, Any]:
-        """确认合并：只更新目标条目正文，**一行都不删**（删除即报错回滚）。"""
-        from spiritscout.knowledge.absorb import apply_absorb
-        from spiritscout.knowledge.experience import shared_db_path
-
-        try:
-            return apply_absorb(
-                shared_db_path(cfg), payload.groups,
-                audit=AuditLogger(cfg.audit_log_path))
-        except SpiritScoutError as exc:
-            raise HTTPException(400, str(exc)) from exc
-
-    @app.get("/api/experience/settings")
-    def experience_settings() -> dict[str, Any]:
-        """经验提炼开关（当前值）。"""
-        exp = getattr(cfg, "experience", None)
-        return {
-            "distill_enabled": bool(getattr(exp, "distill_enabled", True)),
-            "recall_limit": int(getattr(exp, "recall_limit", 6) or 6),
-        }
-
-    @app.put("/api/experience/settings")
-    def update_experience_settings(payload: ExperienceSettingsPayload) -> dict[str, Any]:
-        """改提炼开关：写回 system.yaml 并即时生效（不重启）。
-
-        关掉后：解出 Flag 不提炼、会话收尾不提炼；已入库的经验照常召回，
-        已经在跑的后台提炼不打断（它排进队列时开关还是开的）。
-        """
-        exp = getattr(cfg, "experience", None)
-        if exp is None:
-            raise HTTPException(400, "当前配置没有 experience 段")
-        try:
-            exp.distill_enabled = bool(payload.distill_enabled)
-        except (TypeError, ValueError) as exc:
-            raise HTTPException(409, f"配置是只读的，改不了：{exc}") from exc
-        # 落盘：只替换这一个键，保住同文件里的其它注释与人手写的值
-        path = Path(cfg.models_config_path).parent / "system.yaml"
-        try:
-            _set_yaml_bool(path, "experience", "distill_enabled", bool(payload.distill_enabled))
-        except OSError as exc:
-            raise HTTPException(500, f"写回配置失败：{exc}") from exc
-        AuditLogger(cfg.audit_log_path).log("experience.settings", "user", {
-            "distill_enabled": bool(payload.distill_enabled)})
-        return {"distill_enabled": bool(getattr(exp, "distill_enabled", True))}
-
-    @app.put("/api/experience/{insight_id}/mode")
-    def experience_set_mode(insight_id: str, payload: ExperienceModePayload) -> dict[str, Any]:
-        """改一条经验的任务大类（src / ctf / competition）。"""
-        from spiritscout.knowledge.experience import (
-            MODES,
-            ExperienceStore,
-            shared_db_path,
-        )
-
-        want = str(payload.mode or "").strip().lower()
-        if want not in MODES:
-            raise HTTPException(400, f"大类只能是 {'/'.join(MODES)}")
-        store = ExperienceStore(shared_db_path(cfg),
-                                audit=AuditLogger(cfg.audit_log_path))
-        try:
-            ok = store.set_mode(insight_id, want)
-        finally:
-            with suppress(Exception):
-                store.close()
-        if not ok:
-            raise HTTPException(404, "经验不存在或大类没变")
-        return {"ok": True, "insight_id": insight_id, "mode": want}
-
-    @app.get("/api/experience/export")
-    def experience_export(include_meta: bool = Query(True)) -> dict[str, Any]:
-        """把整个经验库导出成一个 JSON 文件（前端直接下载）。
-
-        走的是和 git 快照同一套脱敏，导出的文件可以直接发给别人导入。
-        """
-        from spiritscout.knowledge.experience import shared_db_path
-
-        db = shared_db_path(cfg)
-        if not db.exists():
-            return {"schema": 1, "kind": "spiritscout-experience",
-                    "generated_at": datetime.now(UTC).isoformat(),
-                    "insights": [], "total": 0}
-        con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
-        try:
-            con.row_factory = sqlite3.Row
-            cols = {r[1] for r in con.execute("PRAGMA table_info(insights)")}
-            want = [c for c in ("insight_id", "insight", "context", "tags",
-                                "source_model", "created_at")
-                    if c in cols]
-            rows = con.execute(
-                f"SELECT {', '.join(want)} FROM insights").fetchall()
-        finally:
-            con.close()
-
-        items = []
-        for r in rows:
-            d = dict(r)
-            tags = d.get("tags")
-            if isinstance(tags, str):
-                with suppress(ValueError):
-                    tags = json.loads(tags)
-            items.append({
-                "id": d.get("insight_id"),
-                "insight": d.get("insight"),
-                "context": d.get("context") or "",
-                "tags": tags if isinstance(tags, list) else [],
-                "source_model": d.get("source_model") or "",
-                "captured_at": d.get("created_at"),
-            })
-        payload: dict[str, Any] = {
-            "schema": 1, "kind": "spiritscout-experience",
-            "generated_at": datetime.now(UTC).isoformat(),
-            "total": len(items), "insights": items,
-        }
-        if include_meta:
-            payload["source"] = {"version": __version__, "kind": "file-export"}
-        return payload
-
-    @app.post("/api/experience/import")
-    def experience_import(payload: ExperienceImportPayload) -> dict[str, Any]:
-        """从导出的 JSON 导入经验：逐条走库内查重，重复的不算新增。
-
-        只读 insight / context / tags / source_model，**不执行文件里的任何指令**；
-        条目数上限挡住误传大文件。
-        """
-        from spiritscout.knowledge.experience import ExperienceStore, shared_db_path
-
-        rows = payload.insights
-        if not rows:
-            raise HTTPException(400, "文件里没有经验条目")
-        if len(rows) > 5000:
-            raise HTTPException(400, f"条目太多（{len(rows)}），单次最多 5000 条")
-
-        # add() 内部有查重（默认 0.95），返回空串就是没写进去；report 能说清原因
-        store = ExperienceStore(shared_db_path(cfg),
-                                audit=AuditLogger(cfg.audit_log_path))
-        added = skipped = 0
-        reasons: dict[str, int] = {}
-        for row in rows:
-            text = str(getattr(row, "insight", "") or "").strip()
-            if not text:
-                skipped += 1
-                reasons["empty"] = reasons.get("empty", 0) + 1
-                continue
-            report: dict[str, Any] = {}
-            written = store.add(
-                text[:2000],
-                context=str(getattr(row, "context", "") or "")[:600],
-                tags=[str(t)[:40] for t in (getattr(row, "tags", None) or [])][:12],
-                source_model=str(getattr(row, "source_model", "") or "")[:60],
-                report=report,
-            )
-            if written:
-                added += 1
-            else:
-                skipped += 1
-                why = str(report.get("reason") or "duplicate")
-                reasons[why] = reasons.get(why, 0) + 1
-        with suppress(Exception):
-            store.close()
-        AuditLogger(cfg.audit_log_path).log("experience.import", "user", {
-            "added": added, "skipped": skipped})
-        return {"added": added, "skipped": skipped, "total": len(rows),
-                "reasons": reasons}
-
-    @app.get("/api/experience/sync")
-    def experience_sync_status() -> dict[str, Any]:
-        """经验同步现状：本地多少条、仓库里的主清单与提交目录在哪、用哪个分支。"""
-        from spiritscout.knowledge.experience import shared_db_path
-        from spiritscout.knowledge.sync import (
-            DEFAULT_BRANCH,
-            DEFAULT_INBOX,
-            DEFAULT_SYNC_PATH,
-            export_payload,
-            project_root,
-        )
-
-        rel = str(getattr(cfg.experience, "sync_path", "") or DEFAULT_SYNC_PATH)
-        inbox = str(getattr(cfg.experience, "sync_inbox", "") or DEFAULT_INBOX)
-        repo = str(getattr(cfg.experience, "sync_repo", "") or "")
-        branch = str(getattr(cfg.experience, "sync_branch", "") or DEFAULT_BRANCH)
-        root = Path(repo).expanduser() if repo.strip() else project_root()
-        file = root / rel
-        return {"local_count": export_payload(shared_db_path(cfg))["count"],
-                "repo": str(root), "path": str(file), "inbox": str(root / inbox),
-                "exists": file.is_file(), "branch": branch,
-                "synced_at": file.stat().st_mtime if file.is_file() else 0}
-
-    @app.post("/api/experience/sync/pull")
-    def experience_sync_pull() -> dict[str, Any]:
-        """拉取：把远端主清单 + 所有人提交的经验并进本地库——只补缺，不改不删。"""
-        from spiritscout.knowledge.experience import shared_db_path
-        from spiritscout.knowledge.sync import (
-            DEFAULT_BRANCH,
-            DEFAULT_INBOX,
-            DEFAULT_SYNC_PATH,
-            pull,
-        )
-
-        try:
-            return pull(
-                shared_db_path(cfg),
-                repo=str(getattr(cfg.experience, "sync_repo", "") or ""),
-                sync_path=str(getattr(cfg.experience, "sync_path", "") or DEFAULT_SYNC_PATH),
-                inbox=str(getattr(cfg.experience, "sync_inbox", "") or DEFAULT_INBOX),
-                branch=str(getattr(cfg.experience, "sync_branch", "") or DEFAULT_BRANCH),
-                audit=AuditLogger(cfg.audit_log_path))
-        except SpiritScoutError as exc:
-            raise HTTPException(400, str(exc)) from exc
-
-    @app.post("/api/experience/sync/push")
-    def experience_sync_push(payload: ExperienceSyncPushPayload | None = None) -> dict[str, Any]:
-        """提交：本地经验导成自己一个文件放进 inbox → 提交 → 推送到远端。
-
-        写成「每人一个文件」而不是改主清单：任何人有写权限就能提，不会互相冲突。
-        """
-        from spiritscout.knowledge.experience import shared_db_path
-        from spiritscout.knowledge.sync import (
-            DEFAULT_BRANCH,
-            DEFAULT_INBOX,
-            submit,
-        )
-
-        try:
-            return submit(
-                shared_db_path(cfg),
-                repo=str(getattr(cfg.experience, "sync_repo", "") or ""),
-                inbox=str(getattr(cfg.experience, "sync_inbox", "") or DEFAULT_INBOX),
-                branch=str(getattr(cfg.experience, "sync_branch", "") or DEFAULT_BRANCH),
-                message=(payload.message if payload else ""),
-                user=str(getattr(cfg.experience, "sync_user", "") or ""),
-                audit=AuditLogger(cfg.audit_log_path))
-        except SpiritScoutError as exc:
-            raise HTTPException(400, str(exc)) from exc
 
     @app.delete("/api/experience/{insight_id}")
     def delete_experience(insight_id: str) -> dict[str, Any]:
@@ -657,11 +630,11 @@ def create_app(cfg: SystemConfig, models: list[ModelEntry], *,
         经验库是模型产出、用户可审可清；删除在系统审计留痕（actor=user），
         被删内容不参与后续会话召回。
         """
-        from spiritscout.knowledge.experience import delete_insight, shared_db_path
+        from spiritscout.knowledge.experience import delete_insight, experience_db_path
 
         try:
             item = delete_insight(
-                shared_db_path(cfg),
+                experience_db_path(cfg.experience.root, cfg.workspace.root),
                 insight_id, audit=AuditLogger(cfg.audit_log_path))
         except SpiritScoutError as exc:
             raise HTTPException(500, str(exc)) from exc
@@ -670,66 +643,119 @@ def create_app(cfg: SystemConfig, models: list[ModelEntry], *,
         return {"deleted": insight_id}
 
     def _distill_history(cfg: SystemConfig, *, limit: int = 12) -> list[dict[str, Any]]:
-        """最近提炼记录（成功/空/失败/跳过）。
-
-        只管审计日志是不够的：提炼产出的经验落在全局 experience.db，而会话一旦
-        被删，``sessions/<id>/audit.jsonl`` 会跟着消失——经验库里还留着那次提炼
-        产出的条目，页面上却显示「暂无提炼记录」。所以两个来源合并：
-
-        1. 经验库按 ``source_session`` 聚合，给每个产出过经验的会话补一条「成功」；
-        2. 现存会话的审计尾段仍然首选——失败、跳过、无新增这些没产出经验的结论
-           只写在日志里，从经验库反推不出来。
-
-        同一会话以审计日志为准（字段更全），日志里没出现过的才用库里的补。
-        """
-        audited: dict[str, list[dict[str, Any]]] = {}
+        """最近提炼记录（成功/空/失败/跳过）：会话审计尾段反向扫描。"""
         sessions_dir = Path(cfg.workspace.root) / "sessions"
-        if sessions_dir.is_dir():
-            for audit_path in sorted(sessions_dir.glob("*/audit.jsonl")):
-                sid = audit_path.parent.name
-                try:
-                    with audit_path.open("rb") as fh:
-                        fh.seek(0, 2)
-                        size = fh.tell()
-                        fh.seek(max(0, size - 131072))     # 提炼在收尾：只看尾段 128KB
-                        tail = fh.read().decode("utf-8", "ignore")
-                except OSError:
-                    continue
-                for line in tail.splitlines():
-                    if '"experience.distill"' not in line:
-                        continue
-                    try:
-                        rec = json.loads(line)
-                    except ValueError:
-                        continue
-                    if rec.get("type") != "experience.distill":
-                        continue
-                    audited.setdefault(sid, []).append(
-                        {"session_id": sid, "ts": rec.get("ts", ""),
-                         **(rec.get("detail") or {})})
-
-        events: list[dict[str, Any]] = [e for rows in audited.values() for e in rows]
-
-        try:
-            from spiritscout.knowledge.experience import shared_db_path
-
-            conn = sqlite3.connect(
-                str(shared_db_path(cfg)))
+        events: list[dict[str, Any]] = []
+        if not sessions_dir.is_dir():
+            return events
+        for audit_path in sorted(sessions_dir.glob("*/audit.jsonl")):
+            sid = audit_path.parent.name
             try:
-                rows = conn.execute(
-                    "SELECT source_session, COUNT(*), MAX(ts) FROM insights "
-                    "WHERE source_session != '' GROUP BY source_session").fetchall()
-            finally:
-                conn.close()
-        except (sqlite3.Error, OSError, ImportError):
-            rows = []
-        for sid, count, last_ts in rows:
-            if sid in audited:
-                continue        # 日志里记了这次提炼，以它为准
-            events.append({"session_id": sid, "ts": _iso_ts(last_ts), "result": "ok",
-                           "insights": int(count), "outcome": "从本会话提炼出经验"})
-
+                with audit_path.open("rb") as fh:
+                    fh.seek(0, 2)
+                    size = fh.tell()
+                    fh.seek(max(0, size - 131072))     # 提炼在收尾：只看尾段 128KB
+                    tail = fh.read().decode("utf-8", "ignore")
+            except OSError:
+                continue
+            for line in tail.splitlines():
+                if '"experience.distill"' not in line:
+                    continue
+                try:
+                    rec = read_record(line)
+                except ValueError:
+                    continue
+                if rec.get("type") != "experience.distill":
+                    continue
+                events.append({"session_id": sid, "ts": rec.get("ts", ""),
+                               **(rec.get("detail") or {})})
         events.sort(key=lambda e: str(e.get("ts", "")), reverse=True)
         return events[:limit]
+
+    @app.post("/api/sessions/{session_id}/questions/{question_id}")
+    async def answer_question(session_id: str, question_id: str,
+                              payload: QuestionAnswerPayload) -> dict[str, Any]:
+        """单次答复完成选择与范围确认；add_targets 只兼容旧客户端。"""
+        session = manager.get(session_id)
+        if session is None:
+            raise HTTPException(404, f"会话不存在: {session_id}")
+        lock = session.questions.answer_lock(question_id)
+        if lock is None:
+            raise HTTPException(409, f"待答问题不存在或已作答: {question_id}")
+        async with lock:
+            try:
+                prepared = session.questions.prepare_answer(
+                    question_id, choice=payload.choice, choices=payload.choices,
+                    text=payload.text, allow_targets=bool(payload.add_targets))
+                if prepared is None:
+                    raise HTTPException(409, f"待答问题不存在或已作答: {question_id}")
+                rec, answer, picked = prepared
+                added = payload.add_targets
+                resolved = None
+                # 新选项已有模型写出的目标关联，不增加模型请求；自由输入和旧问题
+                # 仅在真正涉及范围裁定时解释一次，不用关键词或域名出现来猜授权。
+                mapped = picked and not payload.text.strip() and all(
+                    "approved_by" in item for item in rec["targets"])
+                if rec["targets"] and not rec["secret"] and not added and not mapped:
+                    from spiritscout.web.session_assistant import _llm_answer_scope
+                    resolved = await _llm_answer_scope(cfg, session, rec, answer)
+                ok = session.questions.answer(
+                    question_id, choice=payload.choice, choices=payload.choices,
+                    text=payload.text, add_targets=added, resolved_targets=resolved,
+                    scope_resolved=resolved is not None)
+            except ValueError as exc:
+                raise HTTPException(422, str(exc)) from exc
+            except SpiritScoutError as exc:
+                raise HTTPException(503, f"授权答复未提交：{exc}") from exc
+            if not ok:
+                raise HTTPException(409, f"待答问题不存在或已作答: {question_id}")
+            return {"question_id": question_id, "answered": True}
+
+    mount_collaboration_routes(app, cfg, manager, _require)
+
+    @app.get("/api/storage/sessions")
+    async def storage_sessions() -> dict[str, Any]:
+        rows = [{"session_id": s.session_id, "title": s.display_title(),
+                 "status": s.status, "blocked_reason": storage.blocked_reason(s)}
+                for s in manager.list()]
+        return await asyncio.to_thread(storage.overview, rows)
+
+    @app.get("/api/sessions/{session_id}/storage")
+    async def storage_preview(session_id: str) -> dict[str, Any]:
+        _require(session_id)
+        try:
+            return await asyncio.to_thread(storage.preview, session_id)
+        except (SpiritScoutError, OSError, sqlite3.Error) as exc:
+            raise HTTPException(409, str(exc)) from exc
+
+    @app.post("/api/sessions/{session_id}/storage/cleanup")
+    async def storage_cleanup(session_id: str, payload: StorageCleanupPayload) -> dict[str, Any]:
+        _require(session_id)
+        if not payload.confirm:
+            raise HTTPException(422, "请先查看清理范围，再确认执行")
+        try:
+            return storage.start(session_id, database=payload.database, caches=payload.caches)
+        except SpiritScoutError as exc:
+            raise HTTPException(409, str(exc)) from exc
+
+    @app.get("/api/sessions/{session_id}/storage/job")
+    async def storage_job(session_id: str) -> dict[str, Any]:
+        _require(session_id)
+        return dict(storage.jobs.get(session_id, {"status": "idle", "session_id": session_id}))
+
+    @app.delete("/api/sessions/{session_id}")
+    async def delete_session(session_id: str,
+                             confirm: bool = Query(False)) -> dict[str, Any]:
+        try:
+            session = await manager.delete(session_id, confirm=confirm)
+        except SpiritScoutError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        if session is None:
+            raise HTTPException(404, f"会话不存在: {session_id}")
+        return {"deleted": session_id}
+
+    mount_report_routes(app, _require)
+
+    mount_model_routes(app, cfg)
 
     return app

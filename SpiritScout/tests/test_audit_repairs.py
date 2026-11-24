@@ -25,7 +25,7 @@ from spiritscout.blackboard import Blackboard, ConvergenceEngine
 from spiritscout.bus.inprocess import InProcessBus
 from spiritscout.config.settings import SystemConfig, WorkspaceConfig
 from spiritscout.core.audit import AuditLogger, NullAuditLogger, sanitize_record
-from spiritscout.core.exceptions import ConfigurationError
+from spiritscout.core.exceptions import ConfigurationError, SpiritScoutError
 from spiritscout.core.models import (
     AgentType,
     BlackboardLayer,
@@ -42,16 +42,11 @@ from spiritscout.tools.executor import LocalExecutor
 from spiritscout.tools.journal import ExecutionJournal, read_recovery_view
 from spiritscout.tools.registry import ToolRegistry
 from spiritscout.tools.run_lock import ExecutionRunLock
-from spiritscout.tools.sandbox import sandbox_backend, sandbox_exec
+from spiritscout.tools.sandbox import sandbox_available, sandbox_exec
 from spiritscout.tools.spec import ToolKind, ToolSpec
 from spiritscout.web.app import create_app
 from spiritscout.web.events import stream_audit
 from spiritscout.web.sessions import Session
-
-try:                              # discover 把 tests/ 直接挂在 sys.path 上
-    from tests.process_budget import budget, reap_window
-except ImportError:               # 直接跑 `-m unittest test_audit_repairs` 时
-    from process_budget import budget, reap_window
 
 
 class _ProbeAgent(SubAgent):
@@ -69,7 +64,7 @@ class _ProbeAgent(SubAgent):
 
 class AuditTaskTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
-        self.tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
         self.bb = Blackboard(self.root / "bb.db")
@@ -113,7 +108,7 @@ class AuditTaskTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_published_route_conclusion_not_repeated_at_task_level(self) -> None:
         """路线已单独发过 agent.conclude 时，任务级收尾不再重复拼接同一结论。"""
-        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        with tempfile.TemporaryDirectory() as tmp:
             audit_path = Path(tmp) / "audit.jsonl"
             ctx = SubAgentContext(
                 self.bus, self.bb, ConvergenceEngine(self.bb),
@@ -183,16 +178,18 @@ class AuditTaskTests(unittest.IsolatedAsyncioTestCase):
                                      extra={"user_inbox": []}, pause_gate=None)
         master._final_verdicts = Mock(return_value=[])
         for invalid in ({"reason": "缺少决策"}, {"continue_iteration": "false"}):
-            master._llm_review = AsyncMock(return_value=invalid)
-            result = await master._review({"round_no": 0, "dag": dag.to_dict(),
-                                           "round_views": [{"flags": {}}]})
-            self.assertTrue(result["continue_iteration"])
-            self.assertEqual(TaskDAG.from_dict(result["dag"]).get(node.node_id).status, TaskStatus.PENDING)
+            with self.subTest(invalid=invalid):
+                master._llm_review = AsyncMock(return_value=invalid)
+                with patch.object(TaskDAG, "from_dict", return_value=dag):
+                    with self.assertRaisesRegex(SpiritScoutError, "复盘未返回有效决策"):
+                        await master._review({"round_no": 0, "dag": dag.to_dict(),
+                                              "round_views": [{"flags": {}}]})
+                self.assertEqual(dag.get(node.node_id).status, TaskStatus.PENDING)
 
 
 class AuditProcessTests(unittest.IsolatedAsyncioTestCase):
     async def test_successful_cli_reaps_background_with_or_without_inherited_pipes(self) -> None:
-        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        with tempfile.TemporaryDirectory() as tmp:
             for inherited in (False, True):
                 with self.subTest(inherited=inherited):
                     marker = Path(tmp) / f"marker-{inherited}"
@@ -201,20 +198,17 @@ class AuditProcessTests(unittest.IsolatedAsyncioTestCase):
                     redirects = "" if inherited else ", stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL"
                     parent = ("import subprocess,sys; "
                               f"subprocess.Popen([sys.executable,'-c',{code!r}]{redirects}); print('done')")
-                    # 2 秒是「父进程不该被后台孙进程拖住」的意图；父进程自己要先
-                    # 启动、再拉起孙进程，慢机器上得按实测启动耗时放宽，否则还没
-                    # 走到 print('done') 就被当成挂死。
                     result = await LocalExecutor().run_argv(
-                        ToolSpec("audit", ToolKind.CLI, timeout_seconds=budget(2, 3)),
+                        ToolSpec("audit", ToolKind.CLI, timeout_seconds=2),
                         [sys.executable, "-c", parent])
                     self.assertTrue(result.ok, result.error)
                     self.assertIn("done", result.stdout)
                     self.assertLess(result.duration_ms, 1200)
-                    await asyncio.sleep(reap_window(.4))
+                    await asyncio.sleep(.5)
                     self.assertFalse(marker.exists(), "工具返回后不得继续产生副作用")
 
     async def test_cancelled_cli_reaps_children(self) -> None:
-        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        with tempfile.TemporaryDirectory() as tmp:
             marker = Path(tmp) / "late"
             ready = Path(tmp) / "ready"
             child = ("import time; from pathlib import Path; time.sleep(.5); "
@@ -224,19 +218,19 @@ class AuditProcessTests(unittest.IsolatedAsyncioTestCase):
                       f"Path({str(ready)!r}).write_text('ready'); time.sleep(30)")
             task = asyncio.create_task(LocalExecutor().run_argv(
                 ToolSpec("audit", ToolKind.CLI), [sys.executable, "-c", parent]))
-            async with asyncio.timeout(budget(3, 3)):
+            async with asyncio.timeout(3):
                 while not ready.exists():
                     await asyncio.sleep(.01)
             task.cancel()
             with self.assertRaises(asyncio.CancelledError):
                 await task
-            await asyncio.sleep(reap_window(.5))
+            await asyncio.sleep(.6)
             self.assertFalse(marker.exists())
 
     async def test_sandbox_hides_control_and_preserves_artifacts_and_readonly_attachments(self) -> None:
-        if sandbox_backend() != "bwrap":
-            self.skipTest("需要 bwrap 后端验证命名空间遮蔽（host 后端无文件系统隔离）")
-        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        if not sandbox_available():
+            self.skipTest("需要 bubblewrap")
+        with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             (root / "attachments").mkdir()
             (root / "attachments" / "input").write_text("attachment")
@@ -252,7 +246,7 @@ for name in ('bb.db', 'audit.jsonl', 'meta.json', 'execution.key', 'vault.key'):
         pass
     else:
         raise RuntimeError('control write permitted')
-assert (r / 'attachments/input').read_text(encoding="utf-8") == 'attachment'
+assert (r / 'attachments/input').read_text() == 'attachment'
 try:
     (r / 'attachments/input').write_text('changed')
 except OSError:
@@ -269,12 +263,12 @@ print('isolated')
             followup = await sandbox_exec("cat persistent ../artifacts/result",
                                            workspace_root=str(root))
             self.assertEqual(followup.stdout, "savedartifact")
-            self.assertEqual((root / "bb.db").read_text(encoding="utf-8"), "host-control")
+            self.assertEqual((root / "bb.db").read_text(), "host-control")
 
     async def test_sandbox_rejects_symlink_shared_directory(self) -> None:
-        if sandbox_backend() != "bwrap":
-            self.skipTest("需要 bwrap 后端验证命名空间遮蔽（host 后端无文件系统隔离）")
-        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        if not sandbox_available():
+            self.skipTest("需要 bubblewrap")
+        with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             (root / "sandbox").symlink_to(root, target_is_directory=True)
             result = await sandbox_exec("true", workspace_root=str(root))
@@ -282,9 +276,9 @@ print('isolated')
             self.assertIn("符号链接", result.error)
 
     async def test_sandbox_workspace_scope_isolates_challenge_products(self) -> None:
-        if sandbox_backend() != "bwrap":
-            self.skipTest("需要 bwrap 后端验证命名空间遮蔽（host 后端无文件系统隔离）")
-        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        if not sandbox_available():
+            self.skipTest("需要 bubblewrap")
+        with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             first = await sandbox_exec("echo A > marker", workspace_root=str(root),
                                        workspace_scope="e1-01")
@@ -297,8 +291,8 @@ print('isolated')
             self.assertTrue(second.parsed["workdir"].endswith("sandbox/e1-02"),
                             second.parsed)
             # 同名脚本产物与默认日志按题隔离，互不覆盖
-            self.assertEqual((root / "sandbox" / "e1-01" / "marker").read_text(encoding="utf-8"), "A\n")
-            self.assertEqual((root / "sandbox" / "e1-02" / "marker").read_text(encoding="utf-8"), "B\n")
+            self.assertEqual((root / "sandbox" / "e1-01" / "marker").read_text(), "A\n")
+            self.assertEqual((root / "sandbox" / "e1-02" / "marker").read_text(), "B\n")
             for result in (first, second):
                 output = Path(result.parsed["output_file"])
                 self.assertTrue(output.exists())
@@ -373,7 +367,7 @@ class AuditHTTPTests(unittest.IsolatedAsyncioTestCase):
 
 class AuditOwnershipTests(unittest.TestCase):
     def test_same_key_other_workspace_still_cannot_reconcile_active_database(self) -> None:
-        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             bb = Blackboard(root / "bb.db")
             lock = ExecutionRunLock(root / "one")
@@ -395,7 +389,7 @@ class AuditOwnershipTests(unittest.TestCase):
                 bb.close()
 
     def test_legacy_database_rejects_existing_wrong_key_before_migration(self) -> None:
-        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             bb = Blackboard(root / "bb.db")
             try:
@@ -403,7 +397,7 @@ class AuditOwnershipTests(unittest.TestCase):
                 first.begin("private", "echo", "digest", "safe", params={"private": "saved"})
                 with bb.transaction() as conn:
                     conn.execute("DROP TABLE execution_owner")
-                    conn.execute("DELETE FROM execution_schema_migrations WHERE version=3")
+                    conn.execute("DELETE FROM execution_schema_migrations WHERE version>=3")
                 (root / "two").mkdir()
                 (root / "two" / "execution.key").write_bytes(Fernet.generate_key())
                 with self.assertRaises(ConfigurationError):
@@ -415,22 +409,17 @@ class AuditOwnershipTests(unittest.TestCase):
                 bb.close()
 
     def test_same_database_aliases_cannot_take_second_lock(self) -> None:
-        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             db = root / "bb.db"
             first = ExecutionRunLock(root / "one", db)
             first.acquire()
             try:
-                hardlink = root / "hardlink.db"
-                os.link(db, hardlink)      # 硬链接：同 inode、无需特权
                 alias = root / "alias.db"
-                paths = [db, hardlink]
-                try:
-                    alias.symlink_to(db)
-                    paths.append(alias)
-                except OSError:
-                    pass                   # Windows 无建链接特权：硬链接已覆盖同 inode 语义
-                for path in paths:
+                alias.symlink_to(db)
+                hardlink = root / "hardlink.db"
+                os.link(db, hardlink)
+                for path in (db, alias, hardlink):
                     second = ExecutionRunLock(root / "two", path)
                     with self.assertRaises(ConfigurationError):
                         second.acquire()
@@ -443,7 +432,7 @@ class AuditOwnershipTests(unittest.TestCase):
             second.close()
 
     def test_other_workspace_cannot_reconcile_live_run_or_get_replacement_key(self) -> None:
-        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             bb = Blackboard(root / "bb.db")
             lock = ExecutionRunLock(root / "one")
@@ -479,7 +468,7 @@ class AuditFlagTests(unittest.IsolatedAsyncioTestCase):
 
 class AuditPlaintextTests(unittest.IsolatedAsyncioTestCase):
     async def test_new_and_historical_audit_stay_verbatim_on_disk_stream_and_export(self) -> None:
-        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "audit.jsonl"
             log = AuditLogger(path)
             record = {"type": "agent.tool_call", "actor": "test", "detail": {"calls": [
@@ -488,16 +477,16 @@ class AuditPlaintextTests(unittest.IsolatedAsyncioTestCase):
             log.log(record["type"], record["actor"], record["detail"])
             # 原文落盘：会话页实时监控 agent 的真实数据流，不做键值脱敏
             for secret in ("UNMARKED_SECRET_VALUE", "URL_SECRET", "HEADER_SECRET", "PASS_SECRET"):
-                self.assertIn(secret, path.read_text(encoding="utf-8"))
+                self.assertIn(secret, path.read_text())
             path.write_text(json.dumps(record) + "\n")
             frames = "".join([frame async for frame in stream_audit(path, max_frames=1)])
-            exported = log.export(Path(tmp) / "export.jsonl").read_text(encoding="utf-8")
+            exported = log.export(Path(tmp) / "export.jsonl").read_text()
             self.assertEqual(sanitize_record(sanitize_record(record)), sanitize_record(record))
             for secret in ("UNMARKED_SECRET_VALUE", "URL_SECRET", "HEADER_SECRET", "PASS_SECRET"):
                 self.assertIn(secret, frames + exported + json.dumps(log.read_all()))
 
     async def test_historical_audit_download_returns_records_as_written(self) -> None:
-        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             cfg = SystemConfig(workspace=WorkspaceConfig(root=tmp),
                                models_config_path=str(root / "models.yaml"))

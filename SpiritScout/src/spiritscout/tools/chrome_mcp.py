@@ -2,14 +2,18 @@
 
 from __future__ import annotations
 
+import hashlib
 import ipaddress
+import json
 import os
 import shutil
 import socket
 import subprocess
 import sys
+import tempfile
+import uuid
 from pathlib import Path
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import unquote, urlsplit, urlunsplit
 
 from spiritscout.platform_support import chrome_executable, node_cli_command
 
@@ -22,8 +26,8 @@ def default_host() -> str:
     if Path("/.dockerenv").exists():
         return "host.docker.internal"
     release = Path("/proc/sys/kernel/osrelease")
-    if release.exists() and "microsoft" in release.read_text(encoding="utf-8", errors="replace").lower():
-        for line in Path("/proc/net/route").read_text(encoding="utf-8", errors="replace").splitlines()[1:]:
+    if release.exists() and "microsoft" in release.read_text().lower():
+        for line in Path("/proc/net/route").read_text().splitlines()[1:]:
             fields = line.split()
             if len(fields) >= 4 and fields[1] == "00000000" and int(fields[3], 16) & 2:
                 return socket.inet_ntoa(bytes.fromhex(fields[2])[::-1])
@@ -72,33 +76,74 @@ def command(endpoint: str, env: dict[str, str]) -> list[str]:
     output = Path(env["SPIRITSCOUT_CHROME_OUTPUT_DIR"]) if env.get("SPIRITSCOUT_CHROME_OUTPUT_DIR") else (
         Path.cwd() / ".tools" / "chrome-mcp" / "output")
     output.mkdir(parents=True, exist_ok=True)
-    temporary = output / "tmp"
+    # Unix socket 路径有长度限制，不能放在可能含中文或深层目录的会话产物路径下。
+    socket_base = Path("/tmp") if os.name != "nt" and Path("/tmp").is_dir() else Path(tempfile.gettempdir())
+    socket_root = socket_base / (
+        "ss-pw-" + hashlib.sha256(str(output.resolve()).encode()).hexdigest()[:12])
+    socket_root.mkdir(mode=0o700, exist_ok=True)
+    env.setdefault("PWTEST_SOCKETS_DIR", str(socket_root))
+    temporary = socket_root / "tmp"
     temporary.mkdir(exist_ok=True)
     for key in ("TMPDIR", "TEMP", "TMP"):
         env[key] = str(temporary.resolve())
     env.setdefault("npm_config_cache", str(Path.cwd() / ".tools" / "chrome-mcp" / "npm-cache"))
     mode = env.get("SPIRITSCOUT_CHROME_MODE", "cdp")
-    if mode == "headless":
+    if mode in {'headless', 'session'}:
         # 使用本机已安装浏览器；配置目录由 MCP 隔离，不读取用户 Chrome 登录态。
         executable = chrome_executable(env)
-        connection = ["--headless", "--isolated"]
+        connection = ['--isolated', *(['--headless'] if mode == 'headless' else [])]
         if executable:
             connection += ["--executable-path", executable]
         if hasattr(os, "geteuid") and os.geteuid() == 0:
             connection.append("--no-sandbox")
     elif mode == "cdp":
         connection = ["--cdp-endpoint", endpoint]
+        if env.get('SPIRITSCOUT_CHROME_ISOLATED') == '1':
+            connection.append('--isolated')
     else:
         raise ValueError("SPIRITSCOUT_CHROME_MODE 必须是 cdp 或 headless")
-    return [*prefix, *connection, "--caps", "storage",
+    state = env.get('SPIRITSCOUT_CHROME_STORAGE_STATE', '')
+    if state:
+        if '--isolated' not in connection:
+            raise ValueError('登录态只能加载到隔离浏览器上下文')
+        connection += ['--storage-state', state]
+    privacy = []
+    if env.get('SPIRITSCOUT_BROWSER_ACCOUNT'):
+        # 禁用账号上下文的代码回显；不加载可能开启 trace/session 录制的外部配置。
+        env.pop('PLAYWRIGHT_MCP_CONFIG', None)
+        privacy = ['--codegen', 'none']
+    if env.get('SPIRITSCOUT_EGRESS_SOCKET'):
+        # 此代码运行于隔离命名空间内，HTTP_PROXY 已指向其中的桥接监听器。
+        proxy = urlsplit(env['HTTP_PROXY'])
+        directory = Path(env['SPIRITSCOUT_EGRESS_SOCKET']).parent
+        config = directory / ('browser-' + uuid.uuid4().hex + '.json')
+        with config.open('x') as target:
+            config.chmod(0o600)
+            json.dump({'browser': {'launchOptions': {'proxy': {
+                'server': f'http://{proxy.hostname}:{proxy.port}',
+                'username': unquote(proxy.username or ''), 'password': unquote(proxy.password or ''),
+                'bypass': ''}, 'args': ['--ozone-platform=wayland'] if env.get('WAYLAND_DISPLAY') else []},
+                'contextOptions': {'ignoreHTTPSErrors': True}}}, target)
+        privacy += ['--config', str(config)]
+    return [*prefix, *connection, *privacy, "--caps", "storage",
             "--snapshot-boxes", "--output-dir", str(output)]
 
 
 def main() -> int:
     try:
         env = dict(os.environ)
-        endpoint = ("" if env.get("SPIRITSCOUT_CHROME_MODE") == "headless" else
+        if env.get('SPIRITSCOUT_CHROME_MODE') == 'session':
+            from spiritscout.tools.browser_desktop import desktop_environment
+
+            env = desktop_environment(env)
+            if not env.get('DISPLAY') and not env.get('WAYLAND_DISPLAY'):
+                env['SPIRITSCOUT_CHROME_MODE'] = 'headless'
+        endpoint = ("" if env.get("SPIRITSCOUT_CHROME_MODE") in {'headless', 'session'} else
                     cdp_endpoint(env.get("SPIRITSCOUT_CHROME_CDP_URL", "")))
+        if endpoint and env.get("SPIRITSCOUT_CHROME_DEFER_START") != "1":
+            from spiritscout.tools.browser_desktop import ensure_browser
+
+            ensure_browser(endpoint, env)
         argv = command(endpoint, env)
         if sys.platform == "win32":
             # Windows CRT exec 不会自动引用带空格路径；subprocess 按 argv 正确编码。

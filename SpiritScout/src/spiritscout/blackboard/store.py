@@ -16,7 +16,7 @@ import tempfile
 import threading
 import uuid
 from collections.abc import Iterator
-from contextlib import contextmanager, suppress
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -25,7 +25,7 @@ from spiritscout.blackboard.layers import can_write
 from spiritscout.bus.base import EventBus
 from spiritscout.core.exceptions import PolicyViolation, VersionConflict
 from spiritscout.core.models import AgentType, BlackboardLayer, Event
-from spiritscout.core.sqlite_ro import ro_uri
+from spiritscout.core.storage_codec import compress_bytes, unpack_json
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS bb_records (
@@ -61,7 +61,7 @@ class Blackboard:
         if not readonly:
             self._path.parent.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(
-            ro_uri(self._path) if readonly else str(self._path),
+            self._path.resolve().as_uri() + "?mode=ro" if readonly else str(self._path),
             uri=readonly, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         if not readonly:
@@ -97,8 +97,10 @@ class Blackboard:
                 self._conn.backup(target)
             finally:
                 target.close()
-            with suppress(FileExistsError):
+            try:
                 os.link(name, backup)
+            except FileExistsError:
+                pass
         finally:
             Path(name).unlink(missing_ok=True)
 
@@ -122,6 +124,18 @@ class Blackboard:
                 self._conn.execute("BEGIN IMMEDIATE")
             yield self._conn
 
+    @contextmanager
+    def _read_snapshot(self) -> Iterator[None]:
+        """多层依赖在同一 SQLite 快照核对；不能提交或回滚调用方的写事务。"""
+        owned = not self._conn.in_transaction
+        if owned:
+            self._conn.execute('BEGIN')
+        try:
+            yield
+        finally:
+            if owned:
+                self._conn.rollback()
+
     def write(
         self,
         layer: BlackboardLayer,
@@ -141,8 +155,11 @@ class Blackboard:
                 """
         if not can_write(agent_type, layer):
             raise PolicyViolation(f"{agent_type.value} 无黑板层 {layer.value} 写入权限")
+        if agent_type == AgentType.SCANNER and layer == BlackboardLayer.VULN and (
+                data.get('status', 'candidate') != 'candidate'
+                or data.get('poc_verified') or data.get('exploitable')):
+            raise PolicyViolation('扫描者只能提交待复核候选，不能写入已确认或已验证状态')
         now = datetime.now(UTC).isoformat()
-        payload = json.dumps(data, ensure_ascii=False)
         # Web 入口短连接与运行态并发写：先取得数据库写锁，再读当前版本。
         with self.transaction(immediate=True):
             if dedup_key:
@@ -158,20 +175,28 @@ class Blackboard:
                 if hit:
                     record_id = hit["record_id"]
             row = self._conn.execute(
-                "SELECT version FROM bb_records WHERE layer=? AND record_id=?",
+                "SELECT version,data FROM bb_records WHERE layer=? AND record_id=?",
                 (layer.value, record_id),
             ).fetchone()
             current = row["version"] if row else 0
             if expected_version is not None and expected_version != current:
                 raise VersionConflict(layer.value, record_id, expected_version, current)
+            # DAG 是实时展示快照；相同内容不制造历史与通知，其他事实仍逐版留痕。
+            dag_snapshot = layer == BlackboardLayer.TASK_STATE and record_id == "dag-snapshot"
+            if dag_snapshot and row is not None and json.loads(row["data"]) == data:
+                return current
             # 首次升级时先保存已有现值，后续在同一事务留存每个版本。
             self._conn.execute(
                 "INSERT OR IGNORE INTO bb_record_history SELECT layer,record_id,version,data,updated_by,updated_at "
                 "FROM bb_records WHERE layer=? AND record_id=?", (layer.value, record_id))
+            from spiritscout.blackboard.provenance import annotate
+
+            data = annotate(self._conn, layer, data, actor=updated_by, now=now, agent_type=agent_type, record_id=record_id)
+            payload = json.dumps(data, ensure_ascii=False)
             new_version = current + 1
             self._conn.execute(
                 "INSERT INTO bb_record_history VALUES(?,?,?,?,?,?)",
-                (layer.value, record_id, new_version, payload, updated_by, now))
+                (layer.value, record_id, new_version, compress_bytes(payload.encode()), updated_by, now))
             self._conn.execute(
                 """INSERT INTO bb_records(layer, record_id, version, dedup_key, data, updated_by, updated_at)
                    VALUES(?,?,?,?,?,?,?)
@@ -181,12 +206,18 @@ class Blackboard:
                        updated_at=excluded.updated_at""",
                 (layer.value, record_id, new_version, dedup_key, payload, updated_by, now),
             )
+            if dag_snapshot:
+                self._conn.execute(
+                    "DELETE FROM bb_record_history WHERE layer=? AND record_id=? AND version NOT IN "
+                    "(SELECT version FROM bb_record_history WHERE layer=? AND record_id=? "
+                    "ORDER BY version DESC LIMIT 64)",
+                    (layer.value, record_id, layer.value, record_id))
             event = Event(event_id=f"evt-{uuid.uuid4().hex}", topic=f"bb.{layer.value}",
                           layer=layer, data_id=record_id, version=new_version,
                           priority=priority, source=updated_by, payload=data)
             # 通知仅携带定位信息；黑板记录与 outbox 在同一事务提交。
             self._conn.execute("INSERT INTO bb_event_outbox(event_json) VALUES(?)",
-                               (event.model_dump_json(),))
+                               (compress_bytes(event.model_dump_json().encode()),))
         self._wake_outbox()
         if layer == BlackboardLayer.ASSET and self.asset_observer is not None:
             self.asset_observer(record_id, new_version, data)
@@ -203,20 +234,22 @@ class Blackboard:
         return {str(row[0]): row[1] for row in rows}
 
     def read(self, layer: BlackboardLayer, record_id: str) -> dict[str, Any] | None:
-        with self._lock:
+        with self._lock, self._read_snapshot():
             row = self._conn.execute(
                 "SELECT data FROM bb_records WHERE layer=? AND record_id=?",
                 (layer.value, record_id),
             ).fetchone()
-        return json.loads(row["data"]) if row else None
+            from spiritscout.blackboard.provenance import evidence_view
+            return evidence_view(self._conn, json.loads(row["data"])) if row else None
 
     def read_versioned(self, layer: BlackboardLayer, record_id: str) -> tuple[dict[str, Any], int] | None:
-        with self._lock:
+        with self._lock, self._read_snapshot():
             row = self._conn.execute(
                 "SELECT data, version FROM bb_records WHERE layer=? AND record_id=?",
                 (layer.value, record_id),
             ).fetchone()
-        return (json.loads(row["data"]), row["version"]) if row else None
+            from spiritscout.blackboard.provenance import evidence_view
+            return (evidence_view(self._conn, json.loads(row["data"])), row["version"]) if row else None
 
     def query(
         self,
@@ -239,18 +272,20 @@ class Blackboard:
             params.extend((f'$.{field}', value))
         sql += " ORDER BY updated_at DESC LIMIT ?"
         params.append(limit)
-        with self._lock:
+        with self._lock, self._read_snapshot():
             rows = self._conn.execute(sql, params).fetchall()
-        return [
-            {
-                "record_id": r["record_id"],
-                "version": r["version"],
-                "data": json.loads(r["data"]),
-                "updated_by": r["updated_by"],
-                "updated_at": r["updated_at"],
-            }
-            for r in rows
-        ]
+            from spiritscout.blackboard.provenance import evidence_view
+            dependency_cache: dict = {}
+            return [
+                {
+                    "record_id": r["record_id"],
+                    "version": r["version"],
+                    "data": evidence_view(self._conn, json.loads(r["data"]), dependency_cache=dependency_cache),
+                    "updated_by": r["updated_by"],
+                    "updated_at": r["updated_at"],
+                }
+                for r in rows
+            ]
 
     def find_by_dedup_key(self, layer: BlackboardLayer, dedup_key: str) -> dict[str, Any] | None:
         results = self.query(layer, dedup_key=dedup_key, limit=1)
@@ -262,32 +297,6 @@ class Blackboard:
                 "SELECT COUNT(*) AS c FROM bb_records WHERE layer=?", (layer.value,)
             ).fetchone()
         return int(row["c"])
-
-    def purge(self, layer: BlackboardLayer, *, keep: tuple[str, ...] = ()) -> int:
-        """清掉该层除 `keep` 之外的记录（含历史版本），返回删除条数。
-
-        用途是切断跨题关联：换了题目以后，资产、线索、漏洞、凭据、拓扑和
-        任务状态都只对上一题成立，留着会被新题当成既有事实沿用。`keep`
-        留给那些描述"谁授权、这次是哪道题"的记录——它们随会话走，不随
-        题目变。删除只动这一层的行，方向键、事件流、其他层都不受影响。
-        """
-        sql = "SELECT record_id FROM bb_records WHERE layer=?"
-        params: list[Any] = [layer.value]
-        if keep:
-            sql += " AND record_id NOT IN (" + ",".join("?" * len(keep)) + ")"
-            params.extend(keep)
-        with self.transaction(immediate=True) as conn:
-            ids = [row["record_id"] for row in conn.execute(sql, params)]
-            if not ids:
-                return 0
-            marks = ",".join("?" * len(ids))
-            conn.execute(
-                "DELETE FROM bb_records WHERE layer=? AND record_id IN (" + marks + ")",
-                (layer.value, *ids))
-            conn.execute(
-                "DELETE FROM bb_record_history WHERE layer=? AND record_id IN (" + marks + ")",
-                (layer.value, *ids))
-        return len(ids)
 
     def close(self) -> None:
         if self._outbox_task is not None:
@@ -303,7 +312,7 @@ class Blackboard:
         self.close()
 
     async def flush_outbox(self, limit: int = 100) -> int:
-        """至少一次通知；发布成功后才能标记，重复通知由 event_id 去重。"""
+        """至少一次通知；发布成功后移除队列项，重复通知由 event_id 去重。"""
         if self._bus is None:
             return 0
         with self._lock:
@@ -312,9 +321,9 @@ class Blackboard:
                                       (max(1, min(limit, 1000)),)).fetchall()
         delivered = 0
         for row in rows:
-            await self._bus.publish(Event.model_validate_json(row["event_json"]))
+            await self._bus.publish(Event.model_validate(unpack_json(row["event_json"])))
             with self.transaction() as conn:
-                conn.execute("UPDATE bb_event_outbox SET delivered=1 WHERE sequence=?",
+                conn.execute("DELETE FROM bb_event_outbox WHERE sequence=?",
                              (row["sequence"],))
             delivered += 1
         return delivered
@@ -326,8 +335,10 @@ class Blackboard:
     def _wake_outbox(self) -> None:
         if self._bus is None or (self._outbox_task and not self._outbox_task.done()):
             return
-        with suppress(RuntimeError):
+        try:
             self._outbox_task = asyncio.get_running_loop().create_task(self._deliver_outbox())
+        except RuntimeError:
+            pass
 
     async def _deliver_outbox(self) -> None:
         while True:

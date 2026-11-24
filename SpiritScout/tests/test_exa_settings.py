@@ -136,7 +136,7 @@ class CompetitionSearchTests(unittest.IsolatedAsyncioTestCase):
             registry = ToolRegistry(SimpleNamespace(), policy=self.policy(mode))
             fn = AsyncMock(return_value=ToolResult(tool='web_search', ok=True))
             registry.register_builtin('web_search', fn, SEARCH_SPEC)
-            result = await registry.call('web_search', {'query': 'test'})
+            result = await registry.call('web_search', {'query': 'test', 'reason': '检查检索可用性'})
             self.assertTrue(result.ok)
             fn.assert_awaited_once()
 
@@ -170,7 +170,7 @@ class CompetitionSearchTests(unittest.IsolatedAsyncioTestCase):
                  patch('spiritscout.tools.web_search.search_service') as make_search:
                 infra = await _build_infra(cfg, [ModelEntry(model='local', provider='mock')], auth)
                 try:
-                    self.assertIsNone(infra.builtin_ctx['search'])
+                    self.assertIsNone(infra.builtin_ctx['_search'])
                     self.assertFalse(infra.mcp_tools)
                     connect.assert_not_called()
                     make_search.assert_not_called()

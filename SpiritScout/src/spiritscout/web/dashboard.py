@@ -6,19 +6,30 @@ import math
 import sqlite3
 import threading
 import time
-from collections import Counter, defaultdict
+from collections import Counter, defaultdict, deque
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from pydantic_core import from_json
+
 from spiritscout.blackboard import Blackboard
+from spiritscout.core.audit import decode_record
 from spiritscout.core.models import BlackboardLayer
 from spiritscout.gateway.cache import cache_summary
+from spiritscout.gateway.costs import cost_summary
 from spiritscout.gateway.usage import file_version, read_usage
 
 BJT = ZoneInfo("Asia/Shanghai")
 ACTIVE = {"running", "dispatched"}
+# 仪表盘不消费请求正文、前缀组件和重试轨迹，避免每次刷新复制这些大字段。
+CALL_FIELDS = frozenset({
+    "ts", "tokens", "input_tokens", "output_tokens", "cached_input_tokens", "model", "actor",
+    "task_type", "cache_scope", "model_key", "provider_ref", "context_parts", "cache_diagnostics",
+    "estimated_cost_cny_min", "estimated_cost_cny_max", "estimated_cost_usd", "usd_pricing_status",
+    "cost_usd", "usage_status", "sdk_attempts", "unreported_attempts",
+})
 
 
 def timestamp(value: Any) -> float | None:
@@ -44,23 +55,33 @@ def start_of_period(period: str, now: float) -> float:
 
 def usage_metrics(calls: list[dict[str, Any]]) -> dict[str, Any]:
     cache = cache_summary(calls)
-    # cost_usd 是账本里的确定值（本地模型、免费额度就是 0）。0 不等于「不知道」：
-    # 只有压根没有这个字段才算未计价，否则所有本地调用都会被显示成「未知」。
-    priced_usd = [r for r in calls if r.get("cost_usd") is not None
-                  and (r.get("estimated_cost_cny_min") is None
-                       or r.get("estimated_cost_cny_max") is None)]
+    def usd_amount(row: dict[str, Any]) -> float | None:
+        if row.get("estimated_cost_usd") is not None:
+            return row["estimated_cost_usd"]
+        if not row.get("usd_pricing_status") and (row.get("cost_usd") or 0) > 0:
+            return row["cost_usd"]
+        return None
+
+    priced_usd = [r for r in calls if usd_amount(r) is not None
+                  and (r.get("estimated_cost_cny_min") is None or r.get("estimated_cost_cny_max") is None)]
     cny = [r for r in calls if r.get("estimated_cost_cny_min") is not None
            and r.get("estimated_cost_cny_max") is not None]
     known = sum((r.get("estimated_cost_cny_min") is not None
-                 and r.get("estimated_cost_cny_max") is not None)
-                or r.get("cost_usd") is not None
+                 and r.get("estimated_cost_cny_max") is not None) or usd_amount(r) is not None
                 for r in calls)
     return {"calls": len(calls), "tokens": sum(r.get("tokens", 0) for r in calls),
+            "input_tokens": sum(r.get("input_tokens", 0) for r in calls),
+            "output_tokens": sum(r.get("output_tokens", 0) for r in calls),
+            "usage_reported_calls": sum(r.get("usage_status") == "reported" for r in calls),
+            "usage_incomplete_calls": sum(r.get("usage_status") != "reported" for r in calls),
+            "sdk_attempts": sum(r.get("sdk_attempts") or 0 for r in calls),
+            "unreported_attempts": sum(r.get("unreported_attempts") or 0 for r in calls),
             "cost": {"cny_min": sum(r["estimated_cost_cny_min"] for r in cny) if cny else None,
                      "cny_max": sum(r["estimated_cost_cny_max"] for r in cny) if cny else None,
-                     "usd": sum(r["cost_usd"] for r in priced_usd) if priced_usd else None,
+                     "usd": sum(usd_amount(r) for r in priced_usd) if priced_usd else None,
                      "priced_calls": known, "unpriced_calls": len(calls) - known,
-                     "cny_calls": len(cny), "usd_calls": len(priced_usd), "kind": "estimate"},
+                     "cny_calls": len(cny), "usd_calls": len(priced_usd), "kind": "estimate",
+                     "coverage": cost_summary(calls)},
             "cache": {k: v for k, v in cache.items() if k != "groups"}}
 
 
@@ -82,6 +103,24 @@ class DashboardReader:
         self._lock = threading.Lock()
         self._snapshots: dict[str, tuple[Any, dict[str, Any]]] = {}
         self._audits: dict[str, dict[str, Any]] = {}
+        self._usage_snapshots: dict[str, tuple[Any, dict[str, Any]]] = {}
+
+    def _usage(self, session: Any) -> dict[str, Any]:
+        root = session.workspace
+        key = str(root)
+        ledger = root / "usage.db"
+        version = ((file_version(ledger), file_version(Path(str(ledger) + "-wal")))
+                   if ledger.exists() else (file_version(root / "usage.json"),))
+        old = self._usage_snapshots.get(key)
+        if old and old[0] == version:
+            return old[1]
+        usage = read_usage(root / "usage.json", call_fields=CALL_FIELDS)
+        if usage is None:
+            # 损坏或缺失文件时仍读取会话汇总；该回退可能在内存更新，不按文件版本缓存。
+            self._usage_snapshots.pop(key, None)
+            return session.model_usage(call_fields=CALL_FIELDS)
+        self._usage_snapshots[key] = version, usage
+        return usage
 
     def _audit(self, path: Path) -> dict[str, Any]:
         key = str(path)
@@ -94,6 +133,7 @@ class DashboardReader:
         reset = not previous or previous["version"][:2] != version[:2] or version[2] < previous["offset"]
         state = ({"events": [], "pending": {}, "outcomes": [], "offset": 0, "complete": True,
                   "history_start": None, "last_score": None, "score": None, "accepted_flags": set()} if reset else previous)
+        events = deque(state["events"], maxlen=120)
         with path.open("rb") as stream:
             offset = state["offset"]
             # 巨型历史文件首次只取尾部，未知历史时间不伪装成“没有成果”。
@@ -113,7 +153,7 @@ class DashboardReader:
                 remaining -= len(line)
                 offset = stream.tell()
                 try:
-                    event = json.loads(line)
+                    event = decode_record(from_json(line))
                 except (ValueError, UnicodeDecodeError):
                     continue
                 if not isinstance(event, dict):
@@ -131,7 +171,7 @@ class DashboardReader:
                            "task_id": d.get("task_id", ""), "call_id": d.get("call_id", ""),
                            "seq": event.get("seq"), "kind": d.get("kind", ""),
                            "action": d.get("action", ""), "ok": d.get("ok"),
-                           "text": _short(d.get("text") or d.get("summary") or d.get("error") or d.get("note") or d.get("title"))}
+                           "text": d.get("text") or d.get("summary") or d.get("error") or d.get("note") or d.get("title")}
                 if kind == "model.started":
                     state["pending"][str(d.get("call_id"))] = {**compact, "model": d.get("model"),
                                                                "task_type": d.get("task_type")}
@@ -151,8 +191,7 @@ class DashboardReader:
                         state["outcomes"].append({"ts": ts, "kind": "score", "label": f"得分 {d['score']}"})
                 # 思考正文不进入总览，真实模型公开说明保留短片段。
                 if kind != "agent.delta" or d.get("kind") == "text":
-                    state["events"].append(compact)
-                    state["events"] = state["events"][-120:]
+                    events.append(compact)
                 if kind == "platform.fact" and isinstance(d.get("profile"), dict):
                     state["capacity"] = (d["profile"].get("limits") or {}).get("max_active")
                 if kind == "agent.delta" and d.get("kind") == "text":
@@ -161,6 +200,9 @@ class DashboardReader:
                     state["progress"], state["progress_stem"] = text[-1200:], stem
                 state["last_activity"] = ts
             state["offset"] = offset
+        state["events"] = list(events)
+        for event in [*state["events"], *state["pending"].values()]:
+            event["text"] = _short(event["text"])
         state["outcomes"] = state["outcomes"][-2000:]
         state["version"] = version
         self._audits[key] = state
@@ -211,14 +253,11 @@ class DashboardReader:
         self._snapshots[key] = version, data
         return data
 
-    def build(self, sessions: list[Any], *, period: str = "today", now: float | None = None,
-              usage_root: Path | str | None = None) -> dict[str, Any]:
+    def build(self, sessions: list[Any], *, period: str = "today", now: float | None = None) -> dict[str, Any]:
         with self._lock:
-            return self._build(sessions, period, time.time() if now is None else now,
-                               usage_root=usage_root)
+            return self._build(sessions, period, time.time() if now is None else now)
 
-    def _build(self, sessions: list[Any], period: str, now: float,
-               usage_root: Path | str | None = None) -> dict[str, Any]:
+    def _build(self, sessions: list[Any], period: str, now: float) -> dict[str, Any]:
         start = start_of_period(period, now)
         today_start = start_of_period("today", now)
         calls: list[dict[str, Any]] = []
@@ -226,21 +265,9 @@ class DashboardReader:
         daily: dict[str, int] = defaultdict(int)
         per_model: dict[str, int] = defaultdict(int)
         total_tokens, total_cost = 0, 0.0
-
-        def attention_for(session_id: str, title: str):
-            """把告警绑到具体会话上——循环里现定义闭包会捕获循环变量。"""
-
-            def attention(kind: str, text: str, evidence: str,
-                          ts: float | None = None) -> None:
-                alerts.append({"kind": kind, "session_id": session_id,
-                               "session_title": title, "text": text,
-                               "evidence": evidence, "ts": ts})
-
-            return attention
-
         for session in sessions:
             sid = session.session_id
-            usage = session.model_usage(readonly=True)
+            usage = self._usage(session)
             all_rows = [{**r, "session_id": sid} for r in usage.get("call_series", []) if timestamp(r.get("ts"))]
             calls.extend(all_rows)
             total_tokens += usage.get("used_tokens", 0)
@@ -319,7 +346,9 @@ class DashboardReader:
                 outcomes.append({"ts": snapshot["last_vuln"], "kind": "vuln", "label": "确认漏洞", "session_id": sid})
             if session.status != "running" or row["paused"]:
                 continue
-            attention = attention_for(sid, title)
+            def attention(kind: str, text: str, evidence: str, ts: float | None = None) -> None:
+                alerts.append({"kind": kind, "session_id": sid, "session_title": title,
+                               "text": text, "evidence": evidence, "ts": ts})
             for model in model_pending:
                 if now - model["ts"] >= 120:
                     attention("model_wait", "模型调用已等待超过两分钟", f"{model.get('model') or '模型'} · {model.get('task_type') or '决策'} · call_id={model['call_id']}", model["ts"])
@@ -334,25 +363,8 @@ class DashboardReader:
                 attention("data", "部分会话数据暂不可读", problem)
         valid_keys = {str(s.workspace) for s in sessions}
         self._snapshots = {k: v for k, v in self._snapshots.items() if k in valid_keys}
+        self._usage_snapshots = {k: v for k, v in self._usage_snapshots.items() if k in valid_keys}
         self._audits = {k: v for k, v in self._audits.items() if str(Path(k).parent) in valid_keys}
-        # 工作区共享账本里还记着不属于任何在册会话的调用（控制台命名/提炼/对话，
-        # 以及会话工作区被清理后仍然留下的历史）。只按会话汇总的话，这些 token
-        # 在仪表盘上是隐形的——「用量」页有数字、仪表盘却是 0。
-        if usage_root is not None:
-            seen = {r.get("call_id") for r in calls}
-            shared = read_usage(Path(usage_root) / "usage.json", readonly=True) or {}
-            for row in shared.get("call_series", []):
-                if row.get("call_id") in seen:
-                    continue
-                ts = timestamp(row.get("ts"))
-                if not ts or not (start <= ts <= now):
-                    continue
-                calls.append({**row, "session_id": "", "ts": ts})
-                total_tokens += int(row.get("tokens") or 0)
-                total_cost += float(row.get("cost_usd") or 0)
-                model = row.get("model") or ""
-                per_model[model] += int(row.get("tokens") or 0)
-                daily[datetime.fromtimestamp(ts, BJT).strftime("%Y-%m-%d")] += int(row.get("tokens") or 0)
         selected_calls = [r for r in calls if start <= r["ts"] <= now]
         windows = {str(m): usage_metrics([r for r in calls if now - m * 60 <= r["ts"] <= now]) for m in (5, 30, 60)}
         groups = {}

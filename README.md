@@ -1,12 +1,13 @@
 ﻿# 全自动打靶 · 灵枢（SpiritScout）本机工作区
 
-> ## ⚠ 开发中 · 未完成
+> ## 原生桌面端
 >
-> 工作区**还在迭代**，桌面版（`DesktopApp/`）尤其如此 —— 界面、数据结构、
-> 检查脚本都可能变。能跑、能过全量检查，但别当成稳定 API 依赖。
+> `SpiritScout/desktop/SpiritScoutCompose` 是当前唯一的桌面实现：Kotlin Compose
+> Desktop + SaltUI，直接运行后端进程，不使用 WebView2，也不把浏览器标签页当成
+> 产品界面。旧的 `DesktopApp/`、WebView2 壳和单文件兼容流程已移除。
 >
-> 最近一次全量验证：`check_all` **11 项全过** / `verify_all` 全绿
-> （`e2e` 141 断言 + 性能 6 项 + 配色 9 项 + 主题 4 项 + 会话 9 项）。
+> 当前源码版本为 `1.3.0`。打包产物放在 `dist-native/`、`dist-portable/` 和
+> `dist/`，这些目录不进入 Git，发布时作为 Release 附件上传。
 
 > 上游项目：**[FLIAZ/SpiritScout](https://github.com/FLIAZ/SpiritScout)**（灵枢，多智能体渗透/CTF 系统）。
 > 本仓库是它的工作区级超集：上游源码 + 本机免 Docker 启动器 + 便携包构建脚本 + 运行期经验沉淀导出。
@@ -16,16 +17,14 @@
 
 | 路径 | 作用 |
 | --- | --- |
-`SpiritScout/` | 产品本体。灵枢 v0.48.3，Python 3.11+，FastAPI Web 控制台 + 多 Agent 编排。详见 [SpiritScout/README.md](SpiritScout/README.md)
+`SpiritScout/` | 产品本体。灵枢 v1.3.0，Python 3.11+，FastAPI Web 控制台 + 多 Agent 编排。详见 [SpiritScout/README.md](SpiritScout/README.md)
 `start-local.ps1` | 本机启动器（不走 Docker）：环境与依赖自检（缺运行依赖自动 `pip install`，缺 venv/pip/解释器版本只给命令不动手）→ 导出执行后端与模型 key 环境变量 → 前台起 Web 控制台。首次启动会先让你设管理员密码（输两遍、不回显，只存 scrypt 哈希进 `admin.db`）。`-NoInstall` 只报告不装；装依赖默认走**清华 PyPI 镜像**，`-PipIndex official` 换官方源
 `启动服务.cmd` | 双击入口，包一层 `start-local.ps1 -Port 8010`
-`deploy-spiritscout.ps1` | Docker Desktop 一键部署（CTF 的 shell/python 工具硬依赖 bubblewrap，Windows 原生沙箱不可用时需要它）
-`_work/build_release.py` | 组装「解压即用」便携包：内嵌 CPython 3.11 + site-packages + app + configs + data，再打 zip
-`_work/validate_release.py` | 打包前的冒烟：包内解释器导入、沙箱解释器探测、配置数据落点、控制台真起停；跑完清掉它在 `data\` 留下的运行数据，好让下一步打出一个没被人点开过的包
-`run-spiritscout.ps1` | 本机一键启动：`chcp 65001` + UTF-8 输出（中文不糊）→ 前台起 `8010` 控制台并把日志 tee 到 `_work\agent-server.log`。python 退出后窗口自动关闭，不留「弹出来什么都没干」的空壳。**保留 UTF-8 BOM**——PowerShell 5.1 按 BOM 判断编码，丢了中文注释会被当 GBK 读崩
-`stop-spiritscout.ps1` | 本机一键停止：结束 `8010` 的服务进程，**并关掉承载它的 PowerShell 窗口**。别直接 `Stop-Process` 那个 python——脚本窗口会因为启动时的 `-NoExit` 留成空壳，攒几次满屏都是。脚本会顺着父链只认命令行里带本项目脚本的 shell，不碰你自己开的终端
 `experience-export/` | 运行期经验沉淀的**脱敏快照**（`experience-insights.json`，条数见文件里的 `total`）：`export_experience.py` 从 `SpiritScout/.spiritscout/experience.db` 导出，pre-commit 钩子保证每次提交都把它一起带上。装钩子：`python experience-export/install_hook.py`。细节见该目录 README
-`packages/`（未提交） | 构建产物落点：wheel / sdist / portable zip，通过 GitHub Release 分发
+`SpiritScout/desktop/SpiritScoutCompose/` | Kotlin Compose + SaltUI 原生桌面端源码
+`SpiritScout/launcher/build-native.ps1` | 生成内嵌 JRE、Python 运行时和原生桌面 zip 的主打包入口
+`SpiritScout/launcher/build-python-runtime.ps1` | 单独构建 Python embeddable 运行时，供原生打包和排障复用
+`dist/`、`dist-native/`、`dist-portable/` | 本地/Release 产物，保留在工作区但不提交
 [`PUSH-POLICY.md`](PUSH-POLICY.md) | **什么进仓库、什么只留本机**：源码/测试/文档/配置模板推，运行数据/密钥/构建产物/本机私用脚本不推。含推送前三十秒自检清单
 
 ## 三十秒跑起来
@@ -52,7 +51,7 @@ py -3.11 -m venv SpiritScout\.venv
 第一次启动会先问管理员密码：用户名直接回车就是 `master`，密码输两遍（不回显）；**长度不限**，
 一位和整句话都收。设完明文会在**这个终端显示一次**方便当场记下来，之后重启、日志、界面都不再
 显示，库里只有 scrypt 加盐哈希（明文不进命令行、不落盘）。回车两次就是不设——控制台只绑
-`127.0.0.1`，别的机器进不来，`auth_mode: none` 下不设也能直接进。想改密码：
+`127.0.0.1`，别的机器进不来；本机未配置管理员时可直接进入。想改密码：
 `SpiritScout\.venv\Scripts\python.exe -m spiritscout --set-admin-password`，或删掉
 `SpiritScout/.spiritscout/admin.db` 再启动一次。
 
@@ -147,48 +146,30 @@ lms server start; lms load qwen3.5-9b --context-length 16384 --parallel 1
 - **想让它做更难的题**：只有两条路有效——给它现成工具，或在任务描述里写清步骤。
   单纯调温度、加资料都验证过无效。
 
-## 桌面版：带自己窗口的那种开法
+## 原生桌面端：当前唯一桌面实现
 
-不想开黑窗口、也不想在浏览器标签页里跑控制台，就双击 **`灵枢桌面版.exe`**：左边是环境自检
-与一键修复，右边是嵌在本窗口里的控制台页面（WebView2，不是外部标签页），关窗口即停服务。
+`SpiritScout/desktop/SpiritScoutCompose/` 使用 Kotlin Compose Desktop + SaltUI 3.0.0，
+直接在原生窗口里完成导航、任务、资产、编队、模型、Skill、MCP、代理、流量和设置等操作。
+它启动一个随机回环端口的 Python 后端，关闭窗口时结束整棵进程树；不使用 WebView2，
+也不会跳到外部浏览器完成主流程。
 
-exe 不在仓库里（`.gitignore` 挡了），要么从 release 附件拿，要么自己编一次：
-
-```powershell
-powershell -ExecutionPolicy Bypass -File SpiritScout\launcher\build-desktop.ps1
-```
-
-首次会下 WebView2 SDK（约 8 MB，缓存在 `SpiritScout/launcher/.cache/`，之后离线可用：
-加 `-SkipDownload`）。编译用 Windows 自带的 `csc.exe`，**不需要装 .NET SDK**；产物是
-一个约 824 KB 的 exe，内嵌浏览器要的三个 DLL 以资源形式塞在里面，首次运行时自己解到
-`%LOCALAPPDATA%\SpiritScout\lib`（那目录写不进去就退程序目录、再退临时目录）。
-
-它替你做的判断：
-
-- **环境自检/一键修复**：调 `SpiritScout/scripts/bootstrap.py`——挑 3.11+ 解释器、建 venv、
-  补 pip、装依赖（清华 → 阿里 → 官方逐源重试），缺什么补什么，不用记命令。
-- **端口自动让开**：8010 被占就 8011、8012 往下找，不必改配置。
-- **起停成对**：点「停止」或关窗口都会把服务进程树一起收掉，不留孤儿占着端口。
-- **出问题留证据**：日志写 `logs\desktop-<日期>.log`；真崩了弹窗并把堆栈写进
-  `crash-<时间>.log`，不用对着「双击没反应」猜。
-- **没有 WebView2 运行时**：自动退到 Edge 的 `--app=` 独立窗口，照样能用。
-
-命令行那条路（`启动服务.cmd` + `start-local.ps1`）没变，桌面版只是给它套了个窗口；
-两者不要同时开同一个端口。
-
-## 便携版：连 Python 都不用装
-
-上面的桌面版要目标机器上有 Python 3.11+。要交给一台干净机器（或者塞进 U 盘），就打成便携版：
-内嵌 python.org 的 embeddable 运行时 + 装好的依赖 + exe 摆进同一个目录。
+开发运行：
 
 ```powershell
-python -m build --outdir dist SpiritScout
-powershell -ExecutionPolicy Bypass -File SpiritScout\launcher\build-portable.ps1
+$env:JAVA_HOME = 'C:\Program Files\Microsoft\jdk-21.0.12.101-hotspot'
+.\SpiritScout\desktop\SpiritScoutCompose\gradlew.bat -p .\SpiritScout\desktop\SpiritScoutCompose run
 ```
 
-产物 `dist-portable\灵枢便携版-<版本>\` 约 334 MB，`desktop.json` 指路、`configs\` 只有模板、
-`py\` 里是解释器和全套依赖。整份目录拷到别的机器，解压双击 `灵枢桌面版.exe` 就开——
-不装 Python、不联外网也能起来（调模型当然还要网）。
+生成可分发的完整桌面包：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File SpiritScout\launcher\build-native.ps1
+```
+
+产物在 `dist-native\spiritscout-<版本>-native-win64.zip`。包内已带精简 JRE、Python
+embeddable 运行时、依赖和配置模板；目标机器不需要安装 Python、Java 或 WebView2。
+Windows SmartScreen 对未签名程序仍可能显示“发布者未知”，这需要 Authenticode 证书，
+不是换 UI 框架能解决的问题。
 
 
 ## 两份 system 配置：为什么不是简单地「照 example 覆盖」
@@ -217,24 +198,20 @@ Release 上按需取：
 
 | 附件 | 给谁用 |
 | --- | --- |
-| `spiritscout-<版本>-single-win64.exe` | **单文件版（约 132 MB）**：一个 exe 把 Python 运行时挂在尾巴上，拷过去双击就开，不装 Python、不带源码、不解压 |
-| `spiritscout-desktop-<版本>-win64.exe` | Windows 桌面版（约 828 KB）：自带窗口，但机器上要有 Python 3.11+ 与一份仓库 |
-| `spiritscout-<版本>-portable-win64.zip` | **便携版（约 150 MB）**：内嵌 Python 与全套依赖（直接依赖 12 个，含传递依赖约 140 个包），解压双击 `灵枢桌面版.exe` 就用，目标机什么都不装 |
+| `spiritscout-<版本>-native-win64.zip` | **Windows 原生桌面版**：SaltUI/Compose 窗口，内嵌 JRE 与 Python 运行时，目标机不需要额外环境 |
+| `spiritscout-<版本>-portable-win64.zip` | 兼容性命令行/Web 便携运行时包，保留给需要直接运行后端的场景 |
 | `spiritscout-<版本>-py3-none-any.whl` | `pip install` 用。带 CTF 工具箱要写成 `pip install "spiritscout[toolkit] @ file:///…whl"`——写成 `xxx.whl[toolkit]` 会被 pip **静默丢弃 extras**，一个工具箱依赖都不装还不报错 |
 | `spiritscout-<版本>.tar.gz` | sdist：源码 + `scripts/` + `skills/` 文本素材 + 配置模板 |
 | `spiritscout-<版本>.zip` | 整仓源码，解开就能跑 |
 | `SHA256SUMS` | 上面几个的校验和 |
 
-**便携版怎么来的**：`python -m build --outdir dist SpiritScout` 出 wheel，再
-`powershell -ExecutionPolicy Bypass -File SpiritScout\launcher\build-portable.ps1`。
-脚本下 python.org 的 embeddable 运行时、补 `._pth` 让 site-packages 生效、`get-pip.py` 装 pip
-再 `--target` 装依赖，最后摆好 exe / `desktop.json` / 配置模板。细节见
-[`docs/部署与配置.md`](SpiritScout/docs/部署与配置.md) 的「便携版」小节。
+**原生桌面包怎么来的**：`python -m build --outdir dist SpiritScout` 出 wheel，
+`build-native.ps1` 再调用 `build-python-runtime.ps1` 生成 `py\` 与 `configs\`，
+用 Gradle staging 和 JDK 21 `jpackage` 生成 `SpiritScout.exe`，最后压成
+`dist-native\spiritscout-<版本>-native-win64.zip`。细节见
+[`SpiritScout/docs/原生桌面端.md`](SpiritScout/docs/原生桌面端.md)。
 
-仓库里还留着更早那套「bat 启动」的便携包流程（`_work/build_release.py` →
-`_work/validate_release.py` → `--zip-only`），它做的是没有 GUI 的老形态；要带窗口的桌面版就用上面这个。
-
-装好后直接 `python -m spiritscout --port 8010`；注意 `--config` 与模型注册表按**当前工作目录**
+直接运行后端时用 `python -m spiritscout --port 8010`；`--config` 与模型注册表按当前工作目录
 解析，从仓库外安装时需要显式传 `--config` 指向你自己的 `system.yaml`。
 
 

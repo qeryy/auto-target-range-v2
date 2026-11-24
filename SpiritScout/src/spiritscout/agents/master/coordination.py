@@ -7,7 +7,7 @@ import copy
 import json
 import math
 import time
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from spiritscout.agents.master.contracts import MasterState
@@ -21,6 +21,7 @@ from spiritscout.core.models import (
 )
 from spiritscout.gateway import chat_decision
 from spiritscout.gateway.backends import extract_json
+from spiritscout.gateway.context import decision_memory
 
 
 class MasterCoordination:
@@ -153,6 +154,21 @@ class MasterCoordination:
                 "skip_reason": meta.get("skip_reason", "")})
         return states
 
+    def _conversation_refs(self, dag: TaskDAG) -> list[dict[str, Any]]:
+        """普通会话也向模型提供既有路线引用；状态/派发查询不承担数据库扫描。"""
+        bb = getattr(self.ctx, "blackboard", None)
+        platform = self.ctx.extra.get("platform")
+        if bb is None or platform is not None and getattr(platform, "continuous", False):
+            return []  # 连续比赛的路线引用已包含在 competition_status 各题节点内。
+        refs = []
+        for node in dag.all_nodes():
+            for tid in node.task_ids:
+                task_state = bb.read(BlackboardLayer.TASK_STATE, tid) or {}
+                refs.extend({"node_id": node.node_id, "challenge_id": (node.meta.get("challenge") or {}).get("id"),
+                             "task_id": tid, "route_id": route["route_id"], "name": route.get("name", "")}
+                            for route in task_state.get("routes", []) if route.get("route_id"))
+        return refs
+
     def _competition_status(self, dag: TaskDAG) -> dict[str, Any]:
         """完整保留短小的调度事实；流式观察可裁剪，完成态和取消原因不可裁剪。"""
         platform = self.ctx.extra.get("platform")
@@ -193,7 +209,7 @@ class MasterCoordination:
                 for n in dag.all_nodes() if n.meta.get("retain_instance") is True
                 and not n.meta.get("deferred")}),
             "spending": self._spending_observation(progress),
-            "observed_at": datetime.now(UTC).isoformat(),
+            "observed_at": datetime.now(timezone.utc).isoformat(),
         }
 
     def _spending_observation(self, progress: dict[str, Any]) -> dict[str, Any]:
@@ -258,101 +274,83 @@ class MasterCoordination:
 
     async def _apply_competition_decisions(
             self, dag: TaskDAG, decision: dict[str, Any]) -> None:
-        """执行模型给出的暂缓/重试裁定；后端只校验 id 并操作资源。"""
+        """执行模型给出的派工暂缓、在途取消、实例释放与重试裁定。"""
         if not str(self.ctx.extra.get("mode_prompt") or "").strip():
             return
         states = self._challenge_states(dag)
         known = set(states)
         # 生命周期由模型明确选择；保留现场不意味着增加并发或阻止其后暂缓。
-        retained = self._apply_retain(dag, decision, known)
-        retried = self._apply_retries(dag, decision, known)
-        deferred = self._apply_defers(dag, decision, known, retried)
-        released = await self._release_deferred_instances(deferred)
+        raw_retained = decision.get("retain_instances") or []
+        retained = {str(cid) for cid in (raw_retained if isinstance(raw_retained, list) else [])
+                    if isinstance(cid, str) and cid in known}
+        for node in dag.all_nodes():
+            if str((node.meta.get("challenge") or {}).get("id") or "") in retained:
+                node.meta["retain_instance"] = True
+
+        retried: list[str] = []
+        raw_retry = decision.get("retry_challenges") or []
+        if isinstance(raw_retry, list):
+            for item in raw_retry:
+                cid = str(item.get("id") if isinstance(item, dict) else item).strip()
+                if not cid or cid not in known:
+                    continue
+                for node in dag.all_nodes():
+                    ch = (node.meta or {}).get("challenge") or {}
+                    if str(ch.get("id") or "") != cid:
+                        continue
+                    node.meta["deferred"] = False
+                    node.meta.pop("defer_reason", None)
+                retried.append(cid)
+
+        deferred: list[dict[str, Any]] = []
+        raw_defer = decision.get("defer_challenges") or []
+        if isinstance(raw_defer, list):
+            for item in raw_defer:
+                if isinstance(item, dict):
+                    cid = str(item.get("id") or "").strip()
+                    reason = str(item.get("reason") or "模型判定暂缓")[:200]
+                else:
+                    cid, reason = str(item).strip(), "模型判定暂缓"
+                if not cid or cid not in known or cid in retried:
+                    continue
+                for node in dag.all_nodes():
+                    ch = (node.meta or {}).get("challenge") or {}
+                    if str(ch.get("id") or "") != cid:
+                        continue
+                    node.meta["deferred"] = True
+                    release = isinstance(item, dict) and item.get("release_instance") is True
+                    cancel = release or (isinstance(item, dict) and item.get("cancel_running") is True)
+                    node.meta["retain_instance"] = not release
+                    node.meta["defer_reason"] = reason
+                    if node.status == TaskStatus.PENDING or (cancel and node.status in (
+                            TaskStatus.DISPATCHED, TaskStatus.RUNNING)):
+                        dag.mark(node.node_id, TaskStatus.CANCELLED)
+                        node.meta["cancel_reason"] = f"赛题暂缓: {reason}"
+                deferred.append({"id": cid, "reason": reason,
+                                 "release_instance": isinstance(item, dict)
+                                 and item.get("release_instance") is True,
+                                 "cancel_running": cancel})
+
+        platform = self.ctx.extra.get("platform")
+        released: list[str] = []
+        if deferred and platform is not None:
+            for item in deferred:
+                if not item["release_instance"]:
+                    continue
+                try:
+                    if await platform.close_instance(
+                            item["id"], reason=f"赛题暂缓: {item['reason']}"):
+                        released.append(item["id"])
+                except Exception as exc:  # noqa: BLE001 —— 回收失败不连坐主链路
+                    self.ctx.audit.log("platform.fact", self.agent_id, {
+                        "action": "defer_close_failed", "challenge": item["id"],
+                        "error": str(exc)[:200]})
+
         if retried or deferred or released or retained:
             self.ctx.audit.log("decision.change", self.agent_id, {
                 "action": "competition_challenge_state",
                 "deferred": deferred, "retried": retried, "released": released,
                 "retained": sorted(retained)})
-
-    @staticmethod
-    def _nodes_for(dag: TaskDAG, challenge_id: str):
-        """该赛题对应的 DAG 节点（一道题可能派生出多个节点）。"""
-        for node in dag.all_nodes():
-            ch = (node.meta or {}).get("challenge") or {}
-            if str(ch.get("id") or "") == challenge_id:
-                yield node
-
-    def _apply_retain(self, dag: TaskDAG, decision: dict[str, Any],
-                      known: set[str]) -> set[str]:
-        """记下要保留现场的赛题：只打标记，不增并发、不阻止其后暂缓。"""
-        raw = decision.get("retain_instances") or []
-        retained = {str(cid) for cid in (raw if isinstance(raw, list) else [])
-                    if isinstance(cid, str) and cid in known}
-        for cid in retained:
-            for node in self._nodes_for(dag, cid):
-                node.meta["retain_instance"] = True
-        return retained
-
-    def _apply_retries(self, dag: TaskDAG, decision: dict[str, Any],
-                       known: set[str]) -> list[str]:
-        """撤销暂缓：清 deferred 标记，让该题重新参与调度。"""
-        retried: list[str] = []
-        raw = decision.get("retry_challenges") or []
-        if not isinstance(raw, list):
-            return retried
-        for item in raw:
-            cid = str(item.get("id") if isinstance(item, dict) else item).strip()
-            if not cid or cid not in known:
-                continue
-            for node in self._nodes_for(dag, cid):
-                node.meta["deferred"] = False
-                node.meta.pop("defer_reason", None)
-            retried.append(cid)
-        return retried
-
-    def _apply_defers(self, dag: TaskDAG, decision: dict[str, Any],
-                      known: set[str], retried: list[str]) -> list[dict[str, str]]:
-        """暂缓赛题：打标记、撤掉保留位、把在途节点取消。同一轮里重试优先。"""
-        deferred: list[dict[str, str]] = []
-        raw = decision.get("defer_challenges") or []
-        if not isinstance(raw, list):
-            return deferred
-        for item in raw:
-            if isinstance(item, dict):
-                cid = str(item.get("id") or "").strip()
-                reason = str(item.get("reason") or "模型判定暂缓")[:200]
-            else:
-                cid, reason = str(item).strip(), "模型判定暂缓"
-            if not cid or cid not in known or cid in retried:
-                continue
-            for node in self._nodes_for(dag, cid):
-                node.meta["deferred"] = True
-                node.meta.pop("retain_instance", None)
-                node.meta["defer_reason"] = reason
-                if node.status in (TaskStatus.PENDING, TaskStatus.DISPATCHED,
-                                   TaskStatus.RUNNING):
-                    dag.mark(node.node_id, TaskStatus.CANCELLED)
-                    node.meta["cancel_reason"] = f"赛题暂缓: {reason}"
-            deferred.append({"id": cid, "reason": reason})
-        return deferred
-
-    async def _release_deferred_instances(
-            self, deferred: list[dict[str, str]]) -> list[str]:
-        """回收暂缓赛题的靶机实例；单条失败只记审计，不连坐主链路。"""
-        platform = self.ctx.extra.get("platform")
-        released: list[str] = []
-        if not deferred or platform is None:
-            return released
-        for item in deferred:
-            try:
-                if await platform.close_instance(
-                        item["id"], reason=f"赛题暂缓: {item['reason']}"):
-                    released.append(item["id"])
-            except Exception as exc:  # noqa: BLE001 —— 回收失败不连坐主链路
-                self.ctx.audit.log("platform.fact", self.agent_id, {
-                    "action": "defer_close_failed", "challenge": item["id"],
-                    "error": str(exc)[:200]})
-        return released
 
     def _effort_options(self, task: Task) -> list[str]:
         """该任务可用的思考强度取值——按实际会用到的模型各自声明的档位算。
@@ -431,7 +429,7 @@ class MasterCoordination:
                             "\"rationale\": str}]}，每个任务都必须给出。"),
                     }, ensure_ascii=False)},
                 ],
-                audit=ctx.audit, actor=self.agent_id,
+                audit=ctx.audit, actor=self.agent_id, memory=decision_memory(self, "dispatch"),
                 task_type="meta_planning", response_format="json",
                 reasoning_effort="low",
             )
@@ -490,6 +488,7 @@ class MasterCoordination:
             "status": n.status.value, "depends_on": list(n.depends_on),
             "task_ids": list(n.task_ids), "round_created": n.round_created,
             "challenge_id": str((n.meta.get("challenge") or {}).get("id") or ""),
+            "investigation_contract": dict(n.meta.get("investigation_contract") or {}),
             "cancel_reason": n.meta.get("cancel_reason", ""),
             "skip_reason": n.meta.get("skip_reason", ""),
         } for n in dag.all_nodes()]
@@ -518,70 +517,6 @@ class MasterCoordination:
     _REFILL_INTERVAL = 1.0       # 无事件时重查资源退避，不依赖其他解题任务结束
     _QUEUE_RETRY_INTERVAL = 5.0  # 规划失败或没有新增节点时的重试间隔
 
-    def _refill_candidates(self, dag: TaskDAG, platform: Any,
-                           closing_ids: set[str]) -> dict[str, Any]:
-        """持续竞赛里「这一轮还能补哪些题」——纯计算，不改任何状态。
-
-        三类来源：赛方列出但还没进 DAG 的、跑过但当前空着的回访题、以及
-        明确要求保留现场却暂时没在跑的题。``closing_ids`` 是正在关容器的，
-        必须排除，否则会出现「关掉又立刻重新拉起」的抖动。
-        """
-        listed = (self.ctx.extra.get("competition_context") or {}).get("challenges") or []
-        covered = set(self._challenge_states(dag))
-        missing = {str(ch["id"]) for ch in listed
-                   if isinstance(ch, dict) and ch.get("id")
-                   and str(ch["id"]) not in covered
-                   and not platform.is_completed(str(ch["id"]))}
-        active_ids = {str((n.meta.get("challenge") or {}).get("id") or "")
-                      for n in dag.all_nodes() if n.status in {
-                          TaskStatus.PENDING, TaskStatus.DISPATCHED, TaskStatus.RUNNING}}
-        # 回访队列也要持续补位，不能只补从未进入过 DAG 的题。
-        revisit = {cid for cid in covered - active_ids - closing_ids
-                   if not platform.is_completed(cid)
-                   and platform.can_start_instance(cid)}
-        retained_idle = {
-            str((n.meta.get("challenge") or {}).get("id") or "")
-            for n in dag.all_nodes() if n.meta.get("retain_instance") is True
-            and not n.meta.get("deferred")} - active_ids - closing_ids
-        return {"missing": missing, "revisit": revisit,
-                "retained_idle": retained_idle, "ready": dag.ready_nodes()}
-
-    async def _run_task_entry(self, spec: dict[str, Any],
-                              task: Task) -> tuple[str, TaskStatus]:
-        """跑一个子 Agent 并把结果收敛成终态；单题故障不牵连全局。
-
-        原本是 ``_dispatch`` 里的内嵌闭包，只为了省一次写 ``self.ctx``。提出来
-        后 ``_dispatch`` 少一层缩进，也方便单测直接打这个入口。
-        """
-        ctx = self.ctx
-        agent = ctx.agents[task.agent_type]
-        try:
-            await agent.run(task)
-            status = task.status if task.status in {
-                TaskStatus.DONE, TaskStatus.FAILED, TaskStatus.PRUNED, TaskStatus.CANCELLED
-            } else TaskStatus.FAILED
-            return spec["node_id"], status
-        except asyncio.CancelledError:
-            task.status = TaskStatus.CANCELLED
-            bb = getattr(ctx, "blackboard", None)
-            if bb is not None:
-                data = bb.read(BlackboardLayer.TASK_STATE, task.task_id)
-                if data is not None:
-                    data["task"] = task.model_dump(mode="json")
-                    for route in data.get("routes", []):
-                        if route.get("status") in {"pending", "dispatched", "running"}:
-                            route["status"] = TaskStatus.CANCELLED.value
-                    bb.write(BlackboardLayer.TASK_STATE, task.task_id, data,
-                             agent_type=task.agent_type, updated_by=self.agent_id,
-                             dedup_key=f"task|{task.task_id}")
-            ctx.audit.log("task.cancelled", self.agent_id, {"task_id": task.task_id})
-            raise
-        except Exception as exc:  # noqa: BLE001 —— 单子 Agent 故障不影响全局（2.1-3）
-            assert ctx.audit is not None
-            ctx.audit.log("task.failed", self.agent_id,
-                          {"task_id": task.task_id, "error": str(exc)[:300]})
-            return spec["node_id"], TaskStatus.FAILED
-
     async def _dispatch(self, state: MasterState) -> dict[str, Any]:
         ctx = self.ctx
         await self._gate_wait()
@@ -592,7 +527,34 @@ class MasterCoordination:
                        if Task.model_validate(t["task"]).round_no == state["round_no"]]
         round_tasks = [Task.model_validate(s["task"]) for s in round_specs]
 
-        _run_one = self._run_task_entry
+        async def _run_one(spec: dict[str, Any], task: Task) -> tuple[str, TaskStatus]:
+            agent = ctx.agents[task.agent_type]
+            try:
+                await agent.run(task)
+                status = task.status if task.status in {
+                    TaskStatus.DONE, TaskStatus.FAILED, TaskStatus.PRUNED, TaskStatus.CANCELLED
+                } else TaskStatus.FAILED
+                return spec["node_id"], status
+            except asyncio.CancelledError:
+                task.status = TaskStatus.CANCELLED
+                bb = getattr(ctx, "blackboard", None)
+                if bb is not None:
+                    data = bb.read(BlackboardLayer.TASK_STATE, task.task_id)
+                    if data is not None:
+                        data["task"] = task.model_dump(mode="json")
+                        for route in data.get("routes", []):
+                            if route.get("status") in {"pending", "dispatched", "running"}:
+                                route["status"] = TaskStatus.CANCELLED.value
+                        bb.write(BlackboardLayer.TASK_STATE, task.task_id, data,
+                                 agent_type=task.agent_type, updated_by=self.agent_id,
+                                 dedup_key=f"task|{task.task_id}")
+                ctx.audit.log("task.cancelled", self.agent_id, {"task_id": task.task_id})
+                raise
+            except Exception as exc:  # noqa: BLE001 —— 单子 Agent 故障不影响全局（2.1-3）
+                assert ctx.audit is not None
+                ctx.audit.log("task.failed", self.agent_id,
+                              {"task_id": task.task_id, "error": str(exc)[:300]})
+                return spec["node_id"], TaskStatus.FAILED
 
         # 下发决策（复杂度/路线预算/思考强度）与子 Agent 执行并行：裁定本身
         # 是一次模型调用（重推理端点上可达十余秒），串行挡在开工路径上纯属
@@ -600,8 +562,7 @@ class MasterCoordination:
         assign_task = None
         if round_tasks and ctx.enable_llm_planning:
             assign_task = asyncio.create_task(self._assign_dispatch_plan(
-                list(zip(round_tasks, (s["node_id"] for s in round_specs),
-                         strict=True))))
+                list(zip(round_tasks, (s["node_id"] for s in round_specs)))))
 
         # 普通 CTF 的在途路线由子 Agent 自主推进，完成后统一复盘。
         # 用户主动指导仍走独立对话通道；其他模式保留实时全局督导。
@@ -617,7 +578,7 @@ class MasterCoordination:
             refill_specs: list[dict[str, Any]] = []
             if platform is not None and getattr(platform, "continuous", False):
                 running = {asyncio.create_task(_run_one(s, t)): s["node_id"]
-                           for s, t in zip(round_specs, round_tasks, strict=True)}
+                           for s, t in zip(round_specs, round_tasks)}
                 completed = asyncio.create_task(platform.completion_queue.get())
                 adjudicated = asyncio.create_task(decisions.get())
                 planning: asyncio.Task[Any] | None = None
@@ -639,7 +600,7 @@ class MasterCoordination:
 
                 async def close_idle(cid: str) -> None:
                     try:
-                        await platform.close_instance(cid, reason="本题执行已收尾，释放名额供后续题")
+                        await platform.close_instance(cid, reason="平台已确认整题完成")
                     finally:
                         closing_ids.discard(cid)
                         next_close_at[cid] = time.monotonic() + self._QUEUE_RETRY_INTERVAL
@@ -647,7 +608,7 @@ class MasterCoordination:
                 async def finish_deferral(decision: dict[str, Any], jobs: list[asyncio.Task[Any]],
                                           ids: set[str]) -> None:
                     try:
-                        # 同题必须先退场再关容器；其他题的补位不等待这里的清理。
+                        # 明确取消或释放时先等同题退场；仅暂停派工不打断运行工作。
                         await asyncio.gather(*jobs, return_exceptions=True)
                         await self._apply_competition_decisions(dag, decision)
                     finally:
@@ -657,11 +618,22 @@ class MasterCoordination:
 
                 try:
                     while True:
-                        refill = self._refill_candidates(dag, platform, closing_ids)
-                        missing = refill["missing"]
-                        revisit = refill["revisit"]
-                        retained_idle = refill["retained_idle"]
-                        ready = refill["ready"]
+                        listed = (ctx.extra.get("competition_context") or {}).get("challenges") or []
+                        covered = set(self._challenge_states(dag))
+                        missing = {str(ch["id"]) for ch in listed
+                                   if isinstance(ch, dict) and ch.get("id")
+                                   and str(ch["id"]) not in covered
+                                   and not platform.is_completed(str(ch["id"]))}
+                        # 回访队列也要持续补位，不能只补从未进入过 DAG 的题。
+                        active_ids = {str((n.meta.get("challenge") or {}).get("id") or "")
+                                      for n in dag.all_nodes() if n.status in {
+                                          TaskStatus.PENDING, TaskStatus.DISPATCHED, TaskStatus.RUNNING}}
+                        revisit = {cid for cid in covered - active_ids - closing_ids
+                                   if not platform.is_completed(cid)
+                                   and platform.can_start_instance(cid)}
+                        # 未完成实例默认保留；空闲现场占满名额时交模型决定接力或释放。
+                        retained_idle = platform.active_instance_ids() - active_ids - closing_ids
+                        ready = dag.ready_nodes()
                         capacity_blocked = bool(ready) and all(
                             platform.owns(str((n.meta.get("challenge") or {}).get("id") or ""))
                             and not platform.can_start_instance(
@@ -696,18 +668,10 @@ class MasterCoordination:
                                     {**state, "dag": dag.to_dict()}, dispatch_only=True,
                                     live_dag=dag, blocked_challenge_ids=closing_ids,
                                     on_dispatch=launch))
-                        # 回收按具体实例安排，避免慢 close 阻塞其他空位；供给中的
-                        # DISPATCHED 节点纳入保护，不能按旧快照误关新启动的容器。
-                        active = {str((n.meta.get("challenge") or {}).get("id") or "")
-                                  for n in dag.all_nodes()
-                                  if n.status in {TaskStatus.PENDING, TaskStatus.RUNNING,
-                                                  TaskStatus.DISPATCHED}}
-                        active.update(str((n.meta.get("challenge") or {}).get("id") or "")
-                                      for n in dag.all_nodes() if n.meta.get("retain_instance") is True
-                                      and not n.meta.get("deferred")
-                                      and not platform.is_completed(
-                                          str((n.meta.get("challenge") or {}).get("id") or "")))
-                        for cid in platform.active_instance_ids() - active - closing_ids:
+                        # 子任务收尾不代表整题完成；只自动回收平台确认完成的实例。
+                        for cid in platform.active_instance_ids() - closing_ids:
+                            if not platform.is_completed(cid):
+                                continue
                             if time.monotonic() < next_close_at.get(cid, 0.0):
                                 continue
                             closing_ids.add(cid)
@@ -737,6 +701,8 @@ class MasterCoordination:
                         if adjudicated in done:
                             decision = adjudicated.result()
                             adjudicated = asyncio.create_task(decisions.get())
+                            decision['defer_challenges'] = [item for item in decision.get('defer_challenges', [])
+                                                           if isinstance(item, dict) and self._steering_decision_current(item)]
                             ids = {str(item.get("id") or "")
                                    for item in decision.get("defer_challenges", [])
                                    if isinstance(item, dict)
@@ -746,9 +712,12 @@ class MasterCoordination:
                             decision = {"defer_challenges": [
                                 i for i in decision.get("defer_challenges", [])
                                 if isinstance(i, dict) and str(i.get("id") or "") in ids]}
+                            cancel_ids = {str(i["id"]) for i in decision["defer_challenges"]
+                                          if i.get("cancel_running") is True
+                                          or i.get("release_instance") is True}
                             cancel_provisioning = any(
                                 n.status == TaskStatus.DISPATCHED
-                                and str((n.meta.get("challenge") or {}).get("id") or "") in ids
+                                and str((n.meta.get("challenge") or {}).get("id") or "") in cancel_ids
                                 for n in dag.all_nodes())
                             # 先冻结同题节点，异步清理期间也不能被续规划重新派发。
                             for node in dag.all_nodes():
@@ -758,12 +727,12 @@ class MasterCoordination:
                                     reason = next(str(i.get("reason") or "模型判定暂缓")
                                                   for i in decision["defer_challenges"] if str(i["id"]) == cid)
                                     node.meta["defer_reason"] = reason[:200]
-                                    if node.status in {TaskStatus.PENDING, TaskStatus.DISPATCHED,
-                                                       TaskStatus.RUNNING}:
+                                    if node.status == TaskStatus.PENDING or (cid in cancel_ids and node.status in {
+                                            TaskStatus.DISPATCHED, TaskStatus.RUNNING}):
                                         dag.mark(node.node_id, TaskStatus.CANCELLED)
                             cancelled = [job for job, nid in running.items()
                                          if str((dag.get(nid).meta.get("challenge") or {})
-                                                .get("id") or "") in ids]
+                                                .get("id") or "") in cancel_ids]
                             for job in cancelled:
                                 job.cancel()
                                 running.pop(job)
@@ -787,7 +756,7 @@ class MasterCoordination:
                             next_plan_at = time.monotonic() + self._QUEUE_RETRY_INTERVAL
                             if plan:
                                 try:
-                                    # 规划和督导的暂缓走同一退场通道：先取消同题执行，再关实例。
+                                    # 规划和督导共用生命周期通道，只有显式取消或释放才退场。
                                     await self._apply_competition_decisions(
                                         dag, {**plan, "defer_challenges": []})
                                     if plan.get("defer_challenges"):
@@ -826,8 +795,7 @@ class MasterCoordination:
                 results = []
             else:
                 results = await asyncio.gather(
-                    *(_run_one(s, t) for s, t in zip(round_specs, round_tasks,
-                                             strict=True)))
+                    *(_run_one(s, t) for s, t in zip(round_specs, round_tasks)))
         finally:
             if watch is not None:
                 watch.cancel()

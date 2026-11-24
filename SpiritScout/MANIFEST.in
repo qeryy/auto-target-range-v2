@@ -3,14 +3,16 @@
 recursive-include scripts *.py
 # 编译缓存不是源码：本机构建时 scripts/__pycache__ 会跟着进去，白占体积
 global-exclude *.pyc *.pyo
-# 桌面版（Windows 自带窗口的客户端）：源码与编译脚本进 sdist，够别人自己编；
-# 下下来的 WebView2 SDK 缓存（约 8 MB）与编好的 exe 不入包——exe 作为 release 附件单独发。
-include launcher/SpiritScoutDesktop.cs
-include launcher/build-desktop.ps1 launcher/build-portable.ps1 launcher/build-single.ps1
-include launcher/SpiritScoutLauncher.cs
-include launcher/build-launcher.ps1
+# 原生桌面端：Kotlin Compose 源码、图标与 Windows 打包脚本进 sdist。
+# 编好的 app-image / zip 作为 release 附件单独发，不塞进 Python 包。
+graft desktop/SpiritScoutCompose
+prune desktop/SpiritScoutCompose/build
+prune desktop/SpiritScoutCompose/.gradle
+include desktop/THIRD_PARTY_NOTICES.md
+include desktop/THIRD_PARTY/SaltUI-LICENSE.txt
+include launcher/build-native.ps1 launcher/build-python-runtime.ps1
+include launcher/icon.ico launcher/make-icon.py
 prune launcher/.cache
-prune launcher/tools
 # 源码分发包的补充清单。
 # setuptools 默认只收测试目录里的 *.py，前端那套 node 测试（tests/test_*.js）
 # 一直没进 sdist——从源码包构建的人因此跑不了 AGENTS 要求的 `node tests/test_*.js`。

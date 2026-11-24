@@ -4,7 +4,7 @@ import os
 import sqlite3
 import tempfile
 import unittest
-from contextlib import closing, contextmanager
+from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import patch
 
@@ -33,11 +33,9 @@ def env_only(**values: str):
 
 
 def _app(root: str, host: str = "127.0.0.1"):
-    # 这个文件测的是「登录这条链路」，所以显式打开 password 模式；
-    # 默认 none（不登录）由 test_auth_optional.py 覆盖。
     cfg = SystemConfig(
         workspace=WorkspaceConfig(root=root),
-        web=WebConfig(host=host, auth_mode="password"),
+        web=WebConfig(host=host),
     )
     return create_app(cfg, [])
 
@@ -50,7 +48,7 @@ def _login(client: TestClient, username: str = "spiritscout",
 
 class WebAuthTests(unittest.TestCase):
     def test_remote_bind_without_admin_credentials_is_rejected(self) -> None:
-        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp, env_only():
+        with tempfile.TemporaryDirectory() as tmp, env_only():
             cfg = SystemConfig(
                 workspace=WorkspaceConfig(root=tmp),
                 web=WebConfig(host="0.0.0.0"),
@@ -60,7 +58,7 @@ class WebAuthTests(unittest.TestCase):
             self.assertIn("SPIRITSCOUT_ADMIN_PASSWORD", str(ctx.exception))
 
     def test_configured_password_redirects_browser_to_login(self) -> None:
-        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp, env_only(
+        with tempfile.TemporaryDirectory() as tmp, env_only(
                 SPIRITSCOUT_SERVER_PASSWORD="test-secret"):
             with TestClient(_app(tmp), follow_redirects=False) as client:
                 response = client.get("/")
@@ -72,7 +70,7 @@ class WebAuthTests(unittest.TestCase):
                 self.assertEqual(authed.status_code, 200)
 
     def test_authenticated_cross_site_write_is_rejected(self) -> None:
-        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp, env_only(
+        with tempfile.TemporaryDirectory() as tmp, env_only(
                 SPIRITSCOUT_SERVER_PASSWORD="test-secret"):
             with TestClient(_app(tmp), follow_redirects=False) as client:
                 basic = client.post(
@@ -90,7 +88,7 @@ class WebAuthTests(unittest.TestCase):
                 self.assertEqual(cookie.status_code, 403)
 
     def test_loopback_without_password_stays_open_but_blocks_cross_site(self) -> None:
-        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp, env_only():
+        with tempfile.TemporaryDirectory() as tmp, env_only():
             with TestClient(_app(tmp),
                             base_url="http://127.0.0.1",
                             follow_redirects=False) as client:
@@ -104,7 +102,7 @@ class WebAuthTests(unittest.TestCase):
 
     def test_non_loopback_host_is_rejected_without_password(self) -> None:
         """DNS 重绑定防护：恶意域名解析到 127.0.0.1 时 Host 是攻击者域名。"""
-        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp, env_only():
+        with tempfile.TemporaryDirectory() as tmp, env_only():
             with TestClient(_app(tmp), base_url="http://evil.example",
                             follow_redirects=False) as client:
                 self.assertEqual(client.get("/").status_code, 403)
@@ -113,7 +111,7 @@ class WebAuthTests(unittest.TestCase):
 
     def test_password_mode_gates_credentials_not_hostname(self) -> None:
         """设了管理员后按凭据鉴权：反代/远程访问的 Host 不再受限。"""
-        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp, env_only(
+        with tempfile.TemporaryDirectory() as tmp, env_only(
                 SPIRITSCOUT_SERVER_PASSWORD="test-secret"):
             with TestClient(_app(tmp), base_url="http://console.example",
                             follow_redirects=False) as client:
@@ -127,7 +125,7 @@ class WebAuthTests(unittest.TestCase):
     # ------------------------------------------------------------ 登录面板
 
     def test_login_page_and_static_assets_are_public(self) -> None:
-        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp, env_only(
+        with tempfile.TemporaryDirectory() as tmp, env_only(
                 SPIRITSCOUT_ADMIN_PASSWORD="test-secret"):
             with TestClient(_app(tmp), follow_redirects=False) as client:
                 page = client.get("/login")
@@ -139,16 +137,18 @@ class WebAuthTests(unittest.TestCase):
                     self.assertEqual(client.get(path).status_code, 200)
 
     def test_unauthenticated_api_returns_json_401_without_challenge(self) -> None:
-        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp, env_only(
+        with tempfile.TemporaryDirectory() as tmp, env_only(
                 SPIRITSCOUT_ADMIN_PASSWORD="test-secret"):
             with TestClient(_app(tmp), follow_redirects=False) as client:
-                response = client.get("/api/sessions")
-                self.assertEqual(response.status_code, 401)
-                self.assertEqual(response.json()["detail"], "需要管理员登录")
-                self.assertNotIn("www-authenticate", response.headers)
+                for path in ("/api/sessions", "/api/system/resources"):
+                    with self.subTest(path=path):
+                        response = client.get(path)
+                        self.assertEqual(response.status_code, 401)
+                        self.assertEqual(response.json()["detail"], "需要管理员登录")
+                        self.assertNotIn("www-authenticate", response.headers)
 
     def test_login_sets_httponly_cookie_and_unlocks_console(self) -> None:
-        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp, env_only(
+        with tempfile.TemporaryDirectory() as tmp, env_only(
                 SPIRITSCOUT_ADMIN_PASSWORD="test-secret"):
             with TestClient(_app(tmp), follow_redirects=False) as client:
                 response = _login(client)
@@ -162,7 +162,7 @@ class WebAuthTests(unittest.TestCase):
                 self.assertEqual(client.get("/api/sessions").status_code, 200)
 
     def test_secure_cookie_behind_https(self) -> None:
-        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp, env_only(
+        with tempfile.TemporaryDirectory() as tmp, env_only(
                 SPIRITSCOUT_ADMIN_PASSWORD="test-secret"):
             with TestClient(_app(tmp), base_url="https://console.example",
                             follow_redirects=False) as client:
@@ -183,7 +183,7 @@ class WebAuthTests(unittest.TestCase):
                     "secure", forwarded.headers["set-cookie"].lower())
 
     def test_wrong_credentials_are_rejected_without_cookie(self) -> None:
-        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp, env_only(
+        with tempfile.TemporaryDirectory() as tmp, env_only(
                 SPIRITSCOUT_ADMIN_PASSWORD="test-secret"):
             with TestClient(_app(tmp), follow_redirects=False) as client:
                 for username, password in (("spiritscout", "wrong"),
@@ -194,18 +194,8 @@ class WebAuthTests(unittest.TestCase):
                                      "用户名或密码错误")
                     self.assertNotIn("set-cookie", response.headers)
 
-    def test_any_password_length_can_log_in(self) -> None:
-        """删掉字符限制之后，登录侧不能还按旧上限把口令截断。"""
-        for secret in ("1", "一整句话当口令也行", "p" * 3000):
-            with self.subTest(length=len(secret)), tempfile.TemporaryDirectory(
-                    ignore_cleanup_errors=True) as tmp, env_only(
-                    SPIRITSCOUT_ADMIN_PASSWORD=secret):
-                with TestClient(_app(tmp), follow_redirects=False) as client:
-                    self.assertEqual(
-                        _login(client, password=secret).status_code, 200)
-
     def test_tampered_cookie_is_rejected(self) -> None:
-        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp, env_only(
+        with tempfile.TemporaryDirectory() as tmp, env_only(
                 SPIRITSCOUT_ADMIN_PASSWORD="test-secret"):
             with TestClient(_app(tmp), follow_redirects=False) as client:
                 self.assertEqual(_login(client).status_code, 200)
@@ -215,7 +205,7 @@ class WebAuthTests(unittest.TestCase):
                 self.assertEqual(client.get("/api/sessions").status_code, 401)
 
     def test_logout_clears_cookie(self) -> None:
-        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp, env_only(
+        with tempfile.TemporaryDirectory() as tmp, env_only(
                 SPIRITSCOUT_ADMIN_PASSWORD="test-secret"):
             with TestClient(_app(tmp), follow_redirects=False) as client:
                 self.assertEqual(_login(client).status_code, 200)
@@ -224,7 +214,7 @@ class WebAuthTests(unittest.TestCase):
                 self.assertEqual(client.get("/").status_code, 302)
 
     def test_login_rate_limit(self) -> None:
-        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp, env_only(
+        with tempfile.TemporaryDirectory() as tmp, env_only(
                 SPIRITSCOUT_ADMIN_PASSWORD="test-secret"):
             with TestClient(_app(tmp), follow_redirects=False) as client:
                 for _ in range(5):
@@ -237,7 +227,7 @@ class WebAuthTests(unittest.TestCase):
     # ------------------------------------------------------------ 凭据库与恢复
 
     def test_admin_env_names_and_priority(self) -> None:
-        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp, env_only(
+        with tempfile.TemporaryDirectory() as tmp, env_only(
                 SPIRITSCOUT_ADMIN_USERNAME="admin",
                 SPIRITSCOUT_ADMIN_PASSWORD="new-secret",
                 SPIRITSCOUT_SERVER_PASSWORD="old-secret"):
@@ -249,13 +239,13 @@ class WebAuthTests(unittest.TestCase):
                     401)
 
     def test_password_is_hashed_in_database(self) -> None:
-        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp, env_only(
+        with tempfile.TemporaryDirectory() as tmp, env_only(
                 SPIRITSCOUT_ADMIN_PASSWORD="plain-text-secret"):
             with TestClient(_app(tmp)):
                 pass
             db = Path(tmp) / "admin.db"
             self.assertTrue(db.is_file())
-            with closing(sqlite3.connect(db)) as conn:
+            with sqlite3.connect(db) as conn:
                 rows = conn.execute(
                     "SELECT username, password_hash FROM admins").fetchall()
             self.assertEqual(len(rows), 1)
@@ -264,7 +254,7 @@ class WebAuthTests(unittest.TestCase):
             self.assertNotIn("plain-text-secret", rows[0][1])
 
     def test_credentials_persist_after_env_is_removed(self) -> None:
-        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        with tempfile.TemporaryDirectory() as tmp:
             with env_only(SPIRITSCOUT_ADMIN_PASSWORD="persist-secret"):
                 with TestClient(_app(tmp),
                                 follow_redirects=False) as first:
@@ -284,7 +274,7 @@ class WebAuthTests(unittest.TestCase):
                         200)
 
     def test_env_password_rotation_invalidates_old_sessions(self) -> None:
-        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        with tempfile.TemporaryDirectory() as tmp:
             with env_only(SPIRITSCOUT_ADMIN_PASSWORD="old-secret"):
                 with TestClient(_app(tmp),
                                 follow_redirects=False) as first:
@@ -305,14 +295,14 @@ class WebAuthTests(unittest.TestCase):
                         200)
 
     def test_invalid_env_username_is_reported(self) -> None:
-        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp, env_only(
+        with tempfile.TemporaryDirectory() as tmp, env_only(
                 SPIRITSCOUT_ADMIN_USERNAME="bad:name",
                 SPIRITSCOUT_ADMIN_PASSWORD="secret"):
             with self.assertRaises(ConfigurationError):
                 _app(tmp)
 
     def test_login_page_redirects_when_login_is_disabled(self) -> None:
-        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp, env_only():
+        with tempfile.TemporaryDirectory() as tmp, env_only():
             with TestClient(_app(tmp), base_url="http://127.0.0.1",
                             follow_redirects=False) as client:
                 response = client.get("/login")

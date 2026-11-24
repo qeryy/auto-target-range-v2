@@ -8,11 +8,9 @@
 from __future__ import annotations
 
 import base64
-import contextlib
 import hashlib
 import hmac
 import json
-import logging
 import os
 import secrets
 import sqlite3
@@ -22,9 +20,6 @@ from collections.abc import Callable
 from pathlib import Path
 
 from spiritscout.core.exceptions import ConfigurationError
-from spiritscout.core.sqlite_ro import ro_uri
-
-_LOG = logging.getLogger(__name__)
 
 SESSION_COOKIE = "ss_session"
 SESSION_TTL_SECONDS = 7 * 24 * 3600
@@ -37,6 +32,7 @@ _MAX_N = 2 ** 18
 _SALT_BYTES = 16
 _HASH_BYTES = 32
 MAX_USERNAME_LENGTH = 128
+MAX_PASSWORD_LENGTH = 1024
 _DEFAULT_USERNAME = "spiritscout"
 _ENV_ADMIN_SYNC = "SPIRITSCOUT_ADMIN_SYNC"
 
@@ -86,26 +82,23 @@ def verify_password(password: str, stored: str) -> bool:
 _DUMMY_HASH = hash_password(secrets.token_hex(16))
 
 
-def validate_credentials(username: str, password: str) -> None:
-    """用户名/密码的基本约束；命令行设密与 .env 导入共用这一份规则。
-
-    密码只校验「非空」：不设最短、最长长度限制，用户想用几位就用几位，
-    想用一整句话当口令也行——scrypt 的开销由参数决定，与口令长度无关。
-    空口令不能算「设了密码」，调用方按「不开启登录」处理。
-    """
+def _validate_credentials(username: str, password: str) -> None:
     if not username or len(username) > MAX_USERNAME_LENGTH:
         raise ConfigurationError(
             f"管理员用户名必须为 1-{MAX_USERNAME_LENGTH} 个字符")
     if any(ord(ch) < 0x20 or ch == ":" for ch in username):
         raise ConfigurationError("管理员用户名不能包含冒号或控制字符")
-    if not password:
-        raise ConfigurationError("管理员密码不能为空")
+    if len(password) > MAX_PASSWORD_LENGTH:
+        raise ConfigurationError(
+            f"管理员密码不能超过 {MAX_PASSWORD_LENGTH} 个字符")
 
 
 def _chmod_quiet(path: Path, mode: int = 0o600) -> None:
     """WSL DrvFs 等文件系统可能不支持 chmod；失败不影响可用性。"""
-    with contextlib.suppress(OSError):
+    try:
         os.chmod(path, mode)
+    except OSError:
+        pass
 
 
 class AdminStore:
@@ -126,40 +119,22 @@ class AdminStore:
             "created_at REAL NOT NULL, updated_at REAL NOT NULL)")
         return conn
 
-    def _connect_ro(self) -> sqlite3.Connection | None:
-        """只读连接；库还没建出来就返回 None。
-
-        检查动作（有没有管理员、某个账号的哈希）绝不该建库：登录接口被陌生
-        请求戳一下、启动脚本探一次，都会在「还没设密码」的机器上留一个空
-        admin.db，让 ``if not exist admin.db`` 这类首次启动判断失灵。
-        """
-        if not self.db_path.exists():
-            return None
-        return sqlite3.connect(ro_uri(self.db_path),
-                               uri=True, timeout=5)
-
     def has_admins(self) -> bool:
-        conn = self._connect_ro()
-        if conn is None:
+        if not self.db_path.exists():
             return False
+        conn = self._connect()
         try:
             row = conn.execute("SELECT 1 FROM admins LIMIT 1").fetchone()
-        except sqlite3.Error:
-            return False          # 空库 / 表还没建：等价于没有管理员
         finally:
             conn.close()
         return row is not None
 
     def _hash_for(self, username: str) -> str:
-        conn = self._connect_ro()
-        if conn is None:
-            return ""
+        conn = self._connect()
         try:
             row = conn.execute(
                 "SELECT password_hash FROM admins WHERE username=?",
                 (username,)).fetchone()
-        except sqlite3.Error:
-            return ""
         finally:
             conn.close()
         return str(row[0]) if row else ""
@@ -170,9 +145,6 @@ class AdminStore:
         return matched and bool(stored)
 
     def upsert(self, username: str, password: str) -> None:
-        # 用户名/密码的格式约束收口在这里：命令行设密、.env 导入、测试都走
-        # 这一个写入口，别指望每个调用方自己记着校验。
-        validate_credentials(username, password)
         now = time.time()
         token = hash_password(password)
         with self._lock:
@@ -189,27 +161,6 @@ class AdminStore:
             finally:
                 conn.close()
         _chmod_quiet(self.db_path)
-
-    def clear(self) -> int:
-        """删掉所有管理员账号，返回删除条数；用来彻底解除控制台登录。
-
-        只删账号，不动会话签名密钥：清掉之后再设密码，旧 Cookie 会因为用户
-        不存在而失效，不需要额外换密钥。
-        """
-        conn = self._connect_ro()
-        if conn is None:
-            return 0
-        conn.close()
-        with self._lock:
-            conn = self._connect()
-            try:
-                with conn:
-                    cursor = conn.execute("DELETE FROM admins")
-                    removed = cursor.rowcount if cursor.rowcount > 0 else 0
-            finally:
-                conn.close()
-        _chmod_quiet(self.db_path)
-        return removed
 
     def password_fingerprint(self, username: str) -> str:
         stored = self._hash_for(username)
@@ -233,15 +184,9 @@ class AdminStore:
             return None
         username = (os.environ.get(username_env, "").strip()
                     or _DEFAULT_USERNAME)
-        validate_credentials(username, password)
+        _validate_credentials(username, password)
         if self.verify(username, password):
             return username
-        if self._hash_for(username):
-            # 环境变量优先是部署约定（.env 写一份密码、删库也能恢复），但它
-            # 会盖掉使用者首次启动自己设的那份——必须让人在日志里看见。
-            _LOG.warning(
-                "环境变量凭据覆盖了本地管理员 %s 的密码；不想被覆盖就删掉该"
-                "环境变量，或设 %s=0 关闭启动同步", username, _ENV_ADMIN_SYNC)
         self.upsert(username, password)
         return username
 

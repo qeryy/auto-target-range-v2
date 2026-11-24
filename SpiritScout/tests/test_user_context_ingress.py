@@ -21,7 +21,7 @@ from spiritscout.web.sessions import DIALOGUE_HISTORY_MAX, Session, SessionManag
 
 class UserContextIngressTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
-        temp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
         root = Path(temp.name)
         self.cfg = SystemConfig(workspace=WorkspaceConfig(root=str(root)),
@@ -72,7 +72,9 @@ class UserContextIngressTests(unittest.IsolatedAsyncioTestCase):
         restored = SessionManager(self.cfg, []).get(self.session.session_id)
         self.assertIsNotNone(restored)
         self.assertEqual(restored.status, "interrupted")
-        self.assertEqual(restored.user_inbox, [])
+        self.assertEqual(len(restored.user_inbox), count)
+        self.assertEqual({item["statement_id"] for item in restored.user_inbox},
+                         {item["statement_id"] for item in self.context()["statements"]})
         self.assertEqual(len(restored.dialogue_history), DIALOGUE_HISTORY_MAX)
         blackboard = Blackboard(restored.bb_path)
         try:

@@ -1,10 +1,10 @@
 name: 打包并发布
 
-# 打 tag 就自动出包：wheel + sdist + 整仓 zip + 桌面版 exe + SHA256SUMS，附到同名 Release 上。
+# 打 tag 就自动出包：wheel + sdist + 整仓 zip + 原生桌面包 + SHA256SUMS，附到同名 Release 上。
 # 三种源码包都带做题经验：wheel/sdist 里是 knowledge/data/experience.json(+md)，
 # 包根另有 EXPERIENCE.md 摘要；zip 是整仓（含 experience-export/ 与 EXPERIENCE.md）。
-# 桌面版 exe 必须在 Windows 上编（用的是系统自带 csc.exe，不需要 .NET SDK），
-# 所以拆成 package（Linux）→ desktop（Windows）→ release（汇总分发）三段。
+# 原生桌面包必须在 Windows 上编（JDK 21 jpackage + Gradle），所以拆成
+# package（Linux）→ native-desktop（Windows）→ release（汇总分发）三段。
 # 也可以在 Actions 页面手动触发（填一个已存在的 tag，或留空按代码版本号推导）。
 on:
   push:
@@ -107,8 +107,9 @@ jobs:
           path: dist/*
           if-no-files-found: error
 
-  desktop:
-    name: 构建桌面版 exe
+  native-desktop:
+    name: 构建原生桌面包
+    needs: package
     runs-on: windows-latest
     steps:
       - name: 取代码
@@ -116,33 +117,50 @@ jobs:
         with:
           ref: ${{ github.event.inputs.tag || github.ref }}
 
-      - name: 编译（系统自带 csc.exe，无需 .NET SDK）
+      - name: 安装 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: 安装 JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: microsoft
+          java-version: "21"
+
+      - name: 取 wheel
+        uses: actions/download-artifact@v4
+        with:
+          name: source-dist
+          path: downloaded
+
+      - name: 编译原生桌面包
         shell: pwsh
         run: |
-          # NuGet 取 WebView2 SDK 是首次编译才做的事；缓存目录随跑随建。
-          ./SpiritScout/launcher/build-desktop.ps1 -OutputDir dist-desktop
+          New-Item -ItemType Directory -Force dist | Out-Null
+          $wheel = Get-ChildItem downloaded -Recurse -Filter 'spiritscout-*.whl' | Select-Object -First 1
+          if (-not $wheel) { throw '没有找到 wheel 产物' }
+          Copy-Item $wheel.FullName dist -Force
+          ./SpiritScout/launcher/build-native.ps1 -OutputDir dist-native
 
       - name: 核对产物
         shell: pwsh
         run: |
-          $exe = Get-ChildItem dist-desktop -Filter *.exe | Select-Object -First 1
-          if (-not $exe) { throw "没编出 exe" }
-          if ($exe.Length -lt 500KB) { throw "exe 只有 $([math]::Round($exe.Length/1KB)) KB，像是编残了" }
-          $version = (Select-String -Path SpiritScout/src/spiritscout/__init__.py -Pattern '__version__\s*=\s*"([^"]+)"').Matches[0].Groups[1].Value
-          $target = "dist-desktop/spiritscout-desktop-$version-win64.exe"
-          Move-Item $exe.FullName $target -Force
-          Write-Host "产物：$target（$([math]::Round((Get-Item $target).Length/1KB)) KB）"
+          $zip = Get-ChildItem dist-native -Filter 'spiritscout-*-native-win64.zip' | Select-Object -First 1
+          if (-not $zip) { throw '没有生成原生桌面包' }
+          if ($zip.Length -lt 50MB) { throw "原生桌面包只有 $([math]::Round($zip.Length/1MB)) MB，像是编残了" }
+          Write-Host "产物：$($zip.FullName)（$([math]::Round($zip.Length/1MB)) MB）"
 
-      - name: 交出桌面版
+      - name: 交出原生桌面包
         uses: actions/upload-artifact@v4
         with:
-          name: desktop-exe
-          path: dist-desktop/*
+          name: native-desktop
+          path: dist-native/*.zip
           if-no-files-found: error
 
   release:
     name: 汇总并发布
-    needs: [package, desktop]
+    needs: [package, native-desktop]
     runs-on: ubuntu-latest
     steps:
       - name: 取代码
@@ -204,7 +222,6 @@ jobs:
             flat/*.whl
             flat/*.tar.gz
             flat/*.zip
-            flat/*.exe
             flat/SHA256SUMS
           fail_on_unmatched_files: true
           # Release 标题与正文由人写（CHANGELOG 摘出来的那份），这里既不覆盖也不动草稿状态。

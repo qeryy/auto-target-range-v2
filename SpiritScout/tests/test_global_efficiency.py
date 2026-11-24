@@ -53,7 +53,10 @@ class PersistenceEfficiencyTests(unittest.TestCase):
             self.journal.checkpoint("ctf_conversation", "t:r", "turn_saved", state)
         with self.bb.transaction() as conn:
             rows = conn.execute("SELECT schema_version,length(state_cipher) FROM runtime_checkpoints").fetchall()
-        self.assertEqual(sum(row[0] == 2 for row in rows), 38)
+        # 新完整基线淘汰旧链，保留的增量仍必须可原样恢复。
+        self.assertLessEqual(len(rows), 32)
+        self.assertEqual(sum(row[0] == 1 for row in rows), 1)
+        self.assertTrue(any(row[0] == 2 for row in rows))
         naive_bytes = sum(len(json.dumps({"messages": state["messages"][:i + 1]})) for i in range(40))
         self.assertLess(sum(row[1] for row in rows), naive_bytes / 3)
         reopened = ExecutionJournal(self.bb, self.root, "reopened")
@@ -154,12 +157,12 @@ class PersistenceEfficiencyTests(unittest.TestCase):
 
     def test_low_watermark_prevents_every_turn_compaction(self) -> None:
         messages = [{"role": "system", "content": "角色"}, {"role": "user", "content": "授权"}]
-        for _ in range(50):
+        for i in range(50):
             messages.extend([{"role": "assistant", "content": "判断"},
                              {"role": "tool", "content": "x" * 3000}])
         compact_history_tokens(messages, 30000)
         rewritten = 0
-        for _ in range(20):
+        for i in range(20):
             messages.extend([{"role": "assistant", "content": "新判断"},
                              {"role": "tool", "content": "y" * 3000}])
             rewritten += compact_history_tokens(messages, 30000)

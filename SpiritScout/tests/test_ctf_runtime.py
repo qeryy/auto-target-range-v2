@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import tempfile
 import unittest
@@ -11,13 +12,169 @@ from spiritscout.agents.ring import attempt_key
 from spiritscout.agents.sub.base import RoutePlan
 from spiritscout.core.audit import NullAuditLogger
 from spiritscout.core.models import AgentType, RunMode, Task
+from spiritscout.core.pause import PauseGate
 from spiritscout.ctf.agents import (
     CTFBaseAgent,
     _challenge_instance_blocker,
+    _http_observation,
     _model_messages,
+    _obs_text,
 )
 from spiritscout.ctf.flags import FlagManager, SubmitResult
+from spiritscout.ctf.solver import SolverTurn
 from spiritscout.runtime import _write_competition_summary
+from spiritscout.tools.spec import ToolResult
+
+
+class DiscoveryReportingTests(unittest.IsolatedAsyncioTestCase):
+    async def test_paused_turn_does_not_advertise_or_dispatch_proposed_tool(self):
+        gate, audit = PauseGate(), Mock()
+        gate.pause()
+        agent = SimpleNamespace(ctx=SimpleNamespace(audit=audit, pause_gate=gate),
+                                agent_id="worker", challenge_id=lambda _task: "fixture",
+                                _run_tool_call=AsyncMock(side_effect=RuntimeError("fixture dispatch")))
+        turn = SolverTurn(agent, SimpleNamespace(task_id="task"),
+                          SimpleNamespace(route_id="route", name="fixture"), RoutePlan("fixture", ""))
+        turn.state = {"turn": 1}
+        pending = asyncio.create_task(turn._execute_calls([{"id": "one", "name": "fixture"}], False))
+        try:
+            await asyncio.sleep(0)
+            audit.log.assert_not_called()
+            agent._run_tool_call.assert_not_awaited()
+        finally:
+            gate.resume()
+            with self.assertRaisesRegex(RuntimeError, "fixture dispatch"):
+                await pending
+        self.assertEqual(audit.log.call_args.args[0], "agent.tool_call")
+        agent._run_tool_call.assert_awaited_once()
+
+    async def test_competition_native_shared_memory_uses_append_only_contract_and_existing_tool(self):
+        from spiritscout.blackboard import Blackboard
+        from spiritscout.blackboard.exchange import SCHEMAS
+
+        with tempfile.TemporaryDirectory() as tmp:
+            bb = Blackboard(Path(tmp) / 'bb.db')
+            self.addCleanup(bb.close)
+            agent = object.__new__(CTFBaseAgent)
+            agent.agent_id, agent.agent_type = 'native', AgentType.CTF_WEB
+            agent.ctx = SimpleNamespace(mode=RunMode.COMPETITION, blackboard=bb,
+                gateway=SimpleNamespace(config=SimpleNamespace(lightweight_local=False)))
+            agent.tool_schemas = SCHEMAS
+            original_tools = json.dumps(agent.tool_schemas, sort_keys=True)
+            state = {'messages': [{'role': 'system', 'content': '固定前缀'}]}
+            agent._ensure_progress_guidance(state)
+            first = json.loads(json.dumps(state))
+            agent._ensure_progress_guidance(state)
+            self.assertEqual(state, first)
+            self.assertEqual(state['messages'][0]['content'], '固定前缀')
+            self.assertTrue(state['shared_memory_contract_v1'])
+            self.assertEqual(json.dumps(agent.tool_schemas, sort_keys=True), original_tools)
+            task = Task(task_id='t', agent_type=AgentType.CTF_WEB, task_type='ctf_solve', target='fixture')
+            result = await agent._run_tool_call_inner(task, SimpleNamespace(route_id='r', name='route'), state,
+                {'name': 'blackboard_write', 'arguments': {
+                    'memory_id': 'mechanism', 'base_version': 0, 'claim_kind': 'rejected',
+                    'text': '输入 C 在条件 A 下未产生变化', 'scope': '实例 A', 'conditions': '输入 C',
+                    'revalidate_when': '条件或输入依据变化', 'evidence_refs': ['execution']}})
+            self.assertTrue(result.ok, result.text)
+            agent.ctx.mode = RunMode.CTF
+            agent.ctx.gateway.config.lightweight_local = True
+            local = {'messages': [{'role': 'system', 'content': '固定前缀'}]}
+            agent._ensure_progress_guidance(local)
+            self.assertNotIn('shared_memory_contract_v1', local)
+            self.assertNotIn('execution_data_guidance_v1', local)
+
+    async def test_native_report_records_display_without_gateway_or_blackboard_calls(self):
+        from spiritscout.gateway.progress import DISCOVERY_SCHEMA
+
+        for mode in (RunMode.CTF, RunMode.COMPETITION):
+            with self.subTest(mode=mode):
+                agent = object.__new__(CTFBaseAgent)
+                gateway = SimpleNamespace(chat=AsyncMock())
+                blackboard = Mock()
+                agent.ctx = SimpleNamespace(audit=Mock(), gateway=gateway, mode=mode, blackboard=blackboard)
+                agent.agent_id = 'ctf-web-test'
+                agent.tool_schemas = [DISCOVERY_SCHEMA]
+                task = Task(task_id='t', agent_type=AgentType.CTF_WEB, task_type='ctf_solve', target='fixture')
+                route = SimpleNamespace(route_id='r')
+                args = {'key': 'identity', 'intent': '确认身份来源', 'title': '身份取自会话对象',
+                        'basis': '实际响应的对照结果', 'importance': 4, 'confidence': 'observed',
+                        'kind': 'discovery', 'evidence_refs': ['exec-one']}
+                outcome = await agent._run_tool_call_inner(task, route, {'turn': 5},
+                    {'name': 'report_discovery', 'arguments': args})
+                self.assertTrue(outcome.ok)
+                self.assertEqual(agent.ctx.audit.log.call_args.args[0], 'agent.discovery')
+                self.assertEqual(agent.ctx.audit.log.call_args.args[2]['task_id'], 't')
+                gateway.chat.assert_not_awaited()
+                blackboard.write.assert_not_called()
+                self.assertFalse(outcome.stop)
+                self.assertNotIn('invocation_id', outcome.metadata)
+
+
+class FailureAttributionTests(unittest.IsolatedAsyncioTestCase):
+    async def run_result(self, result, *, light=False):
+        agent = object.__new__(CTFBaseAgent)
+        agent.ctx = SimpleNamespace(mode=RunMode.CTF, gateway=SimpleNamespace(
+            config=SimpleNamespace(lightweight_local=light)), tools=SimpleNamespace(call=AsyncMock(return_value=result)))
+        agent._tool_ctx = lambda task: {}
+        state = {'observations': [], 'messages': []}
+        outcome = await agent._tool_sandbox(None, SimpleNamespace(name='fixture'), state, 'python',
+            {'code': 'fixture()', 'action': 'analysis', 'timeout': 1})
+        agent.ctx.tools.call.assert_awaited_once()
+        return outcome, state
+
+    async def test_script_and_environment_failures_keep_facts_without_backend_root_cause(self):
+        cases = [
+            ('callback', ToolResult(tool='sandbox_exec', ok=False, returncode=-9, timed_out=True,
+                stdout='phase=response_match; connected=true; sent_id=1; received=1; pending_ids=[1]',
+                error='执行超时（1s），进程已终止'), 'pending_ids=[1]'),
+            ('api', ToolResult(tool='sandbox_exec', ok=True, returncode=1,
+                stderr='Traceback (most recent call last):\n' + '  caller frame\n' * 150
+                    + "TypeError: connect() got an unexpected keyword argument 'extra_headers'"), 'extra_headers'),
+            ('refused', ToolResult(tool='sandbox_exec', ok=True, returncode=1,
+                stderr='ConnectionRefusedError: [Errno 111] Connection refused'), 'ConnectionRefusedError'),
+            ('read-only', ToolResult(tool='sandbox_exec', ok=True, returncode=1,
+                stderr="mkdir: cannot create directory 'work': Read-only file system"), 'Read-only file system'),
+            ('permission', ToolResult(tool='sandbox_exec', ok=True, returncode=1,
+                stderr="PermissionError: [Errno 13] Permission denied: 'input.bin'"), 'Permission denied'),
+            ('exited', ToolResult(tool='sandbox_exec', ok=True, returncode=7,
+                stdout='fixture service exited with code 7'), 'exited with code 7'),
+        ]
+        for name, result, diagnostic in cases:
+            with self.subTest(name=name):
+                result.invocation_id = 'inv-fixture'
+                result.parsed = {'output_file': '/fixture/output.log', 'workdir': '/fixture/work'}
+                outcome, _ = await self.run_result(result)
+                self.assertFalse(outcome.ok)
+                self.assertIn(diagnostic, outcome.text)
+                self.assertEqual(outcome.metadata['failure_evidence'], {
+                    'exit_code': result.returncode, 'timed_out': result.timed_out, 'attribution': 'undetermined'})
+                self.assertEqual(outcome.metadata['invocation_id'], 'inv-fixture')
+                self.assertEqual(outcome.metadata['output_file'], '/fixture/output.log')
+                self.assertNotIn('超时通常意味着', outcome.text)
+                if name in {'read-only', 'permission'}:
+                    self.assertIn('/fixture/work', outcome.text)
+                    self.assertIn('属主或模式', outcome.text)
+
+    async def test_cloud_no_output_failure_keeps_execution_reference_and_error(self):
+        result = ToolResult(tool='sandbox_exec', ok=False, returncode=-9, timed_out=True,
+            error='fixture process did not finish', invocation_id='inv-timeout',
+            parsed={'output_file': '/fixture/empty.log'})
+        outcome, state = await self.run_result(result)
+        self.assertIn('fixture process did not finish', outcome.text)
+        self.assertIn('原因未定', outcome.text)
+        self.assertEqual(outcome.metadata['invocation_id'], 'inv-timeout')
+        self.assertEqual(outcome.metadata['output_file'], '/fixture/empty.log')
+        self.assertIn('fixture process did not finish', state['observations'][0]['result'])
+
+    async def test_lightweight_failure_response_is_unchanged(self):
+        outcome, _ = await self.run_result(ToolResult(tool='sandbox_exec', ok=False,
+            returncode=-9, timed_out=True, error='fixture process did not finish'), light=True)
+        self.assertEqual(outcome.text, 'python: fixture() 执行失败：fixture process did not finish')
+        self.assertEqual(outcome.metadata, {})
+        timed_out, _ = await self.run_result(ToolResult(tool='sandbox_exec', ok=False, returncode=-9,
+            stdout='waiting', timed_out=True), light=True)
+        self.assertIn('超时通常意味着', timed_out.text)
+        self.assertNotIn('failure_evidence', timed_out.metadata)
 
 
 class HTTPAddressResolutionTests(unittest.TestCase):
@@ -32,11 +189,17 @@ class HTTPAddressResolutionTests(unittest.TestCase):
         self.assertEqual(agent._resolve_http(task, {"path": "/login"})[0],
                          "http://challenge.test:8443/login")
         self.assertIsNone(agent._resolve_http(task, {"path": "/login", "url": "invalid"}))
+        for path in ("/include?file=data://text/plain;base64,ZXhhbXBsZQ==",
+                     "/fetch?url=https://reference.test/item", "//reference.test/item"):
+            with self.subTest(path=path):
+                self.assertEqual(agent._resolve_http(task, {"path": path})[0],
+                                 "http://challenge.test:8443" + path)
+        self.assertIsNone(agent._resolve_http(task, {"path": "https://reference.test/item"}))
 
 
 class CompetitionSummaryTests(unittest.TestCase):
     def test_summary_contains_scores_but_no_writeup_sections(self) -> None:
-        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        with tempfile.TemporaryDirectory() as tmp:
             flags = SimpleNamespace(
                 stats=lambda: {"accepted": 1, "submitted": 1, "extracted": 2},
                 accepted_flags=lambda: [SimpleNamespace(challenge_id="c1")])
@@ -53,7 +216,7 @@ class CompetitionSummaryTests(unittest.TestCase):
         self.assertNotIn("复现步骤", body)
 
     def test_partial_flag_does_not_override_empty_platform_completion(self) -> None:
-        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        with tempfile.TemporaryDirectory() as tmp:
             flags = SimpleNamespace(
                 stats=lambda: {"accepted": 1},
                 accepted_flags=lambda: [SimpleNamespace(challenge_id="c1")])
@@ -132,11 +295,19 @@ class AcceptedFlagTerminationTests(unittest.IsolatedAsyncioTestCase):
     async def test_duplicate_accepted_flag_still_finishes_competition(self) -> None:
         agent = self._agent(json.dumps({
             "correct_flag_count": 1, "total_flag_count": 1}))
-        for _ in range(2):
+        agent.flag_manager.min_interval = 0
+        agent.flag_manager.submit_fn = AsyncMock(return_value=SubmitResult(True, json.dumps({
+            "correct_flag_count": 1, "total_flag_count": 1})))
+        for challenge_id in ("e1-03", "e1-04", "e1-03", "e1-04"):
+            task = self._task(1)
+            task.payload["challenge"]["id"] = challenge_id
             out = await agent._tool_submit_flag(
-                self._task(1), SimpleNamespace(name="solve"), {},
+                task, SimpleNamespace(name="solve"), {},
                 {"flag": "flag{demo}"})
             self.assertTrue(out.stop)
+        self.assertEqual([call.args for call in agent.flag_manager.submit_fn.await_args_list],
+                         [("flag{demo}", "e1-03"), ("flag{demo}", "e1-04")])
+        self.assertEqual(agent.flag_manager.stats()["accepted"], 2)
 
     async def test_unknown_completion_keeps_solving(self) -> None:
         agent = self._agent("平台确认正确，但未提供整题完成态")
@@ -276,7 +447,7 @@ class SolverContextTests(unittest.TestCase):
 
 
 class RecordReplayTests(unittest.IsolatedAsyncioTestCase):
-    """已读取过的地址回放记录；refresh / POST / 分段请求不受影响。"""
+    """旧路线记录不绕过带身份、实例与完整参数的统一去重入口。"""
 
     @staticmethod
     def _agent() -> CTFBaseAgent:
@@ -289,9 +460,9 @@ class RecordReplayTests(unittest.IsolatedAsyncioTestCase):
         agent.ctx = SimpleNamespace(
             audit=Mock(), ring=None, builtin_ctx={},
             blackboard=SimpleNamespace(write=Mock(), read=Mock(return_value=None)),
-            tools=SimpleNamespace(call=AsyncMock(return_value=SimpleNamespace(
-                ok=True, parsed={"status_code": 200, "headers": {}},
-                stdout="<html><title>fresh</title></html>", error=None))))
+            tools=SimpleNamespace(call=AsyncMock(return_value=ToolResult(
+                tool="http_probe", ok=True, parsed={"status_code": 200, "headers": {}},
+                stdout="<html><title>fresh</title></html>", invocation_id="inv-fixture"))))
         return agent
 
     @staticmethod
@@ -300,7 +471,22 @@ class RecordReplayTests(unittest.IsolatedAsyncioTestCase):
                     agent_type=AgentType.CTF_WEB,
                     payload={"challenge": {"url": "http://t"}})
 
-    async def test_already_read_get_is_served_from_record(self) -> None:
+    async def test_http_failure_keeps_diagnostics_and_original_execution_reference(self):
+        agent = self._agent()
+        failure = {'error_type': 'ConnectTimeout', 'phase': 'connect', 'request_state': 'not_sent'}
+        agent.ctx.tools.call.return_value = ToolResult(tool='http_probe', ok=False,
+            error='ConnectTimeout：未发出请求', parsed={'http_failure': failure},
+            invocation_id='inv-failed')
+        state = {'observations': []}
+        out = await agent._tool_http(self._task(), SimpleNamespace(name='solve'), state, {'path': '/api'})
+        self.assertFalse(out.ok)
+        self.assertIn('ConnectTimeout', out.text)
+        self.assertIn('inv-failed', out.text)
+        self.assertEqual(out.metadata['http_failure'], failure)
+        self.assertEqual(state['observations'][0]['http_failure'], failure)
+        agent.ctx.tools.call.assert_awaited_once()
+
+    async def test_legacy_record_does_not_bypass_context_aware_registry(self) -> None:
         agent = self._agent()
         state = {"observations": [], "fetches": {}, "flags": [], "turn": 7}
         state["fetches"][attempt_key("GET", "http://t/static/x.js", None)] = {
@@ -312,9 +498,19 @@ class RecordReplayTests(unittest.IsolatedAsyncioTestCase):
             {"path": "/static/x.js"})
 
         self.assertTrue(out.ok)
-        self.assertIn("记录回放", out.text)
-        self.assertIn("第 3 回合", out.text)
-        agent.ctx.tools.call.assert_not_awaited()
+        self.assertIn("fresh", out.text)
+        agent.ctx.tools.call.assert_awaited_once()
+
+    async def test_shared_result_is_disclosed_without_new_finding_or_reward(self) -> None:
+        agent = self._agent()
+        agent.ctx.tools.call.return_value = ToolResult(tool="http_probe", ok=True, stdout="cached form",
+            parsed={"status_code": 200}, invocation_id="inv-reader", source_invocation_id="inv-owner", reuse="cache")
+        out = await agent._tool_http(self._task(), SimpleNamespace(name="solve"),
+            {"observations": [], "fetches": {}, "turn": 2}, {"path": "/login"})
+        self.assertEqual(out.value, 0)
+        self.assertIn("本次未发送请求", out.text)
+        self.assertEqual(out.metadata["source_invocation_id"], "inv-owner")
+        agent.ctx.blackboard.write.assert_not_called()
 
     async def test_refresh_requests_again_and_updates_record(self) -> None:
         agent = self._agent()
@@ -330,7 +526,8 @@ class RecordReplayTests(unittest.IsolatedAsyncioTestCase):
         agent.ctx.tools.call.assert_awaited_once()
         self.assertTrue(out.ok)
         self.assertIn("fresh", out.text)
-        self.assertEqual(state["fetches"][key]["round"], 7)
+        self.assertTrue(agent.ctx.tools.call.call_args.kwargs["_fresh"])
+        self.assertTrue(any(record["round"] == 7 for record in state["fetches"].values()))
 
     async def test_post_and_ranged_requests_are_never_replayed(self) -> None:
         agent = self._agent()
@@ -374,6 +571,43 @@ class StepExtensionTests(unittest.TestCase):
         self.assertEqual(plan.steps, [])
 
 
+class CTFPlanningContextTests(unittest.TestCase):
+    """赛题证据进模型规划上下文：魔数注记是感知事实，方向由模型判断。"""
+
+    def test_ctf_assembly_feeds_challenges_with_attachment_facts(self) -> None:
+        import tempfile
+        from pathlib import Path
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        from spiritscout.core.models import RunMode
+        from spiritscout.modes.assembler import ModeAssembler
+
+        with tempfile.TemporaryDirectory() as tmp:
+            binary = Path(tmp) / "crackme"
+            binary.write_bytes(b"\x7fELF\x02\x01\x01\x00" + b"\x00" * 32)
+            original = [{"id": "c1", "title": "unknown",
+                         "description": "分析附件", "attachments": [str(binary)]}]
+
+            with (patch("spiritscout.modes.assembler.CTFWebAgent"),
+                  patch("spiritscout.modes.assembler.CTFPwnAgent"),
+                  patch("spiritscout.modes.assembler.CTFReverseAgent"),
+                  patch("spiritscout.modes.assembler.CTFCryptoAgent"),
+                  patch("spiritscout.modes.assembler.CTFMiscAgent")):
+                assembly = ModeAssembler(SimpleNamespace(),
+                                         enable_llm_planning=True).assemble(
+                    RunMode.CTF, challenges=original)
+
+            planning = assembly.competition_context["challenges"]
+            self.assertEqual(planning[0]["id"], "c1")
+            self.assertEqual(len(planning[0]["attachment_notes"]), 1)
+            self.assertIn("ELF", planning[0]["attachment_notes"][0])
+            # 原始清单不带注记（规划视图是副本，不就地改写）
+            self.assertNotIn("attachment_notes", original[0])
+            # 规则派单保留为兜底，不再短路模型规划
+            self.assertIsNotNone(assembly.plan_provider)
+
+
 class DirectionRotationTests(unittest.TestCase):
     """重攻方向按题目形态轮换：纯 URL 的 Web 题不交给杂项接手。"""
 
@@ -405,6 +639,150 @@ class DirectionRotationTests(unittest.TestCase):
 
         self.assertEqual(dirs[0], "misc")
         self.assertIn("crypto", dirs)
+
+    def test_binary_attachment_with_instance_url_is_pwn_not_web(self) -> None:
+        """附件是硬方向证据：带实例地址的二进制题不能被 http 关键词判成 Web。"""
+        from spiritscout.modes.assembler import classify_challenge
+
+        challenge = {"id": "c4", "title": "shellcode",
+                     "url": "http://1.2.3.4:1337",
+                     "description": "题面给的是 http://1.2.3.4:1337 实例地址",
+                     "attachments": ["/a/chall.elf"]}
+
+        self.assertEqual(classify_challenge(challenge), "pwn")
+
+    def test_binary_attachment_with_reverse_keywords_is_reverse(self) -> None:
+        """二进制附件给谁由题面说：逆向词指向 reverse，不再一律 pwn。"""
+        from spiritscout.modes.assembler import classify_challenge
+
+        challenge = {"id": "c8", "title": "easy crackme",
+                     "description": "逆向分析附件，还原校验算法",
+                     "attachments": ["/a/crackme"]}
+
+        with self.subTest(ext=".elf"):
+            self.assertEqual(classify_challenge(
+                {**challenge, "attachments": ["/a/crackme.elf"]}), "reverse")
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as tmp:
+            binary = Path(tmp) / "crackme"
+            binary.write_bytes(b"\x7fELF\x02\x01\x01\x00" + b"\x00" * 64)
+            self.assertEqual(classify_challenge(
+                {**challenge, "attachments": [str(binary)]}), "reverse")
+
+    def test_extensionless_binary_sniffed_by_magic(self) -> None:
+        """无扩展名的二进制附件按魔数识别：默认 pwn，轮换候选含 reverse。"""
+        import tempfile
+        from pathlib import Path
+
+        from spiritscout.modes.assembler import (
+            _candidate_directions,
+            classify_challenge,
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            binary = Path(tmp) / "chall"
+            binary.write_bytes(b"MZ\x90\x00\x03\x00\x00\x00" + b"\x00" * 64)
+            challenge = {"id": "c9", "title": "unknown",
+                         "attachments": [str(binary)]}
+
+            self.assertEqual(classify_challenge(challenge), "pwn")
+            dirs = _candidate_directions(challenge)
+            self.assertEqual(dirs[0], "pwn")
+            self.assertIn("reverse", dirs)
+
+    def test_extensionless_forensics_file_falls_to_misc(self) -> None:
+        """无扩展名的取证文件（图片/压缩包/流量）不是二进制嗅探目标：
+        仍走 misc 兜底，且并行/轮换里 misc 常驻——魔数嗅探不得劫持杂项题。"""
+        import tempfile
+        from pathlib import Path
+
+        from spiritscout.modes.assembler import (
+            _candidate_directions,
+            _parallel_directions,
+            classify_challenge,
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            stego = Path(tmp) / "secret"
+            stego.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 64)
+            challenge = {"id": "c10", "title": "unknown",
+                         "attachments": [str(stego)]}
+
+            self.assertEqual(classify_challenge(challenge), "misc")
+            self.assertIn("misc", _parallel_directions(challenge))
+            self.assertIn("misc", _candidate_directions(challenge))
+
+    def test_extensionless_macho_sniffed_as_binary(self) -> None:
+        import tempfile
+        from pathlib import Path
+
+        from spiritscout.modes.assembler import classify_challenge
+
+        with tempfile.TemporaryDirectory() as tmp:
+            macho = Path(tmp) / "crack"
+            macho.write_bytes(b"\xFE\xED\xFA\xCF" + b"\x00" * 64)
+
+            self.assertEqual(classify_challenge(
+                {"id": "c11", "title": "unknown",
+                 "attachments": [str(macho)]}), "pwn")
+
+    def test_url_link_in_description_does_not_hijack_forensics(self) -> None:
+        from spiritscout.modes.assembler import classify_challenge
+
+        challenge = {"id": "c5", "title": "流量分析",
+                     "url": "http://x/download",
+                     "attachments": ["/a/traffic.pcap"]}
+
+        self.assertEqual(classify_challenge(challenge), "misc")
+
+    def test_bare_url_without_other_signal_still_falls_back_to_web(self) -> None:
+        from spiritscout.modes.assembler import classify_challenge
+
+        self.assertEqual(classify_challenge(
+            {"id": "c6", "url": "http://x"}), "web")
+
+    def test_bare_url_mission_shell_classifies_web(self) -> None:
+        """裸 URL 任务合成的壳赛题（不捆绑 url 字段）仍判 web——链接活在题面原文。"""
+        from spiritscout.modes.assembler import classify_challenge
+
+        challenge = {"id": "mission-1", "title": "任务描述赛题",
+                     "description": "http://80-60acec72-53ee-4f86-a75e-dd90638bbe3f.challenge.ctfplus.cn/"}
+
+        self.assertEqual(classify_challenge(challenge), "web")
+
+    def test_web_source_zip_is_not_hijacked_by_attachment(self) -> None:
+        """www.zip 发 Web 源码：题面关键词先于弱方向附件。"""
+        from spiritscout.modes.assembler import classify_challenge
+
+        challenge = {"id": "c7", "title": "easy web",
+                     "description": "Web 源码审计题，附件是站点源码打包",
+                     "attachments": ["/a/www.zip"]}
+
+        self.assertEqual(classify_challenge(challenge), "web")
+
+    def test_misc_shell_with_text_url_rotates_to_web(self) -> None:
+        """题面原文带链接的杂项壳：轮换候选里必须有 Web 出口（不再只读 url 字段）。"""
+        from spiritscout.modes.assembler import _candidate_directions
+
+        challenge = {"id": "mission-1", "title": "神秘流量包",
+                     "description": "附件在 http://cdn.example.test/dl 线索页",
+                     "attachments": ["/a/traffic.pcap"]}
+
+        candidates = _candidate_directions(challenge)
+        self.assertEqual(candidates[0], "misc")
+        self.assertIn("web", candidates)
+
+    def test_misc_classified_with_text_url_opens_web_angle_round_zero(self) -> None:
+        """判为杂项但题面有链接：首轮就并行 Web 视角（壳赛题同样生效）。"""
+        from spiritscout.modes.assembler import _parallel_directions
+
+        challenge = {"id": "mission-2", "title": "任务附件赛题",
+                     "description": "题面线索 http://80-x.challenge.ctfplus.cn/",
+                     "attachments": ["/a/blob.zip"]}
+
+        self.assertEqual(_parallel_directions(challenge), ["web", "misc"])
 
 
 class SpawnGuardTests(unittest.IsolatedAsyncioTestCase):
@@ -477,11 +855,7 @@ class SpawnIdentityTests(unittest.IsolatedAsyncioTestCase):
 
 
 class CrossReplayDisclosureTests(unittest.IsolatedAsyncioTestCase):
-    """跨分支回放必须自我披露并留 refresh 逃生口；带参数 GET 不回放。
-
-    回放若无标记，模型会把旧录像当成新鲜响应（登录后再访问仍见登录前
-    快照 → 误判未登录 → 死循环）；缓存键不含参数，带参回放会答非所问。
-    """
+    """旧跨分支快照不再自动回放，统一工具层负责精确复用。"""
 
     @staticmethod
     def _agent(shared: str | None) -> CTFBaseAgent:
@@ -500,9 +874,9 @@ class CrossReplayDisclosureTests(unittest.IsolatedAsyncioTestCase):
         agent.ctx = SimpleNamespace(
             audit=Mock(), ring=None, builtin_ctx={},
             blackboard=SimpleNamespace(write=Mock(), read=Mock(return_value=None)),
-            tools=SimpleNamespace(call=AsyncMock(return_value=SimpleNamespace(
-                ok=True, parsed={"status_code": 200, "headers": {}},
-                stdout="<html><title>fresh</title></html>", error=None))))
+            tools=SimpleNamespace(call=AsyncMock(return_value=ToolResult(
+                tool="http_probe", ok=True, parsed={"status_code": 200, "headers": {}},
+                stdout="<html><title>fresh</title></html>", invocation_id="inv-fixture"))))
         return agent
 
     @staticmethod
@@ -511,16 +885,15 @@ class CrossReplayDisclosureTests(unittest.IsolatedAsyncioTestCase):
                     agent_type=AgentType.CTF_WEB,
                     payload={"challenge": {"url": "http://t"}})
 
-    async def test_cross_branch_replay_discloses_itself(self) -> None:
+    async def test_legacy_cross_branch_cache_cannot_override_registry(self) -> None:
         agent = self._agent("GET /kb → 200\n正文: 登录页快照")
         out = await agent._tool_http(
             self._task(), SimpleNamespace(name="solve"),
             {"observations": [], "fetches": {}, "flags": [], "turn": 2},
             {"path": "/kb"})
         self.assertTrue(out.ok)
-        self.assertIn("记录回放", out.text)
-        self.assertIn("refresh", out.text)
-        agent.ctx.tools.call.assert_not_awaited()
+        self.assertIn("fresh", out.text)
+        agent.ctx.tools.call.assert_awaited_once()
 
     async def test_parameterized_get_is_never_cross_replayed(self) -> None:
         agent = self._agent("GET /kb → 200\n正文: 旧答案")
@@ -567,11 +940,31 @@ class CrossReplayDisclosureTests(unittest.IsolatedAsyncioTestCase):
         agent.ctx.tools.call.assert_awaited_once()
         self.assertIn("fresh", out.text)
         put_keys = [c.args[1] for c in agent.cache.put.call_args_list]
-        self.assertIn("fetch|GET|http://t/kb", put_keys)
+        self.assertFalse([key for key in put_keys if key.startswith("fetch|")])
 
 
 class EmptyReplyRepairTests(unittest.IsolatedAsyncioTestCase):
     """思考型模型空正文回合不是结论：注入提示再给一次机会，连续两次才收尾。"""
+
+    async def test_cancelled_turn_restores_scope_without_fabricating_results(self) -> None:
+        import asyncio
+
+        from spiritscout.tools.invocation import ExecutionScope, current_execution_scope
+
+        agent = self._agent([asyncio.CancelledError()])
+        plan = RoutePlan(name="solve", strategy="", steps=[{"action": "investigate"}])
+        parent = ExecutionScope(task_id="parent", route_id="outer")
+        token = current_execution_scope.set(parent)
+        try:
+            with self.assertRaises(asyncio.CancelledError):
+                await agent._solve_turn(self._task(), self._route(), plan)
+            self.assertIs(current_execution_scope.get(), parent)
+        finally:
+            current_execution_scope.reset(token)
+        self.assertEqual(self.state["turn"], 1)
+        self.assertEqual(self.state["llm_failures"], 0)
+        self.assertFalse(self.state["concluded"])
+        self.assertFalse(any(m["role"] in ("assistant", "tool") for m in self.state["messages"]))
 
     def _agent(self, responses: list) -> CTFBaseAgent:
         agent = object.__new__(CTFBaseAgent)
@@ -642,6 +1035,43 @@ class EmptyReplyRepairTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("/kb", self.state["conclusion_text"])
         self.assertEqual(self.state["empty_replies"], 0)
 
+    async def test_local_handoff_text_extends_route_until_explicit_completion(self) -> None:
+        handoff = self._reply("接力资料已保存，尚未取得答案。")
+        agent = self._agent([handoff, handoff])
+        agent.flag_manager = SimpleNamespace(local_only=True, multiple_answers=False,
+                                             completed_ids=lambda: set())
+        plan = RoutePlan(name="solve", strategy="", steps=[{"action": "investigate"}])
+        for turn in (1, 2):
+            result = await agent._solve_turn(self._task(), self._route(), plan)
+            self.assertTrue(result.ok)
+            self.assertFalse(result.final_note)
+            self.assertFalse(self.state["concluded"])
+            self.assertEqual(len(plan.steps), turn + 1)
+            self.assertNotIn("正在核对答案完整性", result.note)
+        self.assertEqual(self.state["turn"], 2)
+        self.assertFalse(any(call.args[0] == "agent.conclude"
+                             for call in agent.ctx.audit.log.call_args_list))
+
+    async def test_background_notification_is_injected_before_next_model_call(self) -> None:
+        from spiritscout.tools.background import Job, ShellJobs
+
+        agent = self._agent([self._reply("已收到后台输出")])
+        task = self._task()
+        with tempfile.TemporaryDirectory() as temp:
+            agent.ctx.builtin_ctx["workspace_root"] = temp
+            jobs = ShellJobs(temp,audit=NullAuditLogger())
+            scope = agent._tool_ctx(task)["workspace_scope"]
+            job = Job("fixture-job",scope,owner=agent.agent_id)
+            jobs.notify(job,"condition",agent.agent_id,matched=True,contains="READY")
+            try:
+                plan = RoutePlan(name="solve",strategy="",steps=[{"action":"investigate"}])
+                await agent._solve_turn(task,self._route(),plan)
+                messages = agent.ctx.gateway.chat.call_args.args[0]
+                self.assertIn("READY",json.dumps(messages,ensure_ascii=False))
+                self.assertEqual(jobs.drain(agent.agent_id,scope),[])
+            finally:
+                await jobs.aclose()
+
 
 class BlackboardDedupTests(unittest.TestCase):
     """同层同 dedup_key 只存一条：后续写入升级既有记录而非追加新条。"""
@@ -653,7 +1083,7 @@ class BlackboardDedupTests(unittest.TestCase):
         from spiritscout.blackboard.store import Blackboard
         from spiritscout.core.models import BlackboardLayer
 
-        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        with tempfile.TemporaryDirectory() as tmp:
             bb = Blackboard(Path(tmp) / "bb.db")
             bb.write(BlackboardLayer.TOPOLOGY, "finding-a",
                      {"kind": "finding", "text": "首页 200"},
@@ -674,7 +1104,7 @@ class BlackboardDedupTests(unittest.TestCase):
         from spiritscout.blackboard.store import Blackboard
         from spiritscout.core.models import BlackboardLayer
 
-        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        with tempfile.TemporaryDirectory() as tmp:
             bb = Blackboard(Path(tmp) / "bb.db")
             bb.write(BlackboardLayer.TOPOLOGY, "finding-a", {"text": "a"},
                      agent_type=AgentType.CTF_WEB, dedup_key="k1")
@@ -695,7 +1125,7 @@ class BlackboardDedupTests(unittest.TestCase):
         from spiritscout.blackboard.store import Blackboard
         from spiritscout.core.models import BlackboardLayer
 
-        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        with tempfile.TemporaryDirectory() as tmp:
             bb = Blackboard(Path(tmp) / "bb.db")
             bb.write(BlackboardLayer.TOPOLOGY, "finding-a", {"text": "旧"},
                      agent_type=AgentType.CTF_WEB, dedup_key="k1")
@@ -792,6 +1222,14 @@ class PeerAcceptedFlagValveTests(unittest.TestCase):
 
 
 class PeerUpdateWatermarkTests(unittest.TestCase):
+    def test_same_role_new_route_receives_prior_notes_and_conclusions(self) -> None:
+        state = {}
+        agent = self._agent(["[web] 前一任务已经排除条件 A"], ["[web/solve] 后续需要核对条件 B"])
+        first = agent._peer_updates(self._task(), state)
+        self.assertIn("条件 A", first)
+        self.assertIn("条件 B", first)
+        self.assertEqual(agent._peer_updates(self._task(), state), "")
+
     """同伴笔记/结论按内容水位去重：共享缓冲区写满后 len 不再增长。
 
     按长度记账时写满即永久静默——同伴动态里再也看不到任何新笔记与
@@ -878,6 +1316,121 @@ class FindingDedupKeyTests(unittest.TestCase):
         self.assertEqual(calls[0]["dedup_key"], expected)
         self.assertEqual(calls[0]["data"]["task_id"], "t1")
         self.assertEqual(calls[0]["data"]["parent_dag_node"], "dag-1")
+
+
+class SendFileToolTests(unittest.TestCase):
+    """send_file：仅放行 artifacts/ 内的真实文件，file.shared 审计留痕。"""
+
+    @staticmethod
+    def _agent(tmp: str) -> tuple[CTFBaseAgent, NullAuditLogger]:
+        audit = NullAuditLogger()
+        agent = object.__new__(CTFBaseAgent)
+        agent.agent_id = "ctf-web-test"
+        agent.ctx = SimpleNamespace(audit=audit, builtin_ctx={"workspace_root": tmp})
+        return agent, audit
+
+    @staticmethod
+    def _task() -> Task:
+        return Task(task_id="t1", task_type="ctf_solve", target="http://x",
+                    agent_type=AgentType.CTF_WEB,
+                    payload={"challenge": {"id": "e1-03"}})
+
+    def test_send_file_in_tool_catalog(self) -> None:
+        names = {schema["function"]["name"] for schema in CTFBaseAgent.tool_schemas}
+        self.assertIn("send_file", names)
+
+    def test_shares_artifact_and_rejects_escape(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "artifacts").mkdir()
+            (Path(tmp) / "artifacts" / "exp.py").write_text("print(1)", encoding="utf-8")
+            (Path(tmp) / "meta.json").write_text("{}", encoding="utf-8")
+            agent, audit = self._agent(tmp)
+            route = SimpleNamespace(route_id="r1", name="solve")
+            out = agent._tool_send_file(self._task(), route, {"turn": 1},
+                                        {"path": "artifacts/exp.py", "note": "完整 exp"})
+            self.assertTrue(out.ok)
+            self.assertEqual(len(audit.records), 1)
+            record = audit.records[0]
+            self.assertEqual(record["type"], "file.shared")
+            self.assertEqual(record["actor"], "ctf-web-test")
+            self.assertEqual(record["detail"]["path"], "artifacts/exp.py")
+            self.assertEqual(record["detail"]["size"], len(b"print(1)"))
+            # 工作区其他文件、不存在文件、绝对路径、穿越路径都拒绝
+            for bad in ("meta.json", "artifacts/missing.txt", f"{tmp}/meta.json",
+                        "artifacts/../meta.json"):
+                with self.subTest(path=bad):
+                    self.assertFalse(agent._tool_send_file(
+                        self._task(), route, {}, {"path": bad}).ok)
+
+
+class EvidenceDrivenPathTests(unittest.IsolatedAsyncioTestCase):
+    def test_repeated_agents_keep_unique_instance_owned_tool_contracts(self):
+        import copy
+
+        from spiritscout.ctf.agents import CTFWebAgent
+
+        template = copy.deepcopy(CTFWebAgent.tool_schemas)
+        ctx = SimpleNamespace(mode=RunMode.CTF, shared_cache=None,
+            gateway=SimpleNamespace(config=SimpleNamespace(lightweight_local=False)),
+            audit=NullAuditLogger(), builtin_ctx={}, blackboard=None, policy=None)
+        ctx.for_agent = lambda role: ctx
+        first = CTFWebAgent(ctx, flag_manager=FlagManager())
+        second = CTFWebAgent(ctx, flag_manager=FlagManager())
+        for agent in (first, second):
+            names = [schema['function']['name'] for schema in agent._model_tool_schemas()]
+            self.assertEqual(len(names), len(set(names)))
+            self.assertEqual(names.count('history_read'), 1)
+            self.assertEqual(names.count('evidence_memory'), 1)
+        self.assertEqual(first.tool_schemas, second.tool_schemas)
+        first.tool_schemas[0]['function']['description'] = 'instance-local edit'
+        self.assertNotEqual(first.tool_schemas, second.tool_schemas)
+        self.assertEqual(CTFWebAgent.tool_schemas, template)
+
+    async def test_no_implicit_dictionary_and_explicit_paths_are_deduplicated(self):
+        agent = object.__new__(CTFBaseAgent)
+        agent.ctx = SimpleNamespace(tools=SimpleNamespace(call=AsyncMock(return_value=ToolResult(
+            tool='http_probe', ok=True, parsed={'status_code': 404}))))
+        agent.challenge_of = lambda task: {'url': 'http://fixture.test'}
+        agent._tool_ctx = lambda task: {}
+        for args in ({}, {'paths': []}, {'paths': ['//other.test'], 'reason': '核实接口'},
+                     {'paths': ['/api', None], 'reason': '核实接口'}, {'paths': ['/api'], 'reason': ' '}):
+            self.assertFalse((await agent._tool_probe_paths(None, None, {}, args)).ok)
+        agent.ctx.tools.call.assert_not_awaited()
+        result = await agent._tool_probe_paths(None, None, {}, {
+            'paths': ['/api/config', '/api/config'], 'reason': '前端引用该配置接口，对比真实配置与页面默认值'})
+        self.assertTrue(result.ok)
+        agent.ctx.tools.call.assert_awaited_once_with('http_probe', {'url': 'http://fixture.test/api/config'})
+
+
+class RedirectEvidenceVisibilityTests(unittest.TestCase):
+    """登录/提交后的 302 + Set-Cookie 与原始 request.http 必须回传给模型。"""
+
+    def test_http_observation_keeps_redirect_headers(self) -> None:
+        res = SimpleNamespace(stdout="", parsed={
+            "status_code": 403,
+            "headers": {"server": "Apache"},
+            "redirects": [{"status": 302, "url": "http://fixture.test/",
+                           "location": "http://fixture.test/",
+                           "set_cookie": "identification=abc; Path=/"}],
+            "body_ref": "b" * 32, "body_path": "/tmp/body.txt", "body_chars": 1,
+            "download_complete": True,
+        })
+        obs = _http_observation("POST", res, "http://fixture.test/", [])
+        self.assertEqual(obs["redirects"][0]["set_cookie"], "identification=abc; Path=/")
+
+    def test_obs_text_surfaces_redirect_set_cookie_and_raw_request_files(self) -> None:
+        text = _obs_text({
+            "action": "POST", "status": 403, "body_ref": "a" * 32,
+            "body_path": "/tmp/session/http-responses/ref/body.txt",
+            "headers": {"server": "Apache"},
+            "redirects": [{"status": 302, "url": "http://fixture.test/",
+                           "location": "http://fixture.test/",
+                           "set_cookie": "identification=abc; Path=/"}],
+            "excerpt": "body",
+        })
+        self.assertIn("302", text)
+        self.assertIn("identification=abc", text)
+        self.assertIn("request.http", text)
 
 
 if __name__ == "__main__":

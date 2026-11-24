@@ -18,6 +18,7 @@ from spiritscout.policy.engine import PolicyEngine
 
 # 战术 → 子 Agent 映射；模式装配时可覆盖或扩展。
 TACTIC_AGENT_MAP: dict[str, tuple[AgentType, str]] = {
+    'JS-REVERSE': (AgentType.JS_REVERSE, 'js_reverse'),
     "BUSINESS-CONTEXT": (AgentType.BUSINESS_CONTEXT, "business_context"),
     "TA0043": (AgentType.RECON, "recon"),          # 侦察
     "TA0001": (AgentType.WEB_VULN, "web_probe"),   # 初始访问（T1190 Web 打点）
@@ -36,6 +37,8 @@ class MasterState(TypedDict):
     continue_iteration: bool
     stop_reason: str
     plan_source: str
+    last_decision_event: str
+    replan_requested: bool
 
 
 @dataclass
@@ -58,6 +61,7 @@ class MasterContext:
     pause_gate: Any = None      # 暂停门（与子 Agent 共持；None=无暂停能力）
     questions: Any = None       # QuestionBroker（复盘向用户提问；None=不可用）
     journal: Any = None         # 执行台账与加密检查点
+    history_lookup: Any = None  # 仅按需读取历史，不向主控开放现场执行工具
 
     def __post_init__(self) -> None:
         if self.audit is None:

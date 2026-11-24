@@ -42,7 +42,7 @@ class StableLayoutTests(unittest.TestCase):
             self.assertNotIn('../artifacts/', fixed)
             self.assertIn('environment.artifacts',fixed)
         prefix = 0
-        for a, b in zip(*prompts, strict=True):
+        for a, b in zip(*prompts):
             if a != b:
                 break
             prefix += 1

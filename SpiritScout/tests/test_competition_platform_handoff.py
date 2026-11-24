@@ -13,7 +13,7 @@ import httpx
 from spiritscout.agents.master.agent import MasterAgent
 from spiritscout.agents.sub.base import RoutePlan
 from spiritscout.blackboard import Blackboard
-from spiritscout.core.models import AgentType, Task
+from spiritscout.core.models import AgentType, BlackboardLayer, Task
 from spiritscout.ctf.platform import PlatformAdapter, parse_platform_profile
 from spiritscout.tools.spec import ToolResult
 from tests import test_project_injection
@@ -60,7 +60,7 @@ class PlatformHandoffTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn('detail', handoff['completed_operations']['precheck'])
 
     async def test_failed_initial_http_request_is_not_reported_as_stopped_container(self) -> None:
-        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        with tempfile.TemporaryDirectory() as tmp:
             bb = Blackboard(Path(tmp) / 'bb.db')
             self.addCleanup(bb.close)
             agent = test_project_injection.CTFProjectMemorySeedTests()._agent(bb)
@@ -77,7 +77,7 @@ class PlatformHandoffTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn('未证明容器停止', note)
 
     async def test_handoff_and_original_rules_survive_large_seed(self) -> None:
-        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        with tempfile.TemporaryDirectory() as tmp:
             bb = Blackboard(Path(tmp) / 'bb.db')
             self.addCleanup(bb.close)
             agent = test_project_injection.CTFProjectMemorySeedTests()._agent(bb)
@@ -93,7 +93,10 @@ class PlatformHandoffTests(unittest.IsolatedAsyncioTestCase):
             plan = RoutePlan(name='solve', strategy='')
             agent._seed_messages(task, plan, plan, state)
             content = state['messages'][1]['content']
-            self.assertIn(rules, content)
+            self.assertNotIn(rules, content)
+            self.assertIn("blackboard_ref", content)
+            self.assertTrue(any(row["data"].get("content") == rules
+                                for row in bb.query(BlackboardLayer.TARGET_AUTH)))
             self.assertIn(json.dumps(handoff, ensure_ascii=False), content)
             self.assertIn('全队分工执行', content)
             self.assertIn('submit_flag', content)

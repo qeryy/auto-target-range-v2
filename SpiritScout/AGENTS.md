@@ -11,9 +11,21 @@
 ## 技术栈
 
 - 后端：Python 3.11+ / FastAPI / SQLite / LiteLLM / LangGraph
-- 前端：原生 HTML/CSS/JS（无构建步骤），多文件结构
+- 前端：原生 HTML/CSS/JS 页面与 React/TypeScript 阅读组件并存；工作区样式修改
+  `frontend/` 后运行 `npm run build`
 - 沙箱：bubblewrap（bwrap）
 - MCP：官方 SDK，stdio/http/sse 三传输
+
+## Windows 终端规范
+
+- 所有 Windows 本地命令必须使用 PowerShell 语法，并将命令工具的 `shell` 参数设为
+  `powershell`。
+- 禁止在 Windows 本地命令中选择 Bash。
+- 只有命令明确针对 WSL 或 Linux，且用户明确要求该环境时，才允许使用 Bash。
+- 如果 PowerShell 命令失败且输出显示 `/bin/bash`、`bash: ... not found` 或类似的
+  shell 不匹配错误，必须将本次调用认定为代理的 shell 选择错误，并立即改用
+  PowerShell 重跑。
+- Bash 误调用产生的结果不得计作项目验证、测试或排障证据。
 
 ## 关键约束
 
@@ -27,7 +39,8 @@
   智能体模式用于无人值守竞赛，也不向用户提问；普通 CTF 仍可就任务缺失信息
   或授权范围不清向用户提问，操作审批不再阻塞执行。
 - **Flag 提交由模型判定**：不要恢复后端正则提取
-- **前端无构建步骤**：直接修改 static/ 下的文件，改完 node --check 校验
+- **前端分两套入口**：普通页面直接修改 `src/spiritscout/web/static/`；React
+  阅读组件和工作区样式修改 `frontend/`，提交前运行 `npm run build`
 
 ## 代码风格
 

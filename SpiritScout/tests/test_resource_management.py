@@ -15,6 +15,7 @@ import tempfile
 import threading
 import time
 import unittest
+from contextlib import nullcontext
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from unittest.mock import AsyncMock, Mock, patch
@@ -57,6 +58,19 @@ def cfg_at(root: Path) -> SystemConfig:
 
 
 class ResourceStoreTests(unittest.TestCase):
+    def test_shared_finding_grade_requires_current_verified_assessment(self) -> None:
+        from spiritscout.resources.store import record_asset
+
+        base = {"target": "https://fixture.invalid/record/2", "vuln_type": "idor", "status": "accepted", "severity": "high"}
+        for verification, expected in (({}, "pending"),
+            ({"verdict": "confirmed", "severity_assessment": {"status": "assessed"}}, "assessed"),
+            ({"verdict": "inconclusive", "severity_assessment": {"status": "assessed"}}, "pending")):
+            with self.subTest(verification=verification):
+                shared = record_asset("vuln", {**base, "verification": verification})
+                self.assertEqual(shared["fingerprint"]["severity"], "high", "保留原等级，不改写历史数据")
+                self.assertEqual(shared["fingerprint"]["severity_status"], expected)
+                self.assertNotIn("verification", shared)
+
     def test_identity_changes_history_freshness_and_no_credentials(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             store = ResourceStore(directory)
@@ -95,6 +109,35 @@ class ResourceStoreTests(unittest.TestCase):
             )
             post = {**after, "attrs": {"method": "POST"}}
             self.assertNotEqual(store.observe(post, "post"), key)
+
+    def test_script_fragments_and_intelligence_metadata_are_safe_to_share(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = ResourceStore(directory)
+            script = {
+                "asset_type": "script",
+                "value": "https://example.test/app.js.map#source-0",
+                "fingerprint": {"sha256": "abc"},
+                "attrs": {
+                    "kind": "source_map_source",
+                    "source": "js_reverse",
+                    "source_map_url": "https://example.test/app.js.map",
+                    "source_index": 0,
+                    "route_count": 2,
+                    "config_keys": ["apiRoot"],
+                    "algorithm_calls": ["crypto.subtle.digest"],
+                    "script_ref": "secret-should-not-be-shared",
+                    "secrets": [{"secret_ref": "secret-should-not-be-shared"}],
+                },
+            }
+            key = store.observe(script, "sess:asset:script@1")
+            row = store.assets(host="example.test")["items"][0]
+            self.assertEqual(row["id"], key)
+            self.assertEqual(row["data"]["value"], script["value"])
+            self.assertEqual(row["data"]["attrs"]["kind"], "source_map_source")
+            self.assertEqual(row["data"]["attrs"]["route_count"], 2)
+            self.assertNotIn("script_ref", row["data"]["attrs"])
+            self.assertNotIn("secrets", row["data"]["attrs"])
+            self.assertNotIn("secret-should-not-be-shared", json.dumps(row))
 
     def test_encryption_versions_and_missing_key_fail_without_replacement(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -246,6 +289,103 @@ class ResourceStoreTests(unittest.TestCase):
             self.assertEqual(stats[beta_id]["finding_count"], 0)
             # 资产级未分类与项目桶互斥：共享资产仍被项目 A 观测
             self.assertEqual(store.assets(unclassified=True)["total"], 1)
+
+    def test_project_finding_categories_share_scope_and_count_before_pagination(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = ResourceStore(directory)
+            project = store.create_project("Alpha")["project_id"]
+            for index, raw_type, status in (
+                (1, "DOM-XSS", "accepted"), (2, "xss_dom", "accepted"),
+                (3, "xxe", "candidate"), (4, "old-custom-type", "accepted"),
+            ):
+                finding = {"asset_type": "finding", "value": f"https://fixture.test/{index}",
+                           "fingerprint": {"vuln_type": raw_type, "status": status}}
+                store.observe(finding, f"sess-a:vuln:{index}@1", index, project_id=project)
+            store.observe({"asset_type": "finding", "value": "https://other.test",
+                           "fingerprint": {"vuln_type": "xxe", "status": "accepted"}}, "old", 5)
+            page = store.assets(project=project, kind="finding", category="dom_xss", limit=1)
+            self.assertEqual(page["total"], 2)
+            self.assertTrue(page["has_more"])
+            self.assertEqual(page["items"][0]["taxonomy_id"], "dom_xss")
+            self.assertEqual(
+                [(row["taxonomy_id"], row["count"]) for row in page["category_counts"]],
+                [("dom_xss", 2), ("unclassified", 1)],
+            )
+            orphan = store.assets(unclassified=True, kind="finding", category="xxe")
+            self.assertEqual(orphan["total"], 1)
+            self.assertEqual(store.assets(kind="finding")["total"], 4)
+
+    def test_project_counts_use_latest_observation_within_each_project(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = ResourceStore(directory)
+            alpha, beta, empty = [store.create_project(name)["project_id"]
+                                  for name in ("Alpha", "Beta", "Empty")]
+            store.set_session_project("sess-a", alpha)
+            store.set_session_project("sess-b", beta)
+            finding = {"asset_type": "finding", "value": "https://shared.test/",
+                       "fingerprint": {"vuln_type": "fixture", "status": "accepted"}}
+            store.observe(finding, "sess-a:finding@1", 10)
+            store.observe({**finding, "fingerprint": {
+                "vuln_type": "fixture", "status": "pending"}}, "sess-a:finding@2", 10)
+            store.observe(finding, "sess-b:finding@1", 5)
+            asset = {"asset_type": "endpoint", "value": "https://shared.test/"}
+            store.observe(asset, "sess-a:asset@1", 4)
+            store.observe(asset, "sess-b:asset@1", 6)
+            # 历史孤儿观测仍影响 last_seen，但不凭空增加资产数。
+            with store.connection() as conn:
+                conn.execute(
+                    "INSERT INTO observations(asset_id,source,observed_at,digest,data,project_id) "
+                    "VALUES(?,?,?,?,?,?)", ("missing-asset", "legacy", 99, "", "{}", alpha))
+            items = store.projects()["items"]
+            self.assertEqual([row["project_id"] for row in items], [alpha, beta, empty])
+            self.assertEqual([(row["asset_count"], row["finding_count"], row["last_seen"])
+                              for row in items], [(1, 0, 99), (1, 1, 6), (0, 0, None)])
+            # 同一时间戳按插入顺序取最后一条；其他项目的记录不参与覆盖。
+            store.observe(finding, "sess-a:finding@3", 10)
+            self.assertEqual(store.projects()["items"][0]["finding_count"], 1)
+
+    def test_project_overview_avoids_repeated_full_catalog_scans(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = ResourceStore(directory)
+            assets, observations = {}, []
+            for project in range(24):
+                for item in range(40):
+                    key = str(project * 20 + item)
+                    kind = "finding" if int(key) % 4 == 0 else "endpoint"
+                    assets[key] = (key, kind, key, "", 1, 3)
+                    for version in range(3):
+                        data = json.dumps({"fingerprint": {
+                            "status": "accepted" if project % 2 == 0 else "pending"}})
+                        observations.append((key, f"p{project}-{item}-{version}",
+                                             version + 1, "", data, f"p{project}"))
+            with store.connection() as conn:
+                conn.executemany("INSERT INTO projects VALUES(?,?,?,?,?,?)", [
+                    (f"p{p}", f"Project {p}", f"project{p}", "", 1, 1) for p in range(26)])
+                conn.executemany("INSERT INTO assets VALUES(?,?,?,?,?,?)", assets.values())
+                conn.executemany(
+                    "INSERT INTO observations(asset_id,source,observed_at,digest,data,project_id) "
+                    "VALUES(?,?,?,?,?,?)", observations)
+                conn.commit()
+                steps = 0
+
+                def progress() -> int:
+                    nonlocal steps
+                    steps += 1000
+                    return 0
+
+                conn.set_progress_handler(progress, 1000)
+                try:
+                    with patch.object(store, "connection", return_value=nullcontext(conn)):
+                        result = store.projects()
+                finally:
+                    conn.set_progress_handler(None, 0)
+            items = {row["project_id"]: row for row in result["items"]}
+            self.assertEqual(len(items), 26)
+            for project in range(24):
+                self.assertEqual(items[f"p{project}"]["asset_count"], 30)
+                self.assertEqual(items[f"p{project}"]["finding_count"], 10 if project % 2 == 0 else 0)
+            # 用宽松的 SQL 工作量预算验证复杂度，不依赖机器耗时或具体执行计划。
+            self.assertLess(steps, len(observations) * 250)
 
     def test_delete_project_only_unbinds(self) -> None:
         """删除项目：观测/成员行转未分类，资产与发现绝不删除。"""
@@ -548,6 +688,120 @@ class ResourceApiTests(unittest.TestCase):
                 )
 
 
+class ResourceStartupTests(unittest.IsolatedAsyncioTestCase):
+    async def test_model_prewarm_waits_for_listening_and_does_not_block_http(self) -> None:
+        import httpx
+
+        from spiritscout.config.settings import ModelEntry
+
+        entered, release = threading.Event(), threading.Event()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cfg = cfg_at(root)
+            cfg.mcp_servers = []
+
+            async def slow_load():
+                def work():
+                    entered.set()
+                    release.wait(5)
+                await asyncio.to_thread(work)
+
+            with patch.dict("os.environ", {"SPIRITSCOUT_UPDATE_STATE": str(root / "updates"),
+                    "SPIRITSCOUT_ADMIN_SYNC": "0"}), patch(
+                        "spiritscout.gateway.litellm_runtime.load_litellm", slow_load):
+                app = create_app(cfg, [ModelEntry(model="fixture", provider="openai_compatible")])
+                app.state._http_started = asyncio.Event()
+                context = app.router.lifespan_context(app)
+                await context.__aenter__()
+                closing = None
+                try:
+                    await asyncio.sleep(0)
+                    self.assertFalse(entered.is_set(), "监听前不能抢跑模型预热")
+                    app.state._http_started.set()
+                    self.assertTrue(await asyncio.to_thread(entered.wait, 3))
+                    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
+                            base_url="http://127.0.0.1") as client:
+                        self.assertEqual((await asyncio.wait_for(client.get("/"), 1)).status_code, 200)
+                    closing = asyncio.create_task(context.__aexit__(None, None, None))
+                    await asyncio.sleep(0)
+                    self.assertFalse(closing.done())
+                    release.set()
+                    await asyncio.wait_for(closing, 3)
+                finally:
+                    release.set()
+                    app.state._http_started.set()
+                    if closing is None:
+                        await context.__aexit__(None, None, None)
+                    elif not closing.done():
+                        await closing
+                for provider in ("mock", "ollama"):
+                    with self.subTest(provider=provider):
+                        local = create_app(cfg, [ModelEntry(model="fixture", provider=provider)])
+                        async with local.router.lifespan_context(local):
+                            self.assertIsNone(local.state.model_warmup)
+
+    async def test_home_is_available_during_sync_and_shutdown_joins_the_worker(self) -> None:
+        import httpx
+
+        entered, release = threading.Event(), threading.Event()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cfg = cfg_at(root)
+            cfg.mcp_servers = []
+            workspace = root / "sessions/sess-history"
+            workspace.mkdir(parents=True)
+            blackboard = Blackboard(workspace / "bb.db")
+            blackboard.write(BlackboardLayer.ASSET, "host", {
+                "asset_type": "domain", "value": "history.test"}, updated_by="fixture")
+            blackboard.close()
+            original_import = ResourceStore.import_session
+
+            def slow_import(store, path):
+                entered.set()
+                release.wait(5)
+                return original_import(store, path)
+
+            with patch.dict("os.environ", {"SPIRITSCOUT_UPDATE_STATE": str(root / "updates"),
+                    "SPIRITSCOUT_ADMIN_SYNC": "0"}), patch.object(
+                        ResourceStore, "import_session", slow_import):
+                app = create_app(cfg, [])
+                context = app.router.lifespan_context(app)
+                await context.__aenter__()
+                closing = None
+                try:
+                    self.assertTrue(await asyncio.to_thread(entered.wait, 3))
+                    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
+                            base_url="http://127.0.0.1") as client:
+                        page = await asyncio.wait_for(client.get("/"), 1)
+                        self.assertEqual(page.status_code, 200)
+                    waiting = asyncio.create_task(app.state.manager.wait_for_resources())
+                    await asyncio.sleep(0)
+                    self.assertFalse(waiting.done())
+                    waiting.cancel()
+                    with self.assertRaises(asyncio.CancelledError):
+                        await waiting
+                    self.assertFalse(app.state.manager.resource_sync_task.cancelled())
+                    closing = asyncio.create_task(context.__aexit__(None, None, None))
+                    await asyncio.sleep(0)
+                    self.assertFalse(closing.done(), "关停必须保留导入线程的所有权")
+                    closing.cancel()
+                    await asyncio.sleep(0)
+                    self.assertFalse(closing.done())
+                    closing.cancel()
+                    release.set()
+                    with self.assertRaises(asyncio.CancelledError):
+                        await asyncio.wait_for(closing, 3)
+                    await app.state.manager.wait_for_resources()
+                    values = app.state.resources.assets()["items"]
+                    self.assertTrue(any(row["data"]["value"] == "history.test" for row in values))
+                finally:
+                    release.set()
+                    if closing is None:
+                        await context.__aexit__(None, None, None)
+                    elif not closing.done():
+                        await closing
+
+
 class ResourceConversationTests(unittest.IsolatedAsyncioTestCase):
     async def test_explicit_mcp_role_grant_keeps_policy_gate(self) -> None:
         spec = McpServerConfig(name="custom", command="node", allowed_agents=["ctf_web"])
@@ -629,7 +883,7 @@ class ResourceConversationTests(unittest.IsolatedAsyncioTestCase):
                 reopened.view("skill")["proposals"][0]["state"], "completed"
             )
 
-    async def test_runtime_collects_changes_and_new_session_gets_historical_reference(
+    async def test_runtime_collects_changes_and_new_src_session_reads_history_on_demand(
         self,
     ) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -677,21 +931,26 @@ class ResourceConversationTests(unittest.IsolatedAsyncioTestCase):
                             "new",
                         )
                     else:
-                        previous = infra.blackboard.read(
-                            BlackboardLayer.TOPOLOGY, "historical-assets"
+                        self.assertIsNone(infra.blackboard.read(
+                            BlackboardLayer.TOPOLOGY, "historical-assets"))
+                        history = await infra.tools.call(
+                            "history_lookup", {"kind": "assets", "host": "example.test"},
+                            **infra.builtin_ctx,
                         )
-                        self.assertEqual(
-                            previous["items"][0]["data"]["fingerprint"]["server"], "new"
-                        )
-                        self.assertFalse(
-                            previous["items"][0]["verified_current_session"]
-                        )
+                        self.assertTrue(history.ok, history.error)
+                        items = json.loads(history.stdout)["items"]
+                        self.assertEqual(items[0]["value"], "https://example.test/")
+                        self.assertFalse(items[0]["verified_current_session"])
                         result = await infra.tools.call(
                             "asset_memory_lookup",
                             {"host": "example.test"},
                             **infra.builtin_ctx,
                         )
-                        self.assertTrue(result.ok)
+                        self.assertTrue(result.ok, result.error)
+                        self.assertEqual(
+                            json.loads(result.stdout)["items"][0]["data"]["fingerprint"]["server"],
+                            "new",
+                        )
                         denied = await infra.tools.call(
                             "asset_memory_lookup",
                             {"host": "blocked.example.test"},

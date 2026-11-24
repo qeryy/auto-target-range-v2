@@ -63,7 +63,7 @@ class ExperienceStoreTests(unittest.TestCase):
                 first = store.add("登录接口错误回显泄露账号存在性",
                                   context="会员系统登录", tags=["web", "登录"],
                                   source_session="a.example")
-                duplicate = store.add("登录接口错误回显泄露账号存在性")
+                duplicate = store.add("登录接口错误回显泄露账号存在性", context="会员系统登录")
                 self.assertTrue(first)
                 self.assertEqual(duplicate, "")
                 self.assertEqual(store.count(), 1)
@@ -203,12 +203,54 @@ class SharedExperienceRootTests(unittest.TestCase):
 
 
 class DistillTests(unittest.IsolatedAsyncioTestCase):
+    async def test_legacy_runtime_and_distillation_share_foreground_priority(self) -> None:
+        from contextlib import ExitStack
+
+        from spiritscout import runtime
+        from spiritscout.core import background
+        from spiritscout.knowledge import distillation
+
+        first, second = Path("session-one"), Path("session-two")
+        entered = asyncio.Event()
+
+        async def run_background():
+            async with distillation._background_slot():
+                entered.set()
+
+        with (patch.object(background, "_BACKGROUND_COOLDOWN_UNTIL", 0.0),
+              patch.object(background, "_BACKGROUND_COOLDOWN_SECONDS", 0.0)):
+            task = asyncio.create_task(run_background())
+            try:
+                with ExitStack() as cleanup:
+                    for workspace in (first, second):
+                        runtime._foreground_started(workspace)
+                        cleanup.callback(runtime._foreground_finished, workspace)
+                    # 同一工作区可嵌套执行，结束其中一层不能提前让出后台槽。
+                    runtime._foreground_started(first)
+                    try:
+                        await asyncio.sleep(0)
+                        self.assertFalse(entered.is_set())
+                    finally:
+                        runtime._foreground_finished(first)
+                    self.assertTrue(background.workspace_foreground_active(first))
+                    self.assertTrue(runtime.workspace_foreground_active(second))
+                    self.assertFalse(entered.is_set())
+
+                await asyncio.wait_for(task, timeout=2)
+                self.assertTrue(entered.is_set())
+                self.assertFalse(background.workspace_foreground_active(first))
+                self.assertFalse(runtime.workspace_foreground_active(second))
+            finally:
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
+
     async def test_competition_distill_returns_before_background_finishes(self) -> None:
         """主任务拿到后台任务句柄即返回，不为总结模型等待。"""
-        import spiritscout.runtime as runtime
+        import spiritscout.core.background as background
 
         with tempfile.TemporaryDirectory() as tmp:
-            runtime._BACKGROUND_COOLDOWN_UNTIL = 0.0
+            background._BACKGROUND_COOLDOWN_UNTIL = 0.0
             workspace = Path(tmp) / "sess-fast"
             audit = NullAuditLogger()
             store = ExperienceStore(Path(tmp) / "experience.db", audit=audit)
@@ -219,9 +261,9 @@ class DistillTests(unittest.IsolatedAsyncioTestCase):
                 await asyncio.sleep(3600)
                 return {"result": "empty", "insights": 0}
 
-            with patch("spiritscout.runtime._prepare_distill",
+            with patch("spiritscout.knowledge.distillation._prepare_distill",
                        return_value={"target": "https://a.example"}), patch(
-                    "spiritscout.runtime._distill_run",
+                    "spiritscout.knowledge.distillation._distill_run",
                     new=slow_distill):
                 task = _schedule_background_distill(
                     infra, SimpleNamespace(), store, True, {},
@@ -256,7 +298,7 @@ class DistillTests(unittest.IsolatedAsyncioTestCase):
                 return {"result": "empty", "insights": 0}
 
             try:
-                with patch("spiritscout.runtime._distill_experience", new=fake_distill):
+                with patch("spiritscout.knowledge.distillation._distill_experience", new=fake_distill):
                     task = _schedule_background_distill(
                         infra, SimpleNamespace(), store, True,
                         {"target": "https://a.example", "rounds_executed": 1},
@@ -346,7 +388,7 @@ class DistillTests(unittest.IsolatedAsyncioTestCase):
                 stored = store.count()
             finally:
                 store.close()
-            self.assertEqual(result, {"result": "ok", "insights": 1, "duplicates": 0})
+            self.assertEqual(result, {"result": "ok", "insights": 1, "duplicates": 0, "parsed": 1})
             self.assertEqual(stored, 1)
             self.assertEqual(len(calls), 2)
             self.assertEqual(calls[0]["max_tokens"], 8192)
@@ -451,74 +493,15 @@ class ExperiencePageTests(unittest.TestCase):
                                  ["sess-gone", "sess-known"])
                 self.assertEqual(data["history"][0]["result"], "error")
                 self.assertIn("模型输出为空", data["history"][0]["error"])
+                self.assertEqual(data["history"][1]["session_title"], "会员接口越权测试")
+                self.assertEqual(data["history"][0]["session_title"], "")
+                session.title = "重命名后的会员测试"
+                renamed = client.get("/api/experience").json()
+                self.assertEqual(renamed["history"][1]["session_title"], "重命名后的会员测试")
                 # 标签过滤走查询参数
                 filtered = client.get("/api/experience", params={"tag": "web"}).json()
                 self.assertEqual(filtered["total"], 1)
                 self.assertEqual(filtered["items"][0]["source_session"], "sess-known")
-
-    def test_experience_history_survives_removed_session(self) -> None:
-        """会话目录被删掉之后，提炼记录不能跟着一起消失。
-
-        以前 history 只扫 ``sessions/<id>/audit.jsonl``：会话一删，那次提炼就
-        永远查不到了，页面停在「暂无提炼记录」——可经验库里明明还留着它产出的
-        条目，``source_session`` 也指得清清楚楚。这里造一个「经验还在、审计已
-        删」的会话，要求历史里依然能看到这次提炼。
-        """
-        from fastapi.testclient import TestClient
-
-        from spiritscout.web.app import create_app
-
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            cfg = SystemConfig(workspace=WorkspaceConfig(root=tmp),
-                               models_config_path=str(root / "models.yaml"))
-            app = create_app(cfg, [])
-            store = ExperienceStore(root / "experience.db")
-            for i in range(3):
-                store.add(f"已删会话留下的经验 {i}", context="ctf", tags=["ctf"],
-                          source_session="sess-vanished")
-            store.close()
-            # 故意不建 sessions/sess-vanished/ 下的任何文件：模拟会话被清理
-            with TestClient(app, base_url="http://127.0.0.1") as client:
-                data = client.get("/api/experience").json()
-                self.assertEqual(len(data["history"]), 1,
-                                 "审计日志没了也要能从经验库反推出这次提炼")
-                row = data["history"][0]
-                self.assertEqual(row["session_id"], "sess-vanished")
-                self.assertEqual(row["result"], "ok")
-                self.assertEqual(row["insights"], 3, "产出条数按经验库实际聚合")
-                self.assertTrue(row["ts"], "时间要有，否则排序和显示都是空的")
-                self.assertIn("T", row["ts"], "时间要转成 ISO，前端按它截前 19 位")
-
-    def test_experience_history_prefers_audit_when_both_exist(self) -> None:
-        """审计日志和经验库都能推出同一次提炼时，以日志为准（失败原因只在日志里）。"""
-        from fastapi.testclient import TestClient
-
-        from spiritscout.web.app import create_app
-
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            cfg = SystemConfig(workspace=WorkspaceConfig(root=tmp),
-                               models_config_path=str(root / "models.yaml"))
-            app = create_app(cfg, [])
-            store = ExperienceStore(root / "experience.db")
-            store.add("残留经验", context="ctf", tags=["ctf"], source_session="sess-both")
-            store.close()
-            sess_dir = root / "sessions" / "sess-both"
-            sess_dir.mkdir(parents=True)
-            (sess_dir / "audit.jsonl").write_text(
-                json.dumps({"type": "experience.distill", "ts": "2026-10-17T10:00:00",
-                            "detail": {"result": "error", "insights": 0,
-                                       "outcome": "failed",
-                                       "error": "TimeoutError: 提炼超时"}}) + "\n",
-                encoding="utf-8")
-            with TestClient(app, base_url="http://127.0.0.1") as client:
-                history = client.get("/api/experience").json()["history"]
-                self.assertEqual(len(history), 1, "同一个会话不该出现两条")
-                self.assertEqual(history[0]["session_id"], "sess-both")
-                self.assertEqual(history[0]["result"], "error",
-                                 "日志说这次失败了，不能被经验库的「成功」覆盖")
-                self.assertIn("提炼超时", history[0]["error"])
 
     def test_experience_delete_endpoint_removes_item(self) -> None:
         from fastapi.testclient import TestClient

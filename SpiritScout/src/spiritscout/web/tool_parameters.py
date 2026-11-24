@@ -16,7 +16,8 @@ from typing import Any
 
 from cryptography.fernet import Fernet, InvalidToken
 
-from spiritscout.core.sqlite_ro import ro_uri
+from spiritscout.core.audit import read_record
+from spiritscout.core.storage_codec import unpack_json
 
 
 def read_tool_parameters(workspace: Path, tool: str, digest: str) -> dict[str, Any]:
@@ -29,7 +30,7 @@ def read_tool_parameters(workspace: Path, tool: str, digest: str) -> dict[str, A
         return unavailable
     try:
         key_bytes = key.read_bytes()
-        with closing(sqlite3.connect(ro_uri(db), uri=True)) as conn:
+        with closing(sqlite3.connect(db.resolve().as_uri() + "?mode=ro", uri=True)) as conn:
             tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
             if not {"tool_invocations", "execution_owner"}.issubset(tables):
                 return unavailable
@@ -47,7 +48,7 @@ def read_tool_parameters(workspace: Path, tool: str, digest: str) -> dict[str, A
             with (workspace / "audit.jsonl").open(encoding="utf-8") as stream:
                 for line in stream:
                     try:
-                        record = json.loads(line)
+                        record = read_record(line)
                     except ValueError:
                         continue
                     if not isinstance(record, dict) or record.get("type") != "agent.tool_call":
@@ -64,7 +65,7 @@ def read_tool_parameters(workspace: Path, tool: str, digest: str) -> dict[str, A
                             cipher_text = call["arguments_cipher"].encode()
         if cipher_text is None:
             return unavailable
-        parameters = json.loads(Fernet(key_bytes).decrypt(cipher_text))
+        parameters = unpack_json(Fernet(key_bytes).decrypt(cipher_text))
         actual = hashlib.sha256(json.dumps(parameters, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
         if actual != digest:
             return {"available": False, "reason": "参数副本校验失败"}

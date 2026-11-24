@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, Mock
 from spiritscout.agents.master.agent import MasterAgent
 from spiritscout.agents.ring import RingLedger
 from spiritscout.agents.sub.base import RoutePlan
-from spiritscout.core.models import AgentType, Task
+from spiritscout.core.models import AgentType, RunMode, Task
 from spiritscout.ctf.agents import CTFBaseAgent, _ToolOutcome
 from spiritscout.gateway.context import compact_json
 
@@ -40,7 +40,7 @@ class SteeringRoutingTests(unittest.TestCase):
         current = ring.steering_for('ctf_web', task_id='t1')
         self.assertEqual(current['feedback']['t1|r1']['status'], 'accepted')
         self.assertEqual(rec['feedback'], {})
-        ring.steer('ctf_web', '更新后的指令', task_id='t1')
+        ring.steer('ctf_web', '更新后的指令', task_id='t1', supersedes=[rec['id']])
         self.assertFalse(ring.steering_feedback('ctf_web', **args, status='completed'))
 
     def test_master_rejects_ambiguous_or_wrong_recipient(self) -> None:
@@ -58,6 +58,45 @@ class SteeringRoutingTests(unittest.TestCase):
         ], tasks)
         self.assertEqual([r['task_id'] for r in result], ['t1', 't2'])
 
+    def test_src_supervision_waits_for_pending_instruction_or_explicitly_supersedes(self) -> None:
+        audit = Mock()
+        ring = RingLedger(audit)
+        old_id = ring.steer('js_reverse', '先提取当前页面脚本', task_id='t1')
+        ring.steering_feedback(
+            'js_reverse', task_id='t1', route_id='r1',
+            instruction_id=old_id, status='accepted', detail='正在提取')
+        master = object.__new__(MasterAgent)
+        master.agent_id = 'master'
+        master.ctx = SimpleNamespace(audit=audit, ring=ring)
+        tasks = [{'agent': 'js_reverse', 'task_id': 't1'}]
+
+        blocked = master._target_steering([{
+            'agent': 'js_reverse', 'task_id': 't1',
+            'hint': '继续分析同一登录页'}], tasks)
+        replaced = master._target_steering([{
+            'agent': 'js_reverse', 'task_id': 't1',
+            'hint': '新证据显示入口变更，改查新脚本',
+            'supersedes': [old_id]}], tasks)
+
+        self.assertEqual(blocked, [])
+        self.assertEqual(replaced[0]['supersedes'], [old_id])
+
+    def test_terminal_steering_feedback_allows_next_instruction(self) -> None:
+        ring = RingLedger()
+        old_id = ring.steer('recon', '确认站点基线', task_id='t1')
+        ring.steering_feedback(
+            'recon', task_id='t1', route_id='r1', instruction_id=old_id,
+            status='blocked', detail='目标不可达')
+        master = object.__new__(MasterAgent)
+        master.agent_id = 'master'
+        master.ctx = SimpleNamespace(audit=Mock(), ring=ring)
+
+        result = master._target_steering([{
+            'agent': 'recon', 'task_id': 't1', 'hint': '改查已保存响应'}],
+            [{'agent': 'recon', 'task_id': 't1'}])
+
+        self.assertEqual(len(result), 1)
+
     def test_context_projection_keeps_all_recipients_and_feedback(self) -> None:
         protected = {
             'active_tasks': [{'task_id': f'task-{i}', 'agent': 'ctf_web'} for i in range(3)],
@@ -70,6 +109,39 @@ class SteeringRoutingTests(unittest.TestCase):
 
 
 class SteeringExecutionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_all_modes_keep_complete_public_exploration_contract_under_context_pressure(self):
+        from spiritscout.gateway.progress import EXPLORATION_PROGRESS_GUIDANCE
+        from spiritscout.tools.invocation import ExecutionScope, current_execution_scope
+
+        for mode in (RunMode.SRC, RunMode.CTF, RunMode.AWDP, RunMode.COMPETITION):
+            with self.subTest(mode=mode):
+                agent, _, task, route, _ = self._solver()
+                agent.ctx.mode = mode
+                agent.enable_llm_planning = True
+                agent._system_prompt = Mock(return_value='系统约束')
+                agent._world_state = Mock(return_value={})
+                agent.ctx.blackboard = None
+                decision = {'progress': '目前仅有站点地址，先核实实际入口和题面。',
+                            'exploration': {'intent': '理解目标场景', 'attempt': '读取入口', 'state': 'running'}}
+                agent.ctx.gateway.chat.return_value = SimpleNamespace(
+                    content=json.dumps(decision, ensure_ascii=False), tool_calls=[], finish_reason='stop')
+                token = current_execution_scope.set(ExecutionScope(task_id=task.task_id,
+                    route_id=route.route_id, turn=1))
+                try:
+                    result = await agent._llm_chat_json(role='verify',
+                        user_obj={'observations': '旧观察' * 5000}, task=task,
+                        max_user_chars=300, _allow_ask=False)
+                finally:
+                    current_execution_scope.reset(token)
+                self.assertEqual(result, decision)
+                agent.ctx.gateway.chat.assert_awaited_once()
+                sent = agent.ctx.gateway.chat.call_args.args[0]
+                payload = json.loads(next(m['content'] for m in sent if m['role'] == 'user'))['snapshot']
+                self.assertEqual(payload['exploration_display'], EXPLORATION_PROGRESS_GUIDANCE)
+                progress = next(c.args[2] for c in agent.ctx.audit.log.call_args_list if c.args[0] == 'agent.progress')
+                self.assertEqual(progress['task_id'], task.task_id)
+                self.assertEqual(progress['exploration']['intent'], '理解目标场景')
+
     async def test_stateless_decisions_do_not_consume_another_tasks_instruction(self) -> None:
         agent, state, task, route, plan = self._solver()
         agent.enable_llm_planning = True
@@ -173,12 +245,13 @@ class SteeringExecutionTests(unittest.IsolatedAsyncioTestCase):
         checked = asyncio.Event()
         reads = 0
 
-        def digest(ids: list) -> dict:
+        def digest(ids: list, **kwargs) -> dict:
             nonlocal reads
             reads += 1
             if reads > 5:
                 checked.set()
             return {'tasks': [{'agent': 'ctf_web', 'task_id': 't1', 'routes': [],
+                               'executions': [{'tool_name': 'read', 'execution_status': 'succeeded', 'result_digest': 'fresh'}],
                                'steering': master.ctx.ring.steerings_for('ctf_web', task_id='t1')}]}
 
         master._progress_digest = digest

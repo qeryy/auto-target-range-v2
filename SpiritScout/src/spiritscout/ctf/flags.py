@@ -34,8 +34,6 @@ class SubmitResult:
 
 # 提交函数签名：async fn(flag_value, challenge_id) -> SubmitResult
 SubmitFn = Callable[[str, str], Awaitable[SubmitResult]]
-# 解出回调：async fn(candidate) —— 平台判定正确、或模型判定且无提交接口时触发
-SolvedFn = Callable[[FlagCandidate], Awaitable[None]]
 
 
 def extract_flags(text: str, patterns: list[str] | None = None) -> list[str]:
@@ -62,37 +60,131 @@ class FlagManager:
         backoff_base_seconds: float = 1.0,
         max_attempts: int = 3,
         store_path: str | Path | None = None,
-        on_solved: SolvedFn | None = None,
+        local_only: bool = False,
+        multiple_answers: bool = False,
+        fix_mode: bool = False,
     ):
+        self.local_only = local_only
+        self.multiple_answers = multiple_answers
+        # AWDP 修补模式：产出为平台要求的脚本/归档及说明；
+        # 复用完成度记账，answer_ids 语义映射为 fix_ids
+        self.fix_mode = fix_mode
+        self.fixes: dict[str, dict] = {}
+        self.completions: dict[str, dict] = {}
         self.patterns = flag_patterns or list(DEFAULT_FLAG_PATTERNS)
         self.submit_fn = submit_fn
-        self.on_solved = on_solved      # 「这题解出了」回调（经验提炼接线）
         self.audit = audit or NullAuditLogger()
         self.bus = bus
         self.min_interval = 60.0 / max(rate_limit_per_minute, 1)
         self.backoff_base = backoff_base_seconds
         self.max_attempts = max_attempts
         self.store_path = Path(store_path) if store_path else None
-        self._flags: dict[str, FlagCandidate] = {}   # value → candidate（去重核心）
+        self._flags: dict[tuple[str, str], FlagCandidate] = {}  # (题号, 答案) → 候选
         self._last_submit = 0.0
         self._lock = asyncio.Lock()
-        self._solved_fired: set[str] = set()   # flag_id → 已通知过，避免重复提炼
         if self.store_path and self.store_path.exists():
             self._load()
+        if self.local_only and self.store_path:
+            try:
+                loaded = json.loads(self.store_path.with_suffix('.completion.json').read_text())
+                if isinstance(loaded, dict):
+                    self.completions = {cid: row for cid, row in loaded.items() if isinstance(row, dict)}
+            except (OSError, ValueError):
+                pass
+        if self.fix_mode and self.store_path:
+            try:
+                loaded = json.loads(self.store_path.with_suffix('.fixes.json').read_text())
+                if isinstance(loaded, dict):
+                    self.fixes = {fid: row for fid, row in loaded.items() if isinstance(row, dict)}
+            except (OSError, ValueError):
+                pass
+
+    def confirm_complete(self, challenge_id: str, answer_ids: list[str], reason: str,
+                         expected: int = 0) -> bool:
+        """单题完成由模型明确确认全部答案；已知答案数量仍须完整覆盖。"""
+        answers = self.answer_ids(challenge_id)
+        if (not self.local_only or not reason.strip() or not answers
+                or set(answer_ids) != answers or (expected > 0 and len(answers) < expected)):
+            return False
+        self.completions[challenge_id] = {**self.completions.get(challenge_id, {}),
+                                         'answer_ids': sorted(answers), 'reason': reason, 'completed': True}
+        self.completions[challenge_id].pop('no_fix_needed', None)
+        if self.store_path:
+            path = self.store_path.with_suffix('.completion.json')
+            tmp = path.with_suffix('.tmp')
+            tmp.write_text(json.dumps(self.completions, ensure_ascii=False), encoding='utf-8')
+            tmp.replace(path)
+        return True
+
+    def confirm_no_fix_needed(self, challenge_id: str, reason: str) -> bool:
+        """登记模型明确给出的无需修改审查结论，不伪造补丁或安全验证回执。"""
+        if not self.local_only or not self.fix_mode or not reason.strip() or self.answer_ids(challenge_id):
+            return False
+        self.completions[challenge_id] = {'answer_ids': [], 'reason': reason, 'completed': True,
+                                         'no_fix_needed': True}
+        self._persist_completions()
+        self.audit.log('awdp.review_completed', 'flag_manager',
+                       {'challenge_id': challenge_id, 'no_fix_needed': True, 'reason': reason})
+        return True
+
+    def answer_ids(self, challenge_id: str) -> set[str]:
+        if self.fix_mode:
+            return {fid for fid, row in self.fixes.items()
+                    if row.get("challenge_id") == challenge_id}
+        disputed = set((self.completions.get(challenge_id) or {}).get("disputed_answer_ids", []))
+        return {flag.flag_id for flag in self.all() if flag.challenge_id == challenge_id and flag.flag_id not in disputed}
+
+    def record_fix(self, challenge_id: str, files: list[str], description: str,
+                   archive: str, found_by: str) -> str:
+        """AWDP：登记一题的修复补丁（文件清单 + 说明 + 打包路径）。"""
+        from spiritscout.core.ids import new_id as _new_id
+        fix_id = _new_id("fix")
+        self.fixes[fix_id] = {"challenge_id": challenge_id,
+                              "files": list(files), "description": description,
+                              "archive": archive, "found_by": found_by}
+        if self.store_path:
+            path = self.store_path.with_suffix('.fixes.json')
+            tmp = path.with_suffix('.fixtmp')
+            tmp.write_text(json.dumps(self.fixes, ensure_ascii=False), encoding='utf-8')
+            tmp.replace(path)
+        return fix_id
+
+    def reopen(self, challenge_id: str, reason: str) -> None:
+        if not self.local_only:
+            return
+        previous = self.completions.get(challenge_id) or {}
+        self.completions[challenge_id] = {**previous, "completed": False, "reopen_reason": reason,
+            "disputed_answer_ids": sorted({flag.flag_id for flag in self.all() if flag.challenge_id == challenge_id})}
+        self._persist_completions()
+        self.audit.log("flag.completion_reopened", "flag_manager", {"challenge_id": challenge_id, "reason": reason})
+
+    def _persist_completions(self) -> None:
+        if self.store_path:
+            path = self.store_path.with_suffix('.completion.json')
+            tmp = path.with_suffix('.tmp')
+            tmp.write_text(json.dumps(self.completions, ensure_ascii=False), encoding='utf-8')
+            tmp.replace(path)
+
+    def completed_ids(self) -> set[str]:
+        return {cid for cid, row in self.completions.items() if isinstance(row, dict)
+                and row.get('completed') and (
+                    row.get('answer_ids') and set(row['answer_ids']) == self.answer_ids(cid)
+                    or self.fix_mode and row.get('no_fix_needed') is True and not self.answer_ids(cid))}
 
     # ------------------------------------------------------------ 提取
 
     def extract(self, text: str, *, challenge_id: str, found_by: str) -> list[FlagCandidate]:
-        """从文本提取候选并注册（格式校验 + 全局去重）。"""
+        """从文本提取候选并注册（格式校验 + 同题去重）。"""
         new_candidates: list[FlagCandidate] = []
         for value in extract_flags(text, self.patterns):
-            if value in self._flags:
+            key = (challenge_id, value)
+            if key in self._flags:
                 continue
             cand = FlagCandidate(
                 flag_id=new_id("flag"), challenge_id=challenge_id,
                 value=value, format_ok=True, found_by=found_by,
             )
-            self._flags[value] = cand
+            self._flags[key] = cand
             new_candidates.append(cand)
             self.audit.log("flag.extracted", "flag_manager", {
                 "flag_id": cand.flag_id, "challenge_id": challenge_id,
@@ -109,22 +201,21 @@ class FlagManager:
         来提交什么就登记什么，格式匹配与否仅记录在 format_ok 供人工复核。
         """
         value = str(value or "").strip()
-        if not value or value in self._flags:
+        key = (challenge_id, value)
+        if not value or key in self._flags:
             return None
         cand = FlagCandidate(
             flag_id=new_id("flag"), challenge_id=challenge_id, value=value,
             format_ok=bool(extract_flags(value, self.patterns)), found_by=found_by,
         )
-        self._flags[value] = cand
+        self._flags[key] = cand
+        if not (self.completions.get(challenge_id) or {}).get("disputed_answer_ids"):
+            self.completions.pop(challenge_id, None)
         self.audit.log("flag.registered", "flag_manager", {
             "flag_id": cand.flag_id, "challenge_id": challenge_id,
             "found_by": found_by, "format_ok": cand.format_ok,
             "value_preview": value[:12] + "..."})
         self._persist()
-        if self.submit_fn is None:
-            # 没有提交接口时「模型判定 + 登记」就是解出信号，立刻提炼一次；
-            # 有接口的等平台判定，避免把错误提交也当成解出。
-            self._notify_solved(cand)
         return cand
 
     # ------------------------------------------------------------ 提交
@@ -160,9 +251,6 @@ class FlagManager:
                 await asyncio.sleep(wait)
         await self._publish_feedback(cand)
         self._persist()
-        if cand.accepted is True:
-            # 平台/接口判定正确 = 这题真的解出了：立刻提炼一次（不挡后续提交）
-            self._notify_solved(cand)
         return cand
 
     async def submit_all(self, *, only_unjudged: bool = True) -> dict[str, int]:
@@ -180,11 +268,25 @@ class FlagManager:
 
     # ------------------------------------------------------------ 查询
 
-    def get(self, value: str) -> FlagCandidate | None:
-        return self._flags.get(value)
+    def get(self, value: str, *, challenge_id: str | None = None) -> FlagCandidate | None:
+        """按题号查询；兼容旧调用时只返回唯一候选，歧义值不跨题猜测。"""
+        if challenge_id is not None:
+            return self._flags.get((challenge_id, value))
+        matches = [candidate for (_, answer), candidate in self._flags.items() if answer == value]
+        return matches[0] if len(matches) == 1 else None
 
     def all(self) -> list[FlagCandidate]:
         return list(self._flags.values())
+
+    def record_answer_evidence(self, value: str, refs: list[str], review: dict, *,
+                               challenge_id: str | None = None) -> None:
+        """保存本地答案的复核依据，后续多答案完成确认可重新检查来源状态。"""
+        candidate = self.get(value, challenge_id=challenge_id)
+        if candidate is None:
+            raise ValueError("答案不存在或归属不唯一，请指定当前题号")
+        candidate.evidence_refs = list(refs)
+        candidate.answer_review = dict(review)
+        self._persist()
 
     def accepted_flags(self) -> list[FlagCandidate]:
         return [c for c in self._flags.values() if c.accepted]
@@ -195,30 +297,11 @@ class FlagManager:
             "submitted": sum(1 for c in self._flags.values() if c.submitted),
             "accepted": sum(1 for c in self._flags.values() if c.accepted is True),
             "rejected": sum(1 for c in self._flags.values() if c.accepted is False),
+            **({"local_only": True, "multiple_answers": self.multiple_answers,
+                "all_answers_complete": bool(self.completed_ids())} if self.local_only else {}),
         }
 
     # ------------------------------------------------------------ 内部
-
-    def _notify_solved(self, cand: FlagCandidate) -> None:
-        """把「解出了」转交回调：排到当前事件循环，不阻塞解题与提交。"""
-        if self.on_solved is None or cand.flag_id in self._solved_fired:
-            return
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:      # 没有事件循环（同步调用）时静默跳过
-            return
-        self._solved_fired.add(cand.flag_id)
-        loop.create_task(self._fire_solved(cand))
-
-    async def _fire_solved(self, cand: FlagCandidate) -> None:
-        if self.on_solved is None:
-            return
-        try:
-            await self.on_solved(cand)
-        except Exception as exc:  # noqa: BLE001 —— 提炼出问题不能影响解题主线
-            self.audit.log("flag.solved_hook_failed", "flag_manager", {
-                "flag_id": cand.flag_id, "challenge_id": cand.challenge_id,
-                "error": f"{type(exc).__name__}: {exc}"[:200]})
 
     async def _throttle(self) -> None:
         wait = self.min_interval - (time.monotonic() - self._last_submit)
@@ -251,6 +334,6 @@ class FlagManager:
             data = json.loads(self.store_path.read_text(encoding="utf-8"))
             for item in data:
                 cand = FlagCandidate.model_validate(item)
-                self._flags[cand.value] = cand
+                self._flags[(cand.challenge_id, cand.value)] = cand
         except (json.JSONDecodeError, ValueError):  # 损坏的存档不阻断启动
             pass

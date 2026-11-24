@@ -32,7 +32,8 @@ _HEADER = """\
 # severity / cwe / tools / source / path / enabled。
 # 批量导入：python -m spiritscout.resources.skill_sync import <目录>
 # 反向导出：python -m spiritscout.resources.skill_sync export
-# 内置的 206 条安全技能在 src/spiritscout/knowledge/data/security_skills.json，
+# 内置的 216 条安全技能在 src/spiritscout/knowledge/data/security_skills.json，
+# 另有 86 条随发行版分发的归档/本地覆盖技能在 archive_skills.json；
 # 不写在这里——这里只放你自己加的。
 """
 

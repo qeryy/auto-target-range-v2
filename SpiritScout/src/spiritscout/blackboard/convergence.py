@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from spiritscout.blackboard.hypotheses import merge_versioned_refs
 from spiritscout.blackboard.store import Blackboard
 from spiritscout.core.ids import new_id
 from spiritscout.core.models import (
@@ -37,8 +38,29 @@ class ConvergenceEngine:
         """写入资产（自动去重合并）。返回 (record_id, 是否新建）。"""
         key = asset.dedup_key()
         existing = self._bb.find_by_dedup_key(BlackboardLayer.ASSET, key)
+        if existing is None and asset.asset_type == "endpoint":
+            method = str(asset.attrs.get("method") or "UNKNOWN").upper()
+            candidates = []
+            same_method = []
+            unknown_method = []
+            for row in self._bb.query(BlackboardLayer.ASSET, limit=10000):
+                data = row["data"]
+                if data.get("asset_type") != "endpoint" or data.get("value") != asset.value:
+                    continue
+                candidates.append(row)
+                current = str((data.get("attrs") or {}).get("method") or "UNKNOWN").upper()
+                if current == method:
+                    same_method.append(row)
+                elif current == "UNKNOWN":
+                    unknown_method.append(row)
+            if len(same_method) == 1:
+                existing = same_method[0]
+            elif method != "UNKNOWN" and not same_method and len(unknown_method) == 1:
+                existing = unknown_method[0]
+            elif method == "UNKNOWN" and len(candidates) == 1:
+                existing = candidates[0]
         if existing is None:
-            self._bb.write(
+            version = self._bb.write(
                 BlackboardLayer.ASSET,
                 asset.asset_id,
                 asset.model_dump(mode="json"),
@@ -46,12 +68,50 @@ class ConvergenceEngine:
                 updated_by=asset.source_agent,
                 dedup_key=key,
             )
+            from spiritscout.blackboard.leads import sync_asset_lead
+
+            sync_asset_lead(self._bb, record_id=asset.asset_id, version=version,
+                            data=asset.model_dump(mode="json"), actor=asset.source_agent,
+                            agent_type=agent_type)
             return asset.asset_id, True
         # 合并：保留更完整字段（fingerprint/attrs 并集，新的实测覆盖同字段旧值，历史由黑板版本与共享观测保留）
         merged = existing["data"]
         changed = False
+        incoming = asset.model_dump()
         for field_name in ("fingerprint", "attrs"):
-            combined = {**merged.get(field_name, {}), **asset.model_dump().get(field_name, {})}
+            existing_fields = merged.get(field_name, {})
+            incoming_fields = incoming.get(field_name, {})
+            if field_name == "attrs" and asset.asset_type == "endpoint":
+                incoming_fields = dict(incoming_fields)
+                if (str(incoming_fields.get("method") or "").upper() == "UNKNOWN"
+                        and str(existing_fields.get("method") or "").upper() not in {"", "UNKNOWN"}):
+                    incoming_fields.pop("method", None)
+                def values(fields: dict[str, Any], plural: str, singular: str = "") -> list[str]:
+                    raw = fields.get(plural, [])
+                    items = list(raw) if isinstance(raw, (list, tuple, set)) else []
+                    if singular and isinstance(fields.get(singular), str) and fields[singular]:
+                        items.append(fields[singular])
+                    return [str(item) for item in items if str(item)]
+
+                incoming_fields["params"] = list(dict.fromkeys([
+                    *values(existing_fields, "params"), *values(incoming_fields, "params")]))
+                incoming_fields["param_locations"] = {
+                    **(existing_fields.get("param_locations", {})
+                       if isinstance(existing_fields.get("param_locations"), dict) else {}),
+                    **(incoming_fields.get("param_locations", {})
+                       if isinstance(incoming_fields.get("param_locations"), dict) else {}),
+                }
+                incoming_fields["sources"] = list(dict.fromkeys([
+                    *values(existing_fields, "sources", "source"),
+                    *values(incoming_fields, "sources", "source"),
+                ]))
+                script_urls = [
+                    *values(existing_fields, "source_script_urls", "source_script_url"),
+                    *values(incoming_fields, "source_script_urls", "source_script_url"),
+                ]
+                if script_urls:
+                    incoming_fields["source_script_urls"] = list(dict.fromkeys(script_urls))
+            combined = {**existing_fields, **incoming_fields}
             if combined != merged.get(field_name):
                 merged[field_name] = combined
                 changed = True
@@ -60,15 +120,22 @@ class ConvergenceEngine:
                 merged[field_name] = getattr(asset, field_name)
                 changed = True
         if changed:
-            self._bb.write(
+            merged_key = Asset.model_validate(merged).dedup_key()
+            version = self._bb.write(
                 BlackboardLayer.ASSET,
                 existing["record_id"],
                 merged,
                 agent_type=agent_type,
                 updated_by=asset.source_agent,
-                dedup_key=key,
+                dedup_key=merged_key,
                 expected_version=existing["version"],
             )
+        else:
+            version = existing["version"]
+        from spiritscout.blackboard.leads import sync_asset_lead
+
+        sync_asset_lead(self._bb, record_id=existing["record_id"], version=version,
+                        data=merged, actor=asset.source_agent, agent_type=agent_type)
         return existing["record_id"], False
 
     # ------------------------------------------------------------ 漏洞汇聚
@@ -116,6 +183,14 @@ class ConvergenceEngine:
             winner.poc_verified = winner.exploitable = False
             winner.verification = {"verdict": "pending", "previous_verdict": prev.verification.get("verdict")}
         winner.evidence = merged_evidence
+        winner.scanner_evidence = [*prev.scanner_evidence,
+            *[item for item in vuln.scanner_evidence if item not in prev.scanner_evidence]]
+        winner.vulnerability_ids = list(dict.fromkeys([*prev.vulnerability_ids, *vuln.vulnerability_ids]))
+        winner.hypothesis_refs = merge_versioned_refs(
+            prev.hypothesis_refs, [prev.hypothesis_ref],
+            vuln.hypothesis_refs, [vuln.hypothesis_ref], limit=20,
+        )
+        winner.hypothesis_ref = winner.hypothesis_refs[0] if winner.hypothesis_refs else ""
         self._bb.write(
             BlackboardLayer.VULN,
             existing["record_id"],

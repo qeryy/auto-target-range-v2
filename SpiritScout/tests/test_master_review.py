@@ -1,28 +1,154 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import unittest
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock, Mock, patch
 
 from spiritscout.agents.master.agent import MasterAgent
 from spiritscout.agents.master.dag import TaskDAG
 from spiritscout.core.exceptions import SpiritScoutError
-from spiritscout.core.models import AgentType, TaskStatus
+from spiritscout.core.models import AgentType, RunMode, Scope, TaskStatus
+from spiritscout.gateway.decision_events import decision_event_fingerprint
+from spiritscout.policy.scope import ScopeGuard
 
 
 class MasterReviewTests(unittest.IsolatedAsyncioTestCase):
+    async def test_review_unavailable_does_not_converge_or_discard_pending_work(self) -> None:
+        for pending in (False, True):
+            for decision in (None, {}, {"continue_iteration": "false"}):
+                with self.subTest(pending=pending, decision=decision):
+                    dag = TaskDAG()
+                    node = dag.add_node("TA0043", "已有任务")
+                    if not pending:
+                        dag.mark(node.node_id, TaskStatus.DONE)
+                    master = object.__new__(MasterAgent)
+                    master.agent_id = "master-test"
+                    master.ctx = SimpleNamespace(
+                        audit=Mock(), enable_llm_planning=True, extra={}, pause_gate=None)
+                    master._final_verdicts = Mock(return_value=[])
+                    master._llm_review = AsyncMock(return_value=decision)
+                    state = {"round_no": 6, "dag": dag.to_dict(), "tasks_dispatched": [],
+                             "round_views": [{}]}
+                    with self.assertRaisesRegex(SpiritScoutError, "不能判定任务已收敛"):
+                        await master._review(state)
+                    self.assertEqual(TaskDAG.from_dict(state["dag"]).stats(), dag.stats())
+                    self.assertFalse(any(c.args[2].get("action") == "review"
+                                         for c in master.ctx.audit.log.call_args_list))
+
+    def test_decision_event_ignores_display_noise_but_tracks_evidence_revision(self) -> None:
+        base = {
+            "testing_opportunities": {
+                "prioritized": [{
+                    "opportunity_ref": "opportunity:one",
+                    "opportunity_revision": "rev-1",
+                    "direction_state": "productive",
+                    "priority_score": 80,
+                }],
+                "portfolio_review": {"active_targets": 1},
+            },
+            "intelligence_summary": {"api_surface": {"endpoints": 1}},
+        }
+        noisy = {**base, "environment": {"now": "later"},
+                 "shared_facts": [{"text": "render-only"}]}
+        changed = json.loads(json.dumps(base))
+        changed["testing_opportunities"]["prioritized"][0][
+            "opportunity_revision"] = "rev-2"
+
+        self.assertEqual(decision_event_fingerprint(base),
+                         decision_event_fingerprint(noisy))
+        self.assertNotEqual(decision_event_fingerprint(base),
+                            decision_event_fingerprint(changed))
+
+    async def test_unchanged_idle_world_does_not_repeat_meta_planning(self) -> None:
+        master = object.__new__(MasterAgent)
+        master.agent_id = "master-test"
+        master.ctx = SimpleNamespace(
+            audit=Mock(), extra={}, tactic_map=None, pause_gate=None,
+            policy=SimpleNamespace(mode=None),
+        )
+        world = {"expert_scorecard": {"formal_assets": 1}}
+        fingerprint = decision_event_fingerprint(world)
+        master._world_state = lambda: world
+        master._cancel_stale_opportunity_nodes = Mock()
+        master._write_dag_snapshot = Mock()
+        master._scanner_context = lambda: {}
+        master._challenge_states = lambda dag: {}
+        master._situation_digest = lambda: {}
+        master._meta_plan = MasterAgent._meta_plan.__get__(master)
+        master._acquire_plan = AsyncMock(side_effect=AssertionError("不应重复规划"))
+        state = {
+            "target": "https://a.test", "round_no": 2,
+            "dag": TaskDAG().to_dict(), "tasks_dispatched": [], "round_views": [],
+            "continue_iteration": True, "stop_reason": "", "plan_source": "llm",
+            "last_decision_event": fingerprint, "replan_requested": False,
+        }
+
+        result = await master._meta_plan(state)
+
+        self.assertEqual(result["tasks_dispatched"], [])
+        self.assertEqual(result["last_decision_event"], fingerprint)
+        master._acquire_plan.assert_not_awaited()
+
+    async def test_llm_review_receives_portfolio_attack_surface_review(self) -> None:
+        master = object.__new__(MasterAgent)
+        master.agent_id = "master-test"
+        master.ctx = SimpleNamespace(
+            tactic_map={"TA0043": (AgentType.RECON, "recon")},
+            extra={"competition_context": {}}, gateway=Mock(), audit=Mock(),
+            policy=SimpleNamespace(mode=None), agents={},
+        )
+        master._mission = lambda: "继续调查"
+        master._world_state = lambda: {}
+        master._project_rules = lambda: ""
+        master._competition_status = lambda dag: {}
+        master._route_digest = lambda state: []
+        master._challenge_states = lambda dag: {}
+        master._system_prompt = lambda: "system"
+        master._situation_digest = lambda: {"testing_opportunities": {
+            "portfolio_review": {
+                "target_concentration": {"target": "https://a.test", "share": 0.8,
+                                         "over_concentrated": True},
+                "low_yield_capabilities": [{"capability": "web_boundary_test"}],
+                "pivot_candidates": [{"recommendation": "改用 JS 能力"}],
+            },
+        }}
+        captured = {}
+
+        async def decide(gateway, messages, **kwargs):
+            captured["messages"] = messages
+            return SimpleNamespace(content=json.dumps({
+                "continue_iteration": False, "reason": "fixture", "dag_nodes": [],
+            }))
+
+        state = {"target": "a.test", "round_no": 2, "dag": TaskDAG().to_dict()}
+        with patch("spiritscout.agents.master.planning.chat_decision", side_effect=decide):
+            result = await master._llm_review(state, {})
+
+        self.assertFalse(result["continue_iteration"])
+        rendered = json.dumps(captured["messages"], ensure_ascii=False)
+        self.assertIn("portfolio_review", rendered)
+        self.assertIn("改用 JS 能力", rendered)
+
+        failure = SpiritScoutError("Upstream dependency unavailable")
+        with patch("spiritscout.agents.master.planning.chat_decision", AsyncMock(side_effect=failure)):
+            with self.assertRaisesRegex(SpiritScoutError, "主控复盘失败") as caught:
+                await master._llm_review(state, {})
+        self.assertIs(caught.exception.__cause__, failure)
+        self.assertEqual(master.ctx.audit.log.call_args.args[0], "llm.review_failed")
+
     async def test_steering_keeps_observing_after_three_decisions_and_refill(self) -> None:
         master = object.__new__(MasterAgent)
-        master.ctx = SimpleNamespace(audit=Mock(), ring=Mock())
+        master.ctx = SimpleNamespace(audit=Mock(), ring=None)
         master._STEER_INTERVAL = 0.001
         ids = ["first"]
         observations = []
         enough = asyncio.Event()
 
-        def digest(task_ids: list[str]) -> dict:
+        def digest(task_ids: list[str], **kwargs) -> dict:
             observations.append(list(task_ids))
-            return {"tasks": [{"agent": "ctf_web", "turn": len(observations)}]}
+            return {"tasks": [{"task_id": "first", "agent": "ctf_web", "executions": [{"tool_name": "read", "execution_status": "succeeded", "result_digest": str(len(observations))}]}]}
 
         async def decide(progress: dict, queue: object) -> list:
             if len(observations) == 3:
@@ -53,6 +179,7 @@ class MasterReviewTests(unittest.IsolatedAsyncioTestCase):
             agents={AgentType.CTF_WEB: object()},
             tactic_map={"CTF-WEB": (AgentType.CTF_WEB, "ctf_solve")},
             extra={"mode_prompt": "动态规划", "competition_context": {"challenges": [original]}})
+        master._user_input_revision = Mock(return_value="unchanged")
         master._llm_plan = AsyncMock(return_value={"dag_nodes": [
             {"tactic": "CTF-WEB", "challenge_id": "e1-01", "title": "首批开工"}]})
         master._ensure_business_gate = lambda nodes: nodes
@@ -61,7 +188,8 @@ class MasterReviewTests(unittest.IsolatedAsyncioTestCase):
             "target": "https://bench.test", "round_no": 0, "dag": TaskDAG().to_dict()})
         task = result["tasks_dispatched"][0]["task"]
         self.assertEqual(task["target"], original["url"])
-        self.assertEqual(task["payload"]["challenge"], original)
+        # 战术即方向：解析层给赛题副本补方向事实（与规则派单的 meta 口径一致）
+        self.assertEqual(task["payload"]["challenge"], {**original, "direction": "web"})
         task["payload"]["challenge"]["attachments"][0]["path"] = "changed"
         self.assertEqual(original["attachments"][0]["path"], "sample.bin")
 
@@ -73,6 +201,55 @@ class MasterReviewTests(unittest.IsolatedAsyncioTestCase):
         legacy = [{"tactic": "CTF-WEB", "meta": {"challenge": {"id": "legacy"}}}]
         self.assertEqual(master._resolve_plan_challenges(legacy), legacy)
 
+    def test_src_plan_leaves_semantic_scope_to_model_without_granting_targets(self) -> None:
+        master = object.__new__(MasterAgent)
+        guard = ScopeGuard(Scope(allowed_domains=["*.example.test"]))
+        master.ctx = SimpleNamespace(
+            extra={}, policy=SimpleNamespace(mode=RunMode.SRC, guard=guard))
+
+        plan = master._resolve_plan_challenges([{
+            "tactic": "JS-REVERSE", "target": "www.rhinocloud.com.cn"}])
+        self.assertEqual(plan[0]["target"], "www.rhinocloud.com.cn")
+        self.assertFalse(guard.is_allowed(plan[0]["target"]),
+                         "落图不等于扩围，用户确认集不能被规划写入")
+
+        accepted = master._resolve_plan_challenges([{
+            "tactic": "JS-REVERSE", "target": "api.example.test"}])
+        self.assertEqual(accepted[0]["target"], "api.example.test")
+
+    def test_model_selected_hypothesis_resolves_its_own_opportunity_not_an_investigation_clue(self) -> None:
+        import tempfile
+        from pathlib import Path
+
+        from spiritscout.blackboard.hypotheses import upsert
+        from spiritscout.blackboard.store import Blackboard
+
+        with tempfile.TemporaryDirectory() as tmp:
+            bb = Blackboard(Path(tmp) / "bb.db")
+            self.addCleanup(bb.close)
+            ref = upsert(bb, claim="客户端签名可能不是服务端身份校验",
+                         subject="https://a.test/api/check", test_type="authorization",
+                         expected_signal="删除签名后仍返回受保护内容", counter_signal="服务端拒绝",
+                         next_minimal_experiment="复用合法基线，仅删除签名头做一次对照",
+                         stop_condition="缺有效基线则阻塞", actor="recon", agent_type=AgentType.RECON)["hypothesis_ref"]
+            master = object.__new__(MasterAgent)
+            master.ctx = SimpleNamespace(blackboard=bb, extra={},
+                                         policy=SimpleNamespace(mode=RunMode.SRC))
+            master._world_state = lambda: {"testing_opportunities": {"prioritized": [{
+                "opportunity_ref": "opportunity:hypothesis", "opportunity_revision": "fixture-rev",
+                "kind": "vulnerability_hypothesis",
+                "hypothesis_ref": ref, "subject": "https://a.test/api/check", "state": "open",
+                "capability_candidates": [{"tactic": "TA0001", "execution": "dag"}],
+            }]}}
+            for opportunity_ref in [None, "opportunity:old-investigation-clue"]:
+                with self.subTest(opportunity_ref=opportunity_ref):
+                    plan = master._resolve_plan_challenges([{
+                        "tactic": "TA0001", "hypothesis_ref": ref,
+                        "opportunity_ref": opportunity_ref}])
+                    self.assertEqual(plan[0]["opportunity_ref"], "opportunity:hypothesis")
+                    self.assertEqual(plan[0]["hypothesis_ref"], ref)
+                    self.assertEqual(plan[0]["target"], "https://a.test/api/check")
+
     async def test_invalid_target_returns_reason_for_model_replanning(self) -> None:
         master = object.__new__(MasterAgent)
         master.agent_id = "master-test"
@@ -80,6 +257,7 @@ class MasterReviewTests(unittest.IsolatedAsyncioTestCase):
             audit=Mock(), pause_gate=None, plan_override=None,
             enable_llm_planning=True, agents={}, tactic_map={},
             extra={"mode_prompt": "按任务规则动态规划"})
+        master._user_input_revision = Mock(return_value="unchanged")
         master._llm_plan = AsyncMock(return_value={"dag_nodes": [
             {"tactic": "TA0043", "target": "http://10.0.100.58, https://bench.test"}]})
         master._ensure_business_gate = lambda nodes: nodes
@@ -158,7 +336,7 @@ class MasterReviewTests(unittest.IsolatedAsyncioTestCase):
             audit=Mock(), extra={"mode_prompt": "竞赛策略", "platform": platform})
 
         await master._apply_competition_decisions(dag, {
-            "defer_challenges": [{"id": "c1", "reason": "连续无新增信息"}],
+            "defer_challenges": [{"id": "c1", "reason": "连续无新增信息", "release_instance": True}],
         })
 
         updated = dag.all_nodes()[0]
@@ -185,7 +363,9 @@ class MasterReviewTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(dag.all_nodes()[0].meta["deferred"])
         self.assertNotIn("defer_reason", dag.all_nodes()[0].meta)
 
-    async def test_deferred_mode_replan_continues_to_next_round(self) -> None:
+    async def test_review_nodes_enter_dag_with_mode_planner_present(self) -> None:
+        """模型规划开启时复盘建议直接入图（规则派单在场也不再延后接管），
+        继续决策由新节点自然承载到下一轮。"""
         dag = TaskDAG()
         finished = dag.add_node("FIRST", "finished direction")
         dag.mark(finished.node_id, TaskStatus.DONE)
@@ -228,11 +408,12 @@ class MasterReviewTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result["continue_iteration"])
         self.assertEqual(result["stop_reason"], "")
         self.assertEqual(result["round_no"], 1)
-        review_events = [
-            call.args[2] for call in audit.log.call_args_list
-            if call.args[2].get("action") == "review"
-        ]
-        self.assertEqual(review_events[-1]["deferred_replan"], True)
+        # 复盘建议直接落图：下一轮有就绪节点可派
+        next_dag = TaskDAG.from_dict(result["dag"])
+        self.assertTrue(any(n.tactic == "NEXT" for n in next_dag.all_nodes()))
+        applied = [c.args[2] for c in audit.log.call_args_list
+                   if c.args[2].get("action") == "llm_nodes_applied"]
+        self.assertEqual(len(applied), 1)
 
 
 if __name__ == "__main__":

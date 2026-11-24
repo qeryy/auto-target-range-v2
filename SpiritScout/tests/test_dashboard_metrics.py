@@ -43,6 +43,37 @@ class DashboardMetricsTests(unittest.TestCase):
             "used_tokens": sum(c.get("tokens", 0) for c in calls),
             "call_series": calls, "calls": len(calls)}))
 
+    def test_usage_cache_reuses_unchanged_files_and_recomputes_time_windows(self) -> None:
+        session = self.session()
+        self.usage(session, [{"ts": self.now - 10, "tokens": 100}])
+        first = self.reader.build([session], period="hour", now=self.now)
+        self.assertEqual(first["summary"]["tokens"], 100)
+        with patch("spiritscout.web.dashboard.read_usage", side_effect=AssertionError("不重复复制历史调用")):
+            later = self.reader.build([session], period="hour", now=self.now + 3601)
+        self.assertEqual(later["summary"]["tokens"], 0)
+        self.assertEqual(later["total_tokens"], 100)
+        self.usage(session, [{"ts": self.now - 1, "tokens": 200}])
+        self.assertEqual(self.reader.build([session], now=self.now)["total_tokens"], 200)
+        (session.workspace / "usage.json").write_text("broken")
+        for tokens in (17, 29):
+            session.summary = {"run": {"model_usage": {"used_tokens": tokens}}}
+            self.assertEqual(self.reader.build([session], now=self.now)["total_tokens"], tokens)
+
+    def test_audit_compact_tail_preserves_compressed_records(self) -> None:
+        from spiritscout.core.audit import encode_record
+
+        session = self.session()
+        records = [{"type": "agent.note", "ts": self.now - 100 + i / 10, "actor": "fixture",
+                    "detail": {"text": str(i)}} for i in range(130)]
+        records.append({"type": "agent.note", "ts": self.now, "actor": "fixture",
+                        "detail": {"text": "x" * 2000}})
+        session.audit_path.write_text("".join(encode_record(row) + "\n" for row in records))
+        result = self.reader._audit(session.audit_path)
+        self.assertEqual(len(result["events"]), 120)
+        self.assertEqual(result["events"][0]["text"], "11")
+        self.assertEqual(result["events"][-1]["text"], "x" * 240)
+        self.assertEqual(result["last_activity"], self.now)
+
     def test_beijing_midnight_and_daily_buckets_ignore_host_timezone(self) -> None:
         session = self.session()
         self.usage(session, [
@@ -186,33 +217,3 @@ class DashboardMetricsTests(unittest.TestCase):
         self.assertEqual(len(data["sessions"]), 2)
         self.assertIn("部分记录暂不可读", data["sessions"][0]["data_note"])
         self.assertEqual(data["sessions"][1]["data_note"], "")
-
-    def test_workspace_ledger_counts_without_live_sessions(self) -> None:
-        """会话目录被清理后，工作区共享账本里的调用仍要进 summary。
-
-        「用量」页读的是共享账本，仪表盘原来只按在册会话汇总——同一次调用
-        一边有数字、一边是 0，看着像统计坏了。
-        """
-        shared = self.root / "workspace"
-        shared.mkdir()
-        (shared / "usage.json").write_text(json.dumps({
-            "used_tokens": 118, "calls": 1,
-            "call_series": [{"ts": self.now - 60, "tokens": 118, "model": "m",
-                             "call_id": "c1", "input_tokens": 60, "output_tokens": 58}],
-        }), encoding="utf-8")
-        data = self.reader.build([], now=self.now, usage_root=shared)
-        self.assertEqual(data["summary"]["calls"], 1)
-        self.assertEqual(data["summary"]["tokens"], 118)
-
-    def test_workspace_ledger_skips_rows_already_counted_from_sessions(self) -> None:
-        """同一条记录在会话账本和共享账本里都在时只算一次（按 call_id 去重）。"""
-        session = self.session()
-        row = {"ts": self.now - 60, "tokens": 30, "model": "m", "call_id": "dup"}
-        self.usage(session, [row])
-        shared = self.root / "workspace"
-        shared.mkdir()
-        (shared / "usage.json").write_text(json.dumps({
-            "used_tokens": 30, "calls": 1, "call_series": [row]}), encoding="utf-8")
-        data = self.reader.build([session], now=self.now, usage_root=shared)
-        self.assertEqual(data["summary"]["calls"], 1)
-        self.assertEqual(data["summary"]["tokens"], 30)

@@ -8,47 +8,62 @@
 安装和数据迁移统一参考 [部署与配置](docs/部署与配置.md)，不要用开发工作区覆盖运行中的配置。
 只修改文档或前端不需要配置真实模型，也不需要下载额外操作系统或启动付费测试。
 
-**Linux / macOS 的 Python 环境**
+**uv（推荐，三平台一致）**
+
+项目依赖 LiteLLM 1.102.0，Python 范围为 3.11–3.14；uv 会自动选择兼容解释器。
+安装 [uv](https://docs.astral.sh/uv/) 后，在项目根执行：
+
+```bash
+uv sync --extra dev                      # 运行依赖 + ruff/pytest
+uv sync --extra dev --extra toolkit      # 同时需要 pwntools、z3、scapy 等工具库
+uv run python -m spiritscout --help
+```
+
+多个 extras 需在同一条 `uv sync` 命令中组合；单独执行后一次会按当前参数同步环境。
+
+`uv sync` 按 `uv.lock` 创建项目根 `.venv`，`launch.ps1` 和下列检查命令
+可直接使用该环境。修改依赖后执行 `uv lock` 并一并提交锁文件。
+
+**不使用 uv 时仍可使用 pip**
 
 ```bash
 python3 -m venv .venv
 .venv/bin/python -m pip install -e '.[dev]'
 ```
 
-**Windows（cmd）**
+**Windows 原生 PowerShell（不含 Linux 工具沙箱）**
 
-```bat
+```powershell
 py -3 -m venv .venv
 .venv\Scripts\python.exe -m pip install -e '.[dev]'
 ```
 
-启动控制台用 `launch.cmd`（默认不登录直接进；需要登录时先 `--set-admin-password`
-再 `launch.cmd --auth password`），不要用 PowerShell 脚本启动。
-
-各系统使用自己的虚拟环境。完整工具执行优先使用 Docker；Linux 原生沙箱需要
-bubblewrap 和命名空间权限。测试密钥使用明确标记的夹具值，真实密钥通过控制台配置。
+各系统使用自己的虚拟环境。Windows 完整工具执行优先在 WSL2 内源码部署，Linux
+优先源码部署；沙箱需要 bubblewrap 和命名空间权限。Docker 保留为可选方式。
+WSL2 用户在 Linux 文件系统中创建仓库和虚拟环境，具体检查见 [Agent 安装指南](AGENTINSTALL.md)。
+测试密钥使用明确标记的夹具值，真实密钥通过控制台配置。
 
 ## 分支与 PR
 
 1. 从最新 `main` 创建短分支，例如 `fix/streaming-compatibility` 或 `docs/quickstart`。
-2. 新行为先补充能暴露问题的测试，完成修复后再运行回归；文档修订核对链接、命令与代码事实。
-3. 更新版本和 CHANGELOG，同一项交付只递增一次；按下文规则选择修订号或次版本。
-4. 提交 PR 到 `main`，说明问题、最终行为、验证结果和限制，等待 CI 通过后审核合并。
+2. 新行为和重要缺陷补充有价值的测试，按影响范围验证；文档修订只核对链接、命令与代码事实，不强制测试先行或全量回归。
+3. 同期改动合并到当前 CHANGELOG 条目；调整版本号前先询问用户，明确获准后再按下文规则递增。
+4. 经用户明确同意后再推送远端、提交 PR 到 `main` 或执行合并；PR 说明问题、最终行为、验证结果和限制，等待 CI 通过后审核合并。
 
-提交信息用一行人话描述结果。PR 不夹带无关重构、个人配置、日志或构建缓存；
+提交信息按实际修改的文件或模块简短说明改了什么，标题用一句人话；需要正文时按
+`文件或模块：改动` 列出即可。不逐行复述 diff，不写宣传语、空泛的“全面优化”，
+不添加 AI 生成说明或代理署名。PR 不夹带无关重构、个人配置、日志或构建缓存；
 `.env`、真实模型清单、Cookie、数据库与密钥文件不得提交。
 
-### 提交经验（人人可提）
+### 本机项目与远端推送
 
-跑任务攒下来的经验可以回馈给仓库，**不需要改公共主清单**，所以谁都能提、也不会互相冲突：
+根目录的 `ctfy-docker/` 与 `tsecbench-docker/` 是维护者本机的验证项目，
+不暂存、不提交、不推送；不要强制添加或删除本地目录。协作者无需下载、克隆或启动它们，
+开发和测试不能将它们作为必备依赖。这个排除只针对两个本机目录，SpiritScout 自身的
+Dockerfile、Compose 和通用部署代码仍正常维护、提交。
 
-1. 控制台「经验」页点 **提交** —— 会在 `experience-export/inbox/` 生成
-   `<提交人>-<时间戳>.json` 并提交推送；
-2. 或者手工放一个同格式的 JSON 到该目录（格式见
-   [../experience-export/README.md](../experience-export/README.md)），走 PR 合并；
-3. 没有写权限就 fork 后提交到自己的分支，再提单。
-
-清单只含经验本体与溯源字段，不含会话正文、审计原文和凭据。
+未经用户明确同意，不执行远端推送、标签推送、PR 合并或发布；修改完成、测试通过或
+完成本地 commit 不代表获得推送授权。用户已经明确授权本次目标和范围时无需重复询问。
 
 ## 检查与验证
 
@@ -57,14 +72,6 @@ bubblewrap 和命名空间权限。测试密钥使用明确标记的夹具值，
 ```bash
 .venv/bin/python -m ruff check src/ tests/ deploy.py deploy
 .venv/bin/python -m unittest discover -s tests -v
-
-Windows 上测试里的 `TemporaryDirectory` 经常因为句柄没释放而清理失败；跑完发现仓库里
-多了 `tmpXXXXXXXX` 目录时，用维护脚本扫掉（只认这几种模式，别的目录不碰）：
-
-```bash
-python SpiritScout/scripts/clean_temp_dirs.py --dry-run   # 先看
-python SpiritScout/scripts/clean_temp_dirs.py             # 真删
-```
 ```
 
 前端没有构建步骤，使用 Node.js 22+ 检查语法并运行回归：
@@ -74,18 +81,31 @@ for file in src/spiritscout/web/static/js/*.js; do node --check "$file" || exit;
 for file in tests/test_*.js; do node "$file" || exit; done
 ```
 
-Windows（cmd）的等价命令：
+Windows PowerShell 的等价命令：
 
-```bat
-for %f in (src\spiritscout\web\static\js\*.js) do @node --check "%f" || exit /b 1
-for %f in (tests\test_*.js) do @node "%f" || exit /b 1
+```powershell
+Get-ChildItem src/spiritscout/web/static/js/*.js | ForEach-Object {
+    node --check $_.FullName
+    if ($LASTEXITCODE -ne 0) { throw "JavaScript 语法检查失败" }
+}
+Get-ChildItem tests/test_*.js | ForEach-Object {
+    node $_.FullName
+    if ($LASTEXITCODE -ne 0) { throw "前端测试失败" }
+}
 ```
 
-- 新模块至少通过最小可用性测试后再扩展；交付前完成后端、Ruff 和前端全量检查。
+- 按影响范围选择验证：文档修改核对内容与链接，局部代码运行相关测试及涉及文件的静态检查；新增行为和重要缺陷补充有价值的覆盖，不强制测试先行。
+- 不把全量检查作为每次修改或交付的门槛。仅在用户要求或跨模块、基础设施、依赖变更确有广泛影响时，等整批修改稳定后集中运行；修复后优先定向重跑，避免反复全量回归。
 - 环境依赖导致的跳过要列出对应测试和原因，不能把跳过记为成功或关闭失败用例。
-- Mock 可验证局部逻辑，不能替代真实协议。模型网关要覆盖本机 HTTP/SSE 的真实 SDK
-  请求；浏览器、沙箱和部署改动要说明实际运行环境及没有验证的平台。
+- Mock 可验证局部逻辑，不能证明真实协议或浏览器行为。涉及相关请求链路时，针对受影响的本机 HTTP/SSE、SDK、浏览器或沙箱路径实测；环境不可用时如实说明未覆盖范围，不要求无关修改也运行这些检查。
 - 真实模型和付费端点测试需有用户授权，记录测试目的与用量；默认使用本机夹具。
+
+### 前端本地化
+
+前端界面文案使用 `I18n.t("中文源文案")` 或带插值的 `I18n.t` 模板；HTML 模板使用
+`I18n.html` 标签，并在 `src/spiritscout/web/static/js/i18n.en.js` 中维护英文译文。
+译文的 `{0}`、`{1}` 对应模板插值，必须保留。动态内容仍须按原位置转义；不要把会话、
+项目名称、工具输出或证据传入翻译函数。新增静态页面文案也应同步补充词表。
 
 ### 依赖兼容
 
@@ -94,6 +114,22 @@ LiteLLM 固定为 `1.102.0`，MCP SDK 使用 `>=1.28.1,<2`。较新的 LiteLLM M
 依赖变更需要同时验证普通请求、流式输出、工具参数和 MCP 握手，不只点击一次连通性测试。
 
 修改依赖后重新安装或构建镜像，确认实际运行版本；不要用运行中容器里的临时补丁代替仓库约束。
+
+### 打包可执行文件
+
+`scripts/build-exe.ps1` 使用 PyInstaller 生成单文件控制台，
+配置在 `scripts/spiritscout.spec`。构建使用 Python 3.11–3.14；有 uv 时脚本自动获取
+指定版本并创建隔离的 `.venv-build`，没有 uv 时退回系统兼容 Python 与 pip。
+
+```powershell
+.\scripts\build-exe.ps1                 # dist\SpiritScout.exe
+.\scripts\build-exe.ps1 -PythonVersion 3.12
+```
+
+构建脚本最后会执行 `dist/... --version`。修改打包资源、依赖或启动路径后，至少运行一次
+对应平台的构建，并在空目录中启动产物确认首次配置生成和 `/login` 可访问。
+`.venv-build/`、`build/`、`dist/` 属本地构建产物，不提交。打包版的能力边界见
+[部署与配置](docs/部署与配置.md#免安装可执行文件)。
 
 ## 设计与安全约定
 
@@ -124,12 +160,18 @@ LiteLLM 固定为 `1.102.0`，MCP SDK 使用 `>=1.28.1,<2`。较新的 LiteLLM M
 
 | 改动 | 递增方式 | 示例 |
 | --- | --- | --- |
-| 兼容修复、性能或界面细节、文档修订 | 修订号 +1 | `0.12.6 → 0.12.7` |
-| 新能力或成组的功能／架构演进 | 次版本 +1，修订号归零 | `0.12.7 → 0.13.0` |
+| 兼容修复、性能或界面细节、文档修订 | 修订号 +1 | `0.20.0 → 0.20.1` |
+| 新能力或成组的功能／架构演进 | 次版本 +1，修订号归零 | `0.20.2 → 0.21.0` |
 | 稳定版发生不兼容接口或数据格式变更 | 主版本 +1，其余归零 | `1.4.2 → 2.0.0` |
 
 当前 `0.x` 阶段的不兼容变更升次版本并说明迁移要求，不因历史改动数量宣称稳定版。
-每次独立交付更新一次版本；同一任务的后续编辑、验证和修复不重复加号。
+调整版本号前先询问用户，未经明确同意不递增、回退或另定版本。用户已明确指定本批版本
+或授权调整时直接按要求执行，无需重复询问。收到新消息、完成功能或准备 commit 不构成升版授权。
+同期功能、后续优化、修复、文档和测试共用同一版本，统一补充当前 CHANGELOG 条目，
+不按消息、文件、功能点或 commit 单独升版；是否开始下一版本由用户决定。
+当前批次为 `0.22.0`。后续兼容修复经授权使用 `0.22.1`；下一批较大的功能更新使用
+`0.23.0`。次版本号可以大于 9，例如 `0.16.0` 本身就是合法版本号，不回退编号。
+上表只用于用户同意升版后的编号选择。
 纯分析、问答或只运行测试不升版本，用户指定版本优先。
 
 `pyproject.toml` 动态读取源码版本，CLI、Web 和 MCP 共用它；其它代码不要复制版本字面量。
@@ -137,4 +179,4 @@ LiteLLM 固定为 `1.102.0`，MCP SDK 使用 `>=1.28.1,<2`。较新的 LiteLLM M
 `## [版本号] - YYYY-MM-DD` 及本次内容；展示文档也要一起更新。
 
 回溯编号只整理可核实的历史阶段，并明确说明其不是当时的发布或标签。
-不改写旧提交，不补造发布；只有实际决定发布并提交后才创建 Git 标签。
+不改写旧提交，不补造发布；创建或推送 Git 标签须获得用户明确授权。

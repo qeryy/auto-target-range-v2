@@ -24,6 +24,7 @@ from spiritscout.platform_support import (
     node_cli_command,
     process_options,
 )
+from spiritscout.resources.files import project_body
 from spiritscout.resources.store import ResourceStore, redact_credentials, validate_mcp
 from spiritscout.web import agentcfg, vault
 
@@ -302,8 +303,14 @@ class ResourceAssistant:
             if current != expected:
                 raise ValueError("提案基于的配置已变化，请生成新提案后再执行")
             if proposal["type"] == "skill":
-                # 按主键精确取，不拿 identifier 去检索——那会切词打分，目标未必还在
-                original = self.store.skill(identifier, include_body=True) or {}
+                original = next(
+                    (
+                        item
+                        for item in self.store.skills(identifier, include_body=True)
+                        if item["skill_id"] == identifier
+                    ),
+                    {},
+                )
                 data = {
                     k: v
                     for k, v in {**original, **data}.items()
@@ -460,7 +467,7 @@ class ResourceAssistant:
             output_task.cancel()
             await asyncio.gather(output_task, return_exceptions=True)
         manifest = json.loads(
-            (destination / "node_modules" / package / "package.json").read_text(encoding="utf-8")
+            (destination / "node_modules" / package / "package.json").read_text()
         )
         bins = manifest.get("bin")
         if isinstance(bins, str):
@@ -496,6 +503,11 @@ class ResourceAssistant:
 
 
 def validate_skill(data: dict[str, Any]) -> None:
+    from spiritscout.resources.skill_search import validate_metadata
+
+    validate_metadata(data)
+    if "files" in data:
+        data["body"] = project_body(data["files"])
     if not re.fullmatch(r"[a-zA-Z0-9_-]{1,100}", str(data.get("skill_id", ""))):
         raise ValueError("Skill ID 仅支持字母数字、下划线和短横线")
     if not isinstance(data.get("body"), str) or not 1 <= len(data["body"]) <= 100_000:

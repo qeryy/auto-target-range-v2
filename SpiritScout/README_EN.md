@@ -9,7 +9,7 @@ and progress, evidence, and artifacts stay in the same session.
 
 **English · [简体中文](README.md)**
 
-[![Version](https://img.shields.io/badge/version-v1.1.0-2563eb?style=flat-square)](CHANGELOG.md) [![Python](https://img.shields.io/badge/Python-3.11%2B-3776ab?style=flat-square)](pyproject.toml) [![CI](https://github.com/FLIAZ/SpiritScout/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/FLIAZ/SpiritScout/actions/workflows/ci.yml) [![License](https://img.shields.io/badge/license-Apache--2.0-16a34a?style=flat-square)](LICENSE)
+[![Version](https://img.shields.io/badge/version-v1.3.0-2563eb?style=flat-square)](CHANGELOG.md) [![Python](https://img.shields.io/badge/Python-3.11%2B-3776ab?style=flat-square)](pyproject.toml) [![CI](https://github.com/FLIAZ/SpiritScout/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/FLIAZ/SpiritScout/actions/workflows/ci.yml) [![License](https://img.shields.io/badge/license-Apache--2.0-16a34a?style=flat-square)](LICENSE)
 
 [Quick start](#quick-start) · [Three modes](#three-modes) · [Interface](#interface) · [How it works](#how-it-works) · [Configuration](#configuration) · [FAQ](#faq) · [Deployment guide (中文)](docs/部署与配置.md)
 
@@ -173,24 +173,21 @@ launch.cmd
 
 Open <http://127.0.0.1:8000>, stop with `Ctrl+C`. Change the port with `./launch.sh --port 10010` or `launch.cmd --port 10010`.
 
-**Windows desktop build (its own window)**
+**Windows native desktop build**
 
-If you would rather not keep a console window open or run the console inside a browser
-tab, build the desktop client — a WinForms shell with an embedded WebView2:
+The desktop client is `desktop/SpiritScoutCompose/`, built with Kotlin Compose Desktop
+and SaltUI 3.0.0. It runs in a native Skia window and starts the Python backend on a
+random loopback port. It does not use WebView2 or an external browser tab.
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File launcher\build-desktop.ps1
+powershell -ExecutionPolicy Bypass -File SpiritScout\launcher\build-native.ps1
 ```
 
-It compiles to a single ~824 KB exe with the Windows-bundled `csc.exe` (**no .NET SDK
-needed**); the three WebView2 DLLs are embedded as resources and unpacked on first run to
-`%LOCALAPPDATA%\SpiritScout\lib` (falling back to the program directory, then TEMP). The
-first build downloads the WebView2 SDK (~8 MB, cached under `launcher/.cache/`); pass
-`-SkipDownload` afterwards to build offline. The window runs the environment check and
-one-click repair (`scripts/bootstrap.py --fix`), starts/stops the server (it moves to the
-next free port when 8010 is taken), shows the console inline, and writes
-`logs\desktop-<date>.log`. Without the WebView2 runtime it falls back to Edge in
-`--app=` mode.
+The build produces `dist-native\spiritscout-<version>-native-win64.zip`, with a trimmed
+JRE, embedded Python runtime and configuration templates. The target machine needs no
+Python, Java or WebView2 installation. Closing the window terminates the Python process
+tree. SmartScreen may still show “unknown publisher” until the executable is signed with
+a trusted Authenticode certificate.
 
 The console prints the bind address first, then **waits until the port actually accepts
 connections before saying `[就绪] 浏览器可以打开了`** — first boot creates databases and warms
@@ -198,7 +195,7 @@ up models, so a fixed delay would either lie or waste time. After that it report
 line every 60 seconds, so you do not need a task manager to know it is alive.
 
 ```
-灵枢 Web 控制台 v1.1.0: http://127.0.0.1:8010  (管理员登录已启用，并发上限 4，Ctrl+C 停止)
+SpiritScout Web console v1.3.0: http://127.0.0.1:8010  (loopback access, Ctrl+C to stop)
 
 [就绪] 浏览器可以打开了: http://127.0.0.1:8010
        每 60 秒报一次状态；Ctrl+C 停止
@@ -218,36 +215,19 @@ The shell/Python sandbox needs Linux with bubblewrap. Native Windows and macOS c
 
 </details>
 
-One step further is the **single-file build**: the same exe with the runtime zip appended to its
-own tail — copy it over, double-click, done (no unzip).
+### Native desktop package: nothing to install on the target machine
+
+Build the wheel first, then let the native packager create the embedded Python runtime,
+Compose app image and zip:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File SpiritScout\launcher\build-portable.ps1   # portable folder first
-powershell -ExecutionPolicy Bypass -File SpiritScout\launcher\build-single.ps1     # glue into one exe (~132 MB)
+python -m build --outdir dist SpiritScout
+powershell -ExecutionPolicy Bypass -File SpiritScout\launcher\build-native.ps1
 ```
 
-The first launch unpacks the runtime into `%LOCALAPPDATA%\SpiritScout\runtime\<length-fingerprint>`
-(falling back to the exe folder, then `%TEMP%`), which takes ~15 s; later launches are ready in ~2 s.
-All three forms (single-file / portable / repo) are the same exe, chosen by the trailer payload and
-the presence of `desktop.json`.
-
-
-### Portable build: nothing to install on the target machine
-
-The desktop exe is only a shell — it still needs Python on that machine. For a clean machine
-(or a USB stick), build the portable folder: embedded Python 3.11 runtime, pre-installed
-dependencies and the exe side by side. Unzip, double-click, done.
-
-```powershell
-python -m build --outdir dist SpiritScout          # the portable build installs a wheel
-powershell -ExecutionPolicy Bypass -File SpiritScout\launcher\build-portable.ps1
-```
-
-It produces `dist-portable\灵枢便携版-<version>\` (~334 MB; ~150 MB zipped): `desktop.json`
-points the exe at `py\python.exe`, and `configs\` ships templates only (generated from
-`*.example.yaml`) — fill in `models.yaml` on first run. This folder is the one form in the
-release that needs no install at all: the wheel needs pip, the zip needs Python, the plain
-exe needs a repository checkout.
+The result is `dist-native\spiritscout-<version>-native-win64.zip`. Unzip it and run
+`SpiritScout.exe`. The old single-file trailer and `desktop.json` compatibility path are
+no longer maintained.
 
 
 ### Run your first task
@@ -266,16 +246,15 @@ Prefer a ready-made package over a source checkout? All three artifacts carry th
 
 | Asset | What it ships |
 | --- | --- |
-| `spiritscout-1.1.0-py3-none-any.whl` | `pip install` target: console assets, knowledge seeds, report templates, the 206 built-in security skills (`knowledge/data/security_skills.json`) and all 342 experience entries (`knowledge/data/experience.json` + `experience.md`). It does **not** include the custom `skills/` packs — 5669 files would make the wheel unreasonably heavy |
-| `spiritscout-1.1.0.tar.gz` | sdist (~24 MB): full source + the text part of `skills/` (4549 files; images and demo videos stay in the zip) + config templates (`skills.yaml`, `models.example.yaml`, `models.mock.yaml`, `system.example.yaml`) + experience. Real `models.yaml` / `system.yaml` stay out |
-| `spiritscout-1.1.0.zip` | full repository source: code, `skills/`, `configs/`, `experience-export/`, `EXPERIENCE.md` — unzip and follow *Quick start* |
-| `spiritscout-desktop-1.1.0-win64.exe` | **Windows desktop build** (~824 KB): its own window with an embedded WebView2 instead of a browser tab; the WebView2 DLLs are packed inside and unpacked on first run to `%LOCALAPPDATA%`. Still needs Python 3.11+ and a copy of the repository — it starts/stops the server and runs the environment check, it does not replace the interpreter |
-| `spiritscout-1.1.0-single-win64.exe` | **Single-file build** (~130 MB): one exe, double-click on any Windows machine; the first run unpacks the runtime (~320 MB) into `%LOCALAPPDATA%\SpiritScout\runtime` |
-| `spiritscout-1.1.0-portable-win64.zip` | **Portable build** (~128 MB): unzip and run `灵枢桌面版.exe`; no registry writes, data stays next to the program |
-| `SHA256SUMS` | checksums for the three files above |
+| `spiritscout-1.3.0-py3-none-any.whl` | installable console, bundled skills and experience digest |
+| `spiritscout-1.3.0.tar.gz` | source distribution with skill text, config templates and experience |
+| `spiritscout-1.3.0.zip` | full repository source |
+| `spiritscout-1.3.0-native-win64.zip` | native Windows desktop client with embedded JRE and Python |
+| `spiritscout-1.3.0-portable-win64.zip` | Python/Web backend portable runtime for compatibility use |
+| `SHA256SUMS` | checksums for the release files above |
 
 ```bash
-pip install spiritscout-1.1.0-py3-none-any.whl
+pip install spiritscout-1.3.0-py3-none-any.whl
 spiritscout --help
 ```
 
@@ -414,7 +393,7 @@ Use `python deploy.py migrate` for Docker. Manually: stop the service, copy `.sp
 
 ## Docs and contributing
 
-Current code version: **v1.1.0**. The single source of the version, the bump rules, and the history: see [version management (中文)](CONTRIBUTING.md#版本管理).
+Current code version: **v1.3.0**. The single source of the version, the bump rules, and the history: see [version management (中文)](CONTRIBUTING.md#版本管理).
 
 | I want to | Read |
 | --- | --- |

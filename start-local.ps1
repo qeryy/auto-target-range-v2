@@ -318,7 +318,7 @@ Push-Location (Join-Path $root 'SpiritScout')
 # 3) 管理员账号：首次启动让本人当场设密码，只把 scrypt 哈希写进工作区 admin.db。
 #    已有账号就跳过；不是交互终端（脚本/CI 调用）时同样跳过，绝不卡住启动。
 Write-Host "[>] 管理员账号：首次启动在这里设置密码（明文只在设完后显示一次，不落盘，只存哈希）"
-Write-Host "    长度不限；不想设就回车两次跳过（auth_mode=none 下不设也能直接进，随时可补）" -ForegroundColor DarkGray
+Write-Host "    长度不限；不想设就回车两次跳过（本机回环访问可直接进入，随时可补）" -ForegroundColor DarkGray
 & $venvPy -X utf8 -m spiritscout --set-admin-password --if-missing --config configs\system.yaml
 if ($LASTEXITCODE -ne 0) {
     Write-Host "    [!] 没设置管理员密码：控制台仍只在回环地址可用；" -ForegroundColor Yellow

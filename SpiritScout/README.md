@@ -9,13 +9,17 @@
 
 **简体中文 · [English](README_EN.md)**
 
-[![Version](https://img.shields.io/badge/version-v1.1.0-2563eb?style=flat-square)](CHANGELOG.md) [![Python](https://img.shields.io/badge/Python-3.11%2B-3776ab?style=flat-square)](pyproject.toml) [![CI](https://github.com/FLIAZ/SpiritScout/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/FLIAZ/SpiritScout/actions/workflows/ci.yml) [![License](https://img.shields.io/badge/license-Apache--2.0-16a34a?style=flat-square)](LICENSE)
+[![Version](https://img.shields.io/badge/version-v1.3.0-2563eb?style=flat-square)](CHANGELOG.md) [![Python](https://img.shields.io/badge/Python-3.11%2B-3776ab?style=flat-square)](pyproject.toml) [![CI](https://github.com/FLIAZ/SpiritScout/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/FLIAZ/SpiritScout/actions/workflows/ci.yml) [![License](https://img.shields.io/badge/license-Apache--2.0-16a34a?style=flat-square)](LICENSE)
 
 [快速开始](#快速开始) · [三种模式](#三种模式) · [界面](#界面) · [工作原理](#工作原理) · [配置参考](#配置参考) · [常见问题](#常见问题) · [部署指南](docs/部署与配置.md)
 
 </div>
 
 > 仅用于已获授权的测试目标与赛事。任务范围的界定方式、审批策略与数据落点见 [数据与使用边界](#数据与使用边界) 与 [安全策略](SECURITY.md)。
+
+> **1.3.0 架构迁移**：产品核心已合并官方 `v0.22.0` 的资产情报、假设驱动扫描、
+> 后台任务、会话工作台和阅读组件；Windows 端已切换为 SaltUI/Compose 原生桌面，
+> 旧的 WebView2、WinForms 兼容壳和单文件尾载荷流程已删除。
 
 ## 它是什么
 
@@ -174,22 +178,27 @@ launch.cmd
 
 访问 <http://127.0.0.1:8000>，`Ctrl+C` 停止。改端口：`./launch.sh --port 10010` 或 `launch.cmd --port 10010`。
 
-**Windows 桌面版（带自己的窗口）**
+**Windows 原生桌面版（SaltUI）**
 
-不想开黑窗口、也不想在浏览器标签页里跑控制台，用桌面版：`launcher/SpiritScoutDesktop.cs`
-编译成一个约 824 KB 的 exe，WinForms 窗口 + 内嵌 WebView2，关窗口即停服务。
+桌面主界面位于 `desktop/SpiritScoutCompose/`，使用 Kotlin Compose Desktop +
+[SaltUI 3.0.0](https://github.com/Moriafly/SaltUI) 原生窗口与控件。它不嵌入 WebView2，
+不依赖浏览器标签页，任务、仪表盘、资源管理和设置都在桌面窗口中完成。
+
+开发运行：
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File launcher\build-desktop.ps1
+$env:JAVA_HOME = 'C:\Program Files\Microsoft\jdk-21.0.12.101-hotspot'
+.\SpiritScout\desktop\SpiritScoutCompose\gradlew.bat -p .\SpiritScout\desktop\SpiritScoutCompose run
 ```
 
-首次会下 WebView2 SDK（约 8 MB，缓存到 `launcher/.cache/`，之后加 `-SkipDownload` 可离线）。
-用 Windows 自带的 `csc.exe` 编译，**不需要 .NET SDK**；三个 WebView2 DLL 作为资源编进 exe，
-首次运行时解到 `%LOCALAPPDATA%\SpiritScout\lib`（写不进去退程序目录、再退临时目录）。
-窗口里能做四件事：环境自检 / 一键修复（调 `scripts/bootstrap.py`）、启动与停止服务（端口被占
-自动换下一个）、内嵌页面、看日志（同时写 `logs\desktop-<日期>.log`）。内嵌浏览器起不来
-（没装运行时，或上一次的 `msedgewebview2.exe` 还占着 profile）不算故障：窗口里换成一张同色的
-兜底卡片，控制台同时用 Edge 的 `--app=` 独立窗口打开，页面是同一份、样式一致，卡片上还能重试。
+生成完整 Windows 桌面包：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File SpiritScout\launcher\build-native.ps1
+```
+
+产物是带内嵌 JRE 和 Python 运行时的应用目录及 zip，解压后双击
+`SpiritScout.exe`。桌面端从随机回环端口启动后端，关闭窗口会收掉整棵 Python 进程树。
 
 命令行排障用同一个脚本，不必开窗口：
 
@@ -199,7 +208,7 @@ python scripts/bootstrap.py --fix      # 一键补齐（清华 → 阿里 → �
 python scripts/bootstrap.py --json     # 给脚本/GUI 消费
 ```
 
-**默认没有登录**：控制台直接进（`web.auth_mode: none`）。`launch.cmd` / `launch.sh`
+**本机默认不强制登录**：未配置管理员时控制台直接进入。`launch.cmd` / `launch.sh`
 不会逼你设密码（它们不碰管理员账号），库里以前留下的账号也不会把界面重新锁上；
 仓库根那套本机启动器（`启动服务.cmd` → `start-local.ps1`）首次启动会问一次，回车两次
 跳过即可，不设也能直接进。想开登录：
@@ -221,7 +230,7 @@ launch.cmd --auth password
 `[状态] 已运行 01:00 · 会话 2（运行中 0） · 内存 244 MB`，不开任务管理器也能知道它活着。
 
 ```
-灵枢 Web 控制台 v1.1.0: http://127.0.0.1:8010  (登录已关闭，本机直接进入（auth_mode=none），并发上限 4，Ctrl+C 停止)
+灵枢 Web 控制台 v1.3.0: http://127.0.0.1:8010  (本机回环访问，Ctrl+C 停止)
 
 [就绪] 浏览器可以打开了: http://127.0.0.1:8010
        每 60 秒报一次状态；Ctrl+C 停止
@@ -243,32 +252,19 @@ shell / Python 沙箱需要 Linux + bubblewrap；Windows 与 macOS 原生控制�
 4. **看现场**：进会话页，「会话」页签看每一步，「拓扑」页签看推进结构，需要时在对话里补充信息。
 5. **收产物**：「记录与文件」页签取交付物，「报告」与「WP」页签取成文，Markdown 可直接下载。
 
-再进一步是**单文件版**：同一个 exe，尾部挂着运行时 zip，拷到机器上双击就开，连解压都省了。
+### 原生桌面版：目标机器什么都不用装
+
+当前推荐的 Windows 分发形态是原生桌面 zip。它把 Compose Desktop 生成的
+`SpiritScout.exe`、精简 JRE、Python embeddable 运行时和配置模板放在同一目录：
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File SpiritScout\launcher\build-portable.ps1   # 先有便携目录
-powershell -ExecutionPolicy Bypass -File SpiritScout\launcher\build-single.ps1     # 拼成一个 exe（约 132 MB）
+python -m build --outdir dist SpiritScout
+powershell -ExecutionPolicy Bypass -File SpiritScout\launcher\build-native.ps1
 ```
 
-首次启动花十几秒把运行时解到 `%LOCALAPPDATA%\SpiritScout\runtime\<长度-指纹>`（不可写就退到
-exe 旁边、再退到 `%TEMP%`），之后启动只要一两秒。三种形态（单文件 / 便携 / 仓库）是同一个 exe，
-按「有没有尾标载荷」「旁边有没有 desktop.json」自动选。
-
-
-### 便携版：目标机器什么都不用装
-
-上面那个 exe 只是壳子，还是要目标机器上有 Python。要交到一台干净机器（或者塞 U 盘）上，
-就打便携版：内嵌 Python 3.11 运行时 + 装好的依赖 + exe 摆进同一个目录，解压双击就开。
-
-```powershell
-python -m build --outdir dist SpiritScout          # 便携版装的是 wheel
-powershell -ExecutionPolicy Bypass -File SpiritScout\launcher\build-portable.ps1
-```
-
-产物 `dist-portable\灵枢便携版-<版本>\`（约 334 MB；zip 约 150 MB）里 `desktop.json` 告诉 exe
-用 `py\python.exe` 那个内嵌解释器，`configs\` 只放模板（`*.example.yaml` 改出来的），
-第一次用先填 `models.yaml`。这个目录是整个 release 里唯一的「完全免安装」形态——
-wheel 要 pip、zip 要 Python、exe 要仓库。
+产物在 `dist-native\spiritscout-<版本>-native-win64.zip`，解压后双击
+`SpiritScout.exe`。目标机器不需要安装 Java、Python 或 WebView2；模型和外部工具仍需按
+各自文档配置。旧的单文件尾载荷和 `desktop.json` 兼容流程不再维护。
 
 
 ### 发行包（Release 附件）
@@ -278,16 +274,15 @@ wheel 要 pip、zip 要 Python、exe 要仓库。
 
 | 附件 | 带什么 |
 | --- | --- |
-| `spiritscout-1.1.0-py3-none-any.whl` | `pip install` 用：前端静态页面、知识库种子、报告模板、206 条内置安全技能（`knowledge/data/security_skills.json`）、342 条经验（`knowledge/data/experience.json` + `experience.md`）。**不含** `skills/` 那套自定义技能包（它有 5669 个文件，塞进 wheel 太重） |
-| `spiritscout-1.1.0.tar.gz` | sdist（约 24 MB）：整份源码 + `skills/` 技能包的文本素材（4549 个文件，插图与演示视频留在 zip 里）+ 配置模板（`skills.yaml`、`models.example.yaml`、`models.mock.yaml`、`system.example.yaml`）+ 经验。真实 `models.yaml` / `system.yaml` 不在里面 |
-| `spiritscout-1.1.0.zip` | 整仓源码：代码、`skills/`、`configs/`、`experience-export/`、`EXPERIENCE.md`，解开就按上面「快速开始」跑 |
-| `spiritscout-desktop-1.1.0-win64.exe` | **Windows 桌面版**（约 824 KB）：自带窗口的客户端，内嵌 WebView2，不是浏览器标签页。里面已包含运行所需的 WebView2 托管 DLL 与原生 loader（首次运行自动解到 `%LOCALAPPDATA%`），双击即用；**仍需要本机有 Python 3.11+ 与一份仓库源码**——它负责起停服务与环境自检，不代替解释器 |
-| `spiritscout-1.1.0-single-win64.exe` | **单文件版**（约 130 MB）：一个 exe 拷到任意 Windows 机器双击就跑，首次启动自己解出运行时（约 320 MB，放 `%LOCALAPPDATA%\SpiritScout\runtime`） |
-| `spiritscout-1.1.0-portable-win64.zip` | **便携版**（约 128 MB）：解压后双击目录里的 `灵枢桌面版.exe`，不写注册表，数据留在程序目录旁 |
+| `spiritscout-1.3.0-py3-none-any.whl` | `pip install` 用：前端静态页面、知识库种子、报告模板、内置安全技能与经验摘要 |
+| `spiritscout-1.3.0.tar.gz` | sdist：整份源码 + 技能文本素材 + 配置模板 + 经验 |
+| `spiritscout-1.3.0.zip` | 整仓源码：代码、`skills/`、`configs/`、`experience-export/`、`EXPERIENCE.md` |
+| `spiritscout-1.3.0-native-win64.zip` | **Windows 原生桌面版**：SaltUI/Compose Desktop，内嵌 JRE 与 Python 运行时 |
+| `spiritscout-1.3.0-portable-win64.zip` | 纯 Python/Web 后端便携包，给不需要原生窗口的兼容场景 |
 | `SHA256SUMS` | 上面几个包的校验和，装前先对一遍 |
 
 ```bash
-pip install spiritscout-1.1.0-py3-none-any.whl
+pip install spiritscout-1.3.0-py3-none-any.whl
 spiritscout --help
 ```
 
@@ -516,7 +511,7 @@ Docker 用 `python deploy.py migrate`；手工迁移时停服 → 拷 `.spiritsc
 
 ## 文档与贡献
 
-当前代码版本 **v1.1.0**。版本唯一来源、递增规则与历史说明见 [版本管理](CONTRIBUTING.md#版本管理)。
+当前代码版本 **v1.3.0**。版本唯一来源、递增规则与历史说明见 [版本管理](CONTRIBUTING.md#版本管理)。
 
 | 我想了解 | 阅读入口 |
 | --- | --- |

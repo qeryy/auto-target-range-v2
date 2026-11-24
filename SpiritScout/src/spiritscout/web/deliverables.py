@@ -10,63 +10,51 @@ from contextlib import closing
 from pathlib import Path
 from typing import Any, BinaryIO
 
+from spiritscout.agents.report.vulnerability import verification_summary
 from spiritscout.core.audit import sanitize_record, tool_preview
-from spiritscout.core.sqlite_ro import ro_uri
+from spiritscout.core.storage_codec import unpack_json
+from spiritscout.knowledge.vulnerability_taxonomy import category_label, taxonomy_id
+from spiritscout.tools.sandbox_paths import open_at, open_directory
 
 _KINDS = {"fact", "hypothesis", "evidence", "finding", "asset", "file", "outcome"}
-_REPARSE_POINT = 0x400          # FILE_ATTRIBUTE_REPARSE_POINT：链接/junction 都算
-
-
-def _reject_links(workspace: Path, parts: tuple[str, ...]) -> Path:
-    """Windows 版链路检查：没有 `O_NOFOLLOW`/`dir_fd`，改为逐段 lstat 校验。
-
-    语义对齐 POSIX 分支：只允许 workspace 下 `artifacts/`、`reports/` 里的真实
-    文件，任何一段是链接/重解析点或解析后跑出 workspace 都拒绝。差别是这里先
-    检查后打开，存在极短的替换窗口——Windows 没有 `O_NOFOLLOW` 可用，如实记在
-    `docs/08`，不假装等价。
-    """
-    root = workspace.resolve()
-    current = root
-    for part in parts:
-        current = current / part
-        try:
-            info = current.lstat()
-        except OSError:
-            raise FileNotFoundError(part) from None
-        if stat.S_ISLNK(info.st_mode) or (
-                getattr(info, "st_file_attributes", 0) & _REPARSE_POINT):
-            raise FileNotFoundError(part)
-    target = current.resolve()
-    if target != current or root not in target.parents:
-        raise FileNotFoundError(current.name)
-    return target
+# 可下发的目录：智能体产物、报告、原始附件及 HTTP 复测证据（会话内预览/下载）。
+_SERVED_DIRS = {"artifacts", "reports", "attachments", "http-responses"}
 
 
 def open_artifact(workspace: Path, name: str) -> BinaryIO:
-    """通过目录描述符逐层打开，拒绝检查后被替换为链接的竞态。"""
     parts = Path(name).parts
-    if (Path(name).is_absolute() or not parts or parts[0] not in {"artifacts", "reports"}
-            or any(p.startswith(".") for p in parts)):
+    if Path(name).is_absolute() or not parts or parts[0] not in _SERVED_DIRS:
         raise FileNotFoundError(name)
-    if os.name == "nt":
-        fd = os.open(_reject_links(workspace, parts), os.O_RDONLY | getattr(os, "O_BINARY", 0))
+    return _open_workspace_file(workspace, parts)
+
+
+def open_command_log(workspace: Path, name: str) -> BinaryIO:
+    """打开审计中记录的会话沙箱日志路径。"""
+    path = Path(name)
+    if path.is_absolute():
+        path = path.relative_to(workspace.absolute())
+    parts = path.parts
+    if len(parts) < 2 or parts[0] != "sandbox" or path.suffix != ".log":
+        raise FileNotFoundError(name)
+    return _open_workspace_file(workspace, parts)
+
+
+def _open_workspace_file(workspace: Path, parts: tuple[str, ...]) -> BinaryIO:
+    """通过目录描述符逐层打开，拒绝检查后被替换为链接的竞态。"""
+    if any(part.startswith(".") for part in parts):
+        raise FileNotFoundError(str(Path(*parts)))
+    with open_directory(workspace, Path(*parts[:-1])) as directory:
+        fd = open_at(
+            directory,
+            parts[-1],
+            os.O_RDONLY
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_NONBLOCK", 0),
+        )
         if not stat.S_ISREG(os.fstat(fd).st_mode):
             os.close(fd)
-            raise FileNotFoundError(name)
+            raise FileNotFoundError(str(Path(*parts)))
         return os.fdopen(fd, "rb")
-    directory = os.open(workspace, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-    try:
-        for part in parts[:-1]:
-            child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=directory)
-            os.close(directory)
-            directory = child
-        fd = os.open(parts[-1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
-        if not stat.S_ISREG(os.fstat(fd).st_mode):
-            os.close(fd)
-            raise FileNotFoundError(name)
-        return os.fdopen(fd, "rb")
-    finally:
-        os.close(directory)
 
 
 def _evidence(value: dict[str, Any]) -> dict[str, Any]:
@@ -79,9 +67,9 @@ def _evidence(value: dict[str, Any]) -> dict[str, Any]:
 
 
 def artifact_path(workspace: Path, name: str) -> Path | None:
-    """仅允许本会话产出与报告；逐级拒绝符号链接及目录穿越。"""
+    """仅允许本会话产出、报告与附件目录；逐级拒绝符号链接及目录穿越。"""
     relative = Path(name)
-    if relative.is_absolute() or not relative.parts or relative.parts[0] not in {"artifacts", "reports"}:
+    if relative.is_absolute() or not relative.parts or relative.parts[0] not in _SERVED_DIRS:
         return None
     if any(part in {".", ".."} or part.startswith(".") for part in relative.parts):
         return None
@@ -123,20 +111,32 @@ def _files(workspace: Path) -> list[dict[str, Any]]:
 def read_deliverables(workspace: Path, *, kind: str = "all", query: str = "",
                       offset: int = 0, limit: int = 60) -> dict[str, Any]:
     """只读已有数据库，返回完整分类计数与独立分页，不受状态页采样影响。"""
-    if kind != "all" and kind not in _KINDS:
+    if kind not in {"all", "sources"} and kind not in _KINDS:
         raise ValueError("未知档案分类")
     items: list[dict[str, Any]] = []
+    invocations: list[dict[str, Any]] = []
     db = workspace / "bb.db"
     if db.is_file():
-        with closing(sqlite3.connect(ro_uri(db), uri=True)) as conn:
+        with closing(sqlite3.connect(db.resolve().as_uri() + "?mode=ro", uri=True)) as conn:
             conn.row_factory = sqlite3.Row
             exists = conn.execute("SELECT 1 FROM sqlite_master WHERE name='bb_records'").fetchone()
             rows = conn.execute("SELECT * FROM bb_records WHERE layer IN "
                                 "('topology','asset','vuln','recon_clue','task_state') "
                                 "ORDER BY updated_at DESC,record_id").fetchall() if exists else []
+            invocation_table = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE name='tool_invocations'").fetchone()
+            if invocation_table:
+                columns = {row[1] for row in conn.execute("PRAGMA table_info(tool_invocations)")}
+                optional = [field for field in ("task_id", "route_id", "agent_id", "identity_id")
+                            if field in columns]
+                selected = ["invocation_id", "tool_name", "execution_status", "effect_status",
+                            "created_at", "updated_at", *optional]
+                invocations = [dict(row) for row in conn.execute(
+                    f"SELECT {','.join(selected)} FROM tool_invocations "
+                    "ORDER BY updated_at DESC,invocation_id").fetchall()]
         for row in rows:
             try:
-                data = json.loads(row["data"])
+                data = unpack_json(row["data"])
             except (TypeError, ValueError):
                 continue
             if not isinstance(data, dict):
@@ -174,6 +174,14 @@ def read_deliverables(workspace: Path, *, kind: str = "all", query: str = "",
                         decision.get("reason") or item.get("benefit"),
                         status={"accepted": "已采纳", "partial": "部分采纳", "rejected": "未采纳", "needs_evidence": "待补证"}.get(decision.get("verdict"), "待评估"),
                         refs=[{"id": ref, "kind": "版本化记录"} for ref in item.get("evidence_refs", [])])
+            elif data.get("kind") == "exploration":
+                text = data.get('text') or data.get('node_type')
+                evidence_refs = data.get('evidence_refs')
+                evidence_refs = evidence_refs if isinstance(evidence_refs, list) else []
+                add('hypothesis', 'exploration', text, data.get('reason') or text,
+                    status=str(data.get('state') or 'open'),
+                    refs=[{'id': ref, 'kind': '原始证据'} for ref in evidence_refs
+                          if isinstance(ref, str)])
             elif data.get("kind") == "finding":
                 text = data.get("text") or data.get("note") or data.get("value") or data.get("summary")
                 add("finding", "finding", data.get("title") or text, text,
@@ -196,12 +204,28 @@ def read_deliverables(workspace: Path, *, kind: str = "all", query: str = "",
                     add("outcome", "task", (task.get("payload") or {}).get("node_title")
                         or task.get("task_type"), task["result_summary"],
                         status=str(task.get("status") or "未记录状态"))
+    for invocation in invocations:
+        invocation_id = str(invocation.get("invocation_id") or "")
+        tool = str(invocation.get("tool_name") or "未记录工具")
+        scope = " / ".join(str(invocation.get(field) or "") for field in
+                           ("agent_id", "task_id", "route_id", "identity_id")
+                           if invocation.get(field))
+        items.append({
+            "id": f"execution:{invocation_id}", "kind": "evidence",
+            "title": f"{tool} · {invocation_id[:16]}", "text": invocation_id,
+            "path": f"工具执行 / {invocation_id}", "source": scope or "execution-journal",
+            "updated_at": invocation.get("updated_at") or invocation.get("created_at"),
+            "status": str(invocation.get("execution_status") or "未记录状态"),
+            "refs": [{"id": invocation_id, "kind": "工具执行", "title": tool,
+                      "note": str(invocation.get("effect_status") or "none")}],
+        })
     items.extend(_files(workspace))
     # 旧记录也走脱敏口，响应只含白名单投影，不返回原始请求体和头部。
     items = sanitize_record({"detail": {"items": items}})["detail"]["items"]
     counts = {category: sum(item["kind"] == category for item in items) for category in sorted(_KINDS)}
     needle = query.strip().casefold()
-    filtered = [item for item in items if (kind == "all" or item["kind"] == kind)
+    filtered = [item for item in items if (kind == "all" or item["kind"] == kind
+                or kind == "sources" and item["kind"] in {"evidence", "file"})
                 and (not needle or needle in json.dumps(item, ensure_ascii=False).casefold())]
     return {"items": filtered[offset:offset + limit], "total": len(filtered), "counts": counts,
             "offset": offset, "limit": limit, "has_more": offset + limit < len(filtered)}
@@ -213,7 +237,7 @@ def read_record_history(workspace: Path, layer: str, record_id: str,
     db = workspace / "bb.db"
     if not db.is_file():
         return {"items": [], "has_more": False}
-    with closing(sqlite3.connect(ro_uri(db), uri=True)) as conn:
+    with closing(sqlite3.connect(db.resolve().as_uri() + "?mode=ro", uri=True)) as conn:
         conn.row_factory = sqlite3.Row
         if not conn.execute("SELECT 1 FROM sqlite_master WHERE name='bb_record_history'").fetchone():
             return {"items": [], "has_more": False}
@@ -222,22 +246,72 @@ def read_record_history(workspace: Path, layer: str, record_id: str,
             "WHERE layer=? AND record_id=? AND (?=0 OR version<?) ORDER BY version DESC LIMIT ?",
             (layer, record_id, before, before, limit + 1)).fetchall()
     items = [{"version": row["version"], "updated_by": row["updated_by"],
-              "updated_at": row["updated_at"], "data": json.loads(row["data"])} for row in rows[:limit]]
+              "updated_at": row["updated_at"], "data": unpack_json(row["data"])} for row in rows[:limit]]
     return {"items": sanitize_record({"detail": {"items": items}})["detail"]["items"],
             "has_more": len(rows) > limit}
 
 
-def read_vulnerability_page(workspace: Path, offset: int = 0, limit: int = 50) -> dict[str, Any]:
-    """完整漏洞列表按页只读，与状态卡片的全量统计独立。"""
+def read_vulnerability_page(workspace: Path, offset: int = 0, limit: int = 50, *,
+                            category: str = "", confirmed_only: bool = False) -> dict[str, Any]:
+    """在同一快照内统计会话全部漏洞，再按分类与状态分页。"""
+    empty = {"items": [], "total": 0, "category_counts": []}
     db = workspace / "bb.db"
     if not db.is_file():
-        return {"items": [], "total": 0}
-    with closing(sqlite3.connect(ro_uri(db), uri=True)) as conn:
+        return empty
+    with closing(sqlite3.connect(db.resolve().as_uri() + "?mode=ro", uri=True)) as conn:
+        conn.execute("BEGIN")
         if not conn.execute("SELECT 1 FROM sqlite_master WHERE name='bb_records'").fetchone():
-            return {"items": [], "total": 0}
-        total = conn.execute("SELECT COUNT(*) FROM bb_records WHERE layer='vuln'").fetchone()[0]
-        rows = conn.execute("SELECT data FROM bb_records WHERE layer='vuln' "
-                            "ORDER BY updated_at DESC,record_id LIMIT ? OFFSET ?", (limit, offset)).fetchall()
-    fields = ("vuln_id", "title", "vuln_type", "severity", "status", "cvss_score", "poc_verified", "endpoint", "verification", "false_positive_reason")
-    items = [{key: data.get(key) for key in fields} for row in rows if isinstance(data := json.loads(row[0]), dict)]
-    return {"items": sanitize_record({"detail": {"items": items}})["detail"]["items"], "total": total}
+            return empty
+        conn.create_function("taxonomy_id", 1, taxonomy_id, deterministic=True)
+        category_sql = "taxonomy_id(json_extract(data,'$.vuln_type'))"
+        accepted_sql = "json_extract(data,'$.status')='accepted'"
+        counts = [
+            {**category_label(key), "count": count, "confirmed_count": confirmed}
+            for key, count, confirmed in conn.execute(
+                f"SELECT {category_sql}, COUNT(*), COUNT(CASE WHEN {accepted_sql} THEN 1 END) "
+                "FROM bb_records WHERE layer='vuln' GROUP BY 1 ORDER BY 2 DESC,1"
+            )
+        ]
+        filters = ["layer='vuln'"]
+        args: list[Any] = []
+        if category:
+            filters.append(f"{category_sql}=?")
+            args.append(category)
+        if confirmed_only:
+            filters.append(accepted_sql)
+        clause = " AND ".join(filters)
+        count_field = "confirmed_count" if confirmed_only else "count"
+        total = sum(row[count_field] for row in counts if not category or row["taxonomy_id"] == category)
+        rows = conn.execute(f"SELECT data,version FROM bb_records WHERE {clause} "
+                            "ORDER BY updated_at DESC,record_id LIMIT ? OFFSET ?",
+                            (*args, limit, offset)).fetchall()
+    fields = ("vuln_id", "title", "vuln_type", "severity", "status", "cvss_score", "cvss_version",
+              "poc_verified", "endpoint", "verification", "false_positive_reason",
+              "vulnerability_ids", "hypothesis_ref", "hypothesis_refs")
+    items = []
+    for raw, version in rows:
+        data = json.loads(raw)
+        if isinstance(data, dict):
+            items.append({**{key: data.get(key) for key in fields}, "version": version,
+                          "verification": verification_summary(data.get("verification")),
+                          **category_label(taxonomy_id(data.get("vuln_type")))})
+    return {"items": sanitize_record({"detail": {"items": items}})["detail"]["items"],
+            "total": total, "category_counts": counts}
+
+
+def read_vulnerability_detail(workspace: Path, vuln_id: str, *, report: bool = False) -> dict | None:
+    db = workspace / 'bb.db'
+    if not db.is_file():
+        return None
+    with closing(sqlite3.connect(db.resolve().as_uri() + '?mode=ro', uri=True)) as conn:
+        if not conn.execute("SELECT 1 FROM sqlite_master WHERE name='bb_records'").fetchone():
+            return None
+        row = conn.execute("SELECT data,version FROM bb_records WHERE layer='vuln' AND record_id=?", (vuln_id,)).fetchone()
+    if row is None:
+        return None
+    data = json.loads(row[0])
+    if report:
+        from spiritscout.agents.report.vulnerability import vulnerability_report
+
+        return {"version": row[1], "report": sanitize_record({"detail": vulnerability_report(data)})["detail"]}
+    return {"version": row[1], "data": sanitize_record({"detail": data})["detail"]}

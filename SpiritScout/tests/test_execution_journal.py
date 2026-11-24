@@ -6,7 +6,6 @@ import asyncio
 import json
 import os
 import sqlite3
-import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -36,17 +35,12 @@ class JournalTests(unittest.IsolatedAsyncioTestCase):
     async def test_real_cli_result_survives_reopen_without_plaintext(self) -> None:
         registry = ToolRegistry(LocalExecutor(), journal=self.journal)
         registry.register(ToolSpec(name="echo", kind=ToolKind.CLI,
-                                  command_template=[sys.executable, "-uc",
-                                  "import sys;sys.stdout.buffer.write((sys.argv[1]+chr(10)).encode())",
-                                  "{value}"]))
+                                  command_template=["/bin/echo", "{value}"]))
         result = await registry.call("echo", {"value": "private-result-marker"})
         self.assertEqual(result.execution_status, "succeeded")
         reopened = ExecutionJournal(self.bb, self.root, "run-next")
         self.assertEqual(reopened.result(result.invocation_id).stdout, "private-result-marker\n")
-        if os.name != "nt":
-            # Windows 没有 POSIX mode 位：建文件时的 0o600 只落到只读标志，
-            # 访问控制由 ACL 承担，st_mode 恒为 0o666——跳过并如实说明，不假装等价
-            self.assertEqual((self.root / "execution.key").stat().st_mode & 0o777, 0o600)
+        self.assertEqual((self.root / "execution.key").stat().st_mode & 0o777, 0o600)
         with self.bb.transaction() as conn:
             row = conn.execute("SELECT result_cipher FROM tool_invocations").fetchone()
         self.assertNotIn(b"private-result-marker", row[0])
@@ -191,10 +185,10 @@ class JournalTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse((self.root / "execution.key").exists())
 
     async def test_actual_sandbox_cannot_read_or_overwrite_execution_key(self) -> None:
-        from spiritscout.tools.sandbox import sandbox_backend, sandbox_exec
+        from spiritscout.tools.sandbox import sandbox_available, sandbox_exec
 
-        if sandbox_backend() != "bwrap":
-            self.skipTest("需要 bwrap 后端验证实际密钥遮蔽（host 后端无文件系统隔离）")
+        if not sandbox_available():
+            self.skipTest("需要 bubblewrap 验证实际密钥遮蔽")
         key = self.root / "execution.key"
         original = key.read_bytes()
         script = ("from pathlib import Path\n"
@@ -370,7 +364,7 @@ asyncio.run(registry.call('write', {}))
                 self.assertEqual(record["effect_status"], "unknown")
                 self.assertEqual(record["replay_policy"], "never_automatic")
                 self.assertIsNone(journal.result(record["invocation_id"]))
-                self.assertEqual((root / "effect.txt").read_text(encoding="utf-8"), "once")
+                self.assertEqual((root / "effect.txt").read_text(), "once")
                 self.assertEqual(len(journal.list_recent()), 1)
             finally:
                 bb.close()

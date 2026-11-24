@@ -38,7 +38,7 @@ class ConfigurationRepairTests(unittest.TestCase):
             _expand_env({"url": "${MISSING_CONFIGURATION_VARIABLE}"})
 
     def test_rename_migrates_assignments_and_backups_delete_rejects_references(self) -> None:
-        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as directory:
+        with tempfile.TemporaryDirectory() as directory:
             model_path, agent_path = Path(directory) / "models.yaml", Path(directory) / "agents.yaml"
             modelcfg.write_config(model_path, [], [{"model": "old", "provider": "mock"},
                 {"model": "backup", "provider": "mock", "is_fallback_for": ["old"]}])
@@ -54,7 +54,7 @@ class ConfigurationRepairTests(unittest.TestCase):
             self.assertIn("secretary", agentcfg._VALID_KEYS)
 
     def test_delete_rejects_model_in_naming_chain_until_migrated(self) -> None:
-        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as directory:
+        with tempfile.TemporaryDirectory() as directory:
             model_path, agent_path = Path(directory) / "models.yaml", Path(directory) / "agents.yaml"
             modelcfg.write_config(model_path, [], [{"model": "mini", "provider": "mock"}])
             agentcfg.set_naming_chain(agent_path, ["mini"], {"mini"})
@@ -68,7 +68,7 @@ class ConfigurationRepairTests(unittest.TestCase):
 
     def test_naming_chain_and_assignments_share_one_file_safely(self) -> None:
         """同一分配表文件的两段（assignments/naming）一起读一起写，互不覆盖。"""
-        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as directory:
+        with tempfile.TemporaryDirectory() as directory:
             agent_path = Path(directory) / "agents.yaml"
             agentcfg.set_assignment(agent_path, "master", "big", {"big"})
             agentcfg.set_naming_chain(agent_path, ["small", "big"], {"big", "small"})
@@ -86,7 +86,7 @@ class ConfigurationRepairTests(unittest.TestCase):
                 agentcfg.read_naming_chain(agent_path)
 
     def test_failed_model_write_rolls_back_assignment_migration(self) -> None:
-        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as directory:
+        with tempfile.TemporaryDirectory() as directory:
             models, agents = Path(directory) / "models.yaml", Path(directory) / "agents.yaml"
             modelcfg.write_config(models, [], [{"model": "old", "provider": "mock"}])
             agentcfg.write_assignments(agents, {"master": "old"})
@@ -98,7 +98,7 @@ class ConfigurationRepairTests(unittest.TestCase):
 
 class HistoryRepairTests(unittest.TestCase):
     def test_readonly_does_not_migrate_and_history_preserves_versions(self) -> None:
-        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as directory:
+        with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             bb = Blackboard(root / "bb.db")
             for index in range(55):
@@ -116,11 +116,43 @@ class HistoryRepairTests(unittest.TestCase):
             self.assertEqual(first["total"], 55)
             self.assertEqual(len(first["items"]), 50)
             self.assertEqual(len(second["items"]), 5)
+            self.assertEqual(first["category_counts"], second["category_counts"])
+            self.assertEqual(
+                [(row["taxonomy_id"], row["count"], row["confirmed_count"])
+                 for row in first["category_counts"]],
+                [("unclassified", 55, 55)],
+            )
             history = read_record_history(root, "topology", "business-context", limit=1)
             self.assertTrue(history["has_more"])
             self.assertEqual(history["items"][0]["data"]["facts"], ["new"])
             older = read_record_history(root, "topology", "business-context", before=2)
             self.assertEqual(older["items"][0]["data"]["facts"], ["old"])
+
+    def test_vulnerability_categories_filter_without_guessing_legacy_subtypes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            bb = Blackboard(root / "bb.db")
+            for key, raw_type, status in (
+                ("v1", "基于DOM型XSS", "accepted"),
+                ("v2", "DOM-XSS", "candidate"),
+                ("v3", "xss", "accepted"),
+                ("v4", "XXE注入", "rejected_false_positive"),
+            ):
+                bb.write(BlackboardLayer.VULN, key, {
+                    "vuln_id": key, "vuln_type": raw_type, "status": status,
+                })
+            bb.close()
+            page = read_vulnerability_page(root, category="dom_xss", confirmed_only=True)
+            self.assertEqual(page["total"], 1)
+            self.assertEqual(page["items"][0]["vuln_type"], "基于DOM型XSS")
+            self.assertEqual(page["items"][0]["label"], "DOM型XSS")
+            self.assertEqual(
+                {row["taxonomy_id"]: (row["count"], row["confirmed_count"])
+                 for row in page["category_counts"]},
+                {"xss": (1, 1), "dom_xss": (2, 1), "xxe": (1, 0)},
+            )
+            self.assertEqual(read_vulnerability_page(root, category="dom_xss")["total"], 2)
+            self.assertEqual(read_vulnerability_page(root, category="xss")["total"], 1)
 
     def test_context_prefix_is_stable_and_compaction_preserves_call_pairing(self) -> None:
         first = decision_messages("role", {"constraints": "fixed", "observations": "first"})
@@ -186,7 +218,7 @@ class CacheRepairTests(unittest.IsolatedAsyncioTestCase):
 
 class SecretaryRepairTests(unittest.IsolatedAsyncioTestCase):
     async def test_secretary_filters_invented_refs_and_has_no_tools(self) -> None:
-        fake = SimpleNamespace(chat=AsyncMock(return_value=SimpleNamespace(content=json.dumps({"suggestions": [
+        fake = SimpleNamespace(selected_model=lambda: "", chat=AsyncMock(return_value=SimpleNamespace(content=json.dumps({"suggestions": [
             {"summary": "real", "evidence_refs": ["topology:a@1"]},
             {"summary": "invented", "evidence_refs": ["missing"]}]}))))
         result = await Secretary(fake, NullAuditLogger()).advise({"records": [{"ref": "topology:a@1"}]}, {})
@@ -195,19 +227,21 @@ class SecretaryRepairTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(AgentType.SECRETARY.value, "secretary")
 
     async def test_master_decides_and_failure_preserves_original_decision(self) -> None:
-        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as directory:
+        with tempfile.TemporaryDirectory() as directory:
             bb = Blackboard(Path(directory) / "bb.db")
             self.addCleanup(bb.close)
             bb.write(BlackboardLayer.TOPOLOGY, "fact", {"text": "observed"})
-            secretary = SimpleNamespace(chat=AsyncMock(return_value=SimpleNamespace(content=json.dumps({"suggestions": [
+            secretary = SimpleNamespace(selected_model=lambda: "", chat=AsyncMock(return_value=SimpleNamespace(content=json.dumps({"suggestions": [
                 {"summary": "verify", "evidence_refs": ["topology:fact@1"]}]}))))
             async def decide(messages, **kwargs):
-                advice = json.loads(messages[-1]["content"])["advice"]
+                payload = next(json.loads(m["content"]) for m in messages
+                               if m["role"] == "user" and "snapshot" in json.loads(m["content"]))
+                advice = payload["snapshot"]["advice"]
                 return SimpleNamespace(finish_reason="stop", content=json.dumps({"continue_iteration": True, "dag_nodes": [],
                     "advice_decisions": [{"id": advice["suggestions"][0]["id"], "verdict": "rejected", "reason": "已有覆盖"}]}))
             master = object.__new__(MasterAgent)
             master.agent_id = "master-test"
-            master.ctx = SimpleNamespace(blackboard=bb, audit=NullAuditLogger(), gateway=SimpleNamespace(chat=decide),
+            master.ctx = SimpleNamespace(blackboard=bb, audit=NullAuditLogger(), gateway=SimpleNamespace(chat=decide, selected_model=lambda: ""),
                 extra={"secretary_enabled": True, "secretary_gateway": secretary})
             master._system_prompt = lambda: "master"
             draft = {"request_advice": True, "continue_iteration": True, "dag_nodes": []}

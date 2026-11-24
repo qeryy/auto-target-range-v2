@@ -5,7 +5,7 @@ import os
 import sqlite3
 import tempfile
 import unittest
-from contextlib import closing, contextmanager
+from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import patch
 
@@ -49,7 +49,7 @@ class PasswordHashTests(unittest.TestCase):
 
 class AdminStoreTests(unittest.TestCase):
     def test_upsert_verify_and_fingerprint(self) -> None:
-        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        with tempfile.TemporaryDirectory() as tmp:
             store = auth.AdminStore(tmp)
             self.assertFalse(store.has_admins())
             store.upsert("admin", "first")
@@ -63,7 +63,7 @@ class AdminStoreTests(unittest.TestCase):
             self.assertTrue(store.verify("admin", "second"))
 
     def test_env_sync_priority_and_persistence(self) -> None:
-        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp, env_only(
+        with tempfile.TemporaryDirectory() as tmp, env_only(
                 SPIRITSCOUT_ADMIN_USERNAME="admin",
                 SPIRITSCOUT_ADMIN_PASSWORD="new",
                 SPIRITSCOUT_SERVER_PASSWORD="old"):
@@ -84,10 +84,10 @@ class AdminStoreTests(unittest.TestCase):
             self.assertTrue(store.verify("admin", "new"))
 
     def test_env_sync_skips_identical_password_and_can_be_disabled(self) -> None:
-        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        with tempfile.TemporaryDirectory() as tmp:
             store = auth.AdminStore(tmp)
             store.upsert("admin", "stable")
-            with closing(sqlite3.connect(Path(tmp) / "admin.db")) as conn:
+            with sqlite3.connect(Path(tmp) / "admin.db") as conn:
                 before = conn.execute(
                     "SELECT updated_at FROM admins WHERE username='admin'"
                 ).fetchone()[0]
@@ -96,7 +96,7 @@ class AdminStoreTests(unittest.TestCase):
                 store.sync_from_env("SPIRITSCOUT_SERVER_PASSWORD",
                                     "SPIRITSCOUT_ADMIN_USERNAME",
                                     "SPIRITSCOUT_ADMIN_PASSWORD")
-            with closing(sqlite3.connect(Path(tmp) / "admin.db")) as conn:
+            with sqlite3.connect(Path(tmp) / "admin.db") as conn:
                 after = conn.execute(
                     "SELECT updated_at FROM admins WHERE username='admin'"
                 ).fetchone()[0]
@@ -112,7 +112,7 @@ class AdminStoreTests(unittest.TestCase):
             self.assertTrue(store.verify("admin", "stable"))
 
     def test_invalid_env_username_rejected(self) -> None:
-        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp, env_only(
+        with tempfile.TemporaryDirectory() as tmp, env_only(
                 SPIRITSCOUT_ADMIN_USERNAME="bad:name",
                 SPIRITSCOUT_ADMIN_PASSWORD="secret"):
             with self.assertRaises(ConfigurationError):
@@ -121,65 +121,10 @@ class AdminStoreTests(unittest.TestCase):
                     "SPIRITSCOUT_ADMIN_USERNAME",
                     "SPIRITSCOUT_ADMIN_PASSWORD")
 
-    def test_read_checks_never_create_the_database(self) -> None:
-        # 登录接口被陌生请求戳一下、启动脚本探一次，都不该在还没设密的机器上
-        # 留一个空 admin.db——那会让「首次启动」的判断彻底失真。
-        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
-            store = auth.AdminStore(tmp)
-            self.assertFalse(store.has_admins())
-            self.assertFalse(store.verify("spiritscout", "anything"))
-            self.assertEqual(store.password_fingerprint("spiritscout"), "")
-            self.assertFalse((Path(tmp) / "admin.db").exists())
-
-    def test_empty_database_counts_as_no_admin(self) -> None:
-        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
-            db = Path(tmp) / "admin.db"
-            with closing(sqlite3.connect(db)) as conn:
-                conn.execute("CREATE TABLE admins (username TEXT PRIMARY KEY,"
-                             " password_hash TEXT NOT NULL, created_at REAL"
-                             " NOT NULL, updated_at REAL NOT NULL)")
-            store = auth.AdminStore(tmp)
-            self.assertFalse(store.has_admins())
-            store.upsert("admin", "later")
-            self.assertTrue(store.has_admins())
-
-    def test_upsert_rejects_invalid_credentials(self) -> None:
-        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
-            store = auth.AdminStore(tmp)
-            for username in ("", "bad:name", "x" * (auth.MAX_USERNAME_LENGTH + 1)):
-                with self.assertRaises(ConfigurationError, msg=username[:20]):
-                    store.upsert(username, "secret")
-            # 密码只挡空值：不设长度限制，一位和一大段都算合法口令。
-            with self.assertRaises(ConfigurationError):
-                store.upsert("admin", "")
-            self.assertFalse(store.has_admins())
-
-    def test_any_password_length_is_accepted(self) -> None:
-        """用户要的「删掉字符限制」：一位的口令和几千字的口令都能设、都能验。"""
-        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
-            store = auth.AdminStore(tmp)
-            for password in ("1", "a", "p" * 4096, "一整句话当口令也行"):
-                store.upsert("admin", password)
-                self.assertTrue(store.verify("admin", password), password[:8])
-                self.assertFalse(store.verify("admin", password + "x"))
-
-    def test_env_override_of_local_password_is_logged(self) -> None:
-        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
-            store = auth.AdminStore(tmp)
-            store.upsert("admin", "first-run")
-            with env_only(SPIRITSCOUT_ADMIN_USERNAME="admin",
-                          SPIRITSCOUT_ADMIN_PASSWORD="from-dotenv"), \
-                    self.assertLogs("spiritscout.web.auth", "WARNING") as logs:
-                store.sync_from_env("SPIRITSCOUT_SERVER_PASSWORD",
-                                    "SPIRITSCOUT_ADMIN_USERNAME",
-                                    "SPIRITSCOUT_ADMIN_PASSWORD")
-            self.assertIn("覆盖", "\n".join(logs.output))
-            self.assertTrue(store.verify("admin", "from-dotenv"))
-
 
 class SessionTests(unittest.TestCase):
     def test_session_roundtrip_and_tamper(self) -> None:
-        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        with tempfile.TemporaryDirectory() as tmp:
             store = auth.AdminStore(tmp)
             store.upsert("admin", "secret")
             token = store.issue_session("admin")
@@ -190,7 +135,7 @@ class SessionTests(unittest.TestCase):
             self.assertTrue((Path(tmp) / "auth.key").is_file())
 
     def test_session_expires(self) -> None:
-        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        with tempfile.TemporaryDirectory() as tmp:
             store = auth.AdminStore(tmp)
             store.upsert("admin", "secret")
             with patch("spiritscout.web.auth.time.time", return_value=1000):
@@ -200,7 +145,7 @@ class SessionTests(unittest.TestCase):
                 self.assertIsNone(store.verify_session(token))
 
     def test_password_change_invalidates_session(self) -> None:
-        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        with tempfile.TemporaryDirectory() as tmp:
             store = auth.AdminStore(tmp)
             store.upsert("admin", "old")
             token = store.issue_session("admin")
@@ -208,7 +153,7 @@ class SessionTests(unittest.TestCase):
             self.assertIsNone(store.verify_session(token))
 
     def test_corrupt_key_file_is_reported(self) -> None:
-        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        with tempfile.TemporaryDirectory() as tmp:
             store = auth.AdminStore(tmp)
             store.upsert("admin", "secret")
             (Path(tmp) / "auth.key").write_text("not-hex", encoding="ascii")

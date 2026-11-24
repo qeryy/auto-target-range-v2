@@ -7,7 +7,6 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import itertools
 import time
 import uuid
@@ -45,8 +44,10 @@ class InProcessBus(EventBus):
         self._running = False
         if self._dispatcher:
             self._dispatcher.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
+            try:
                 await self._dispatcher
+            except asyncio.CancelledError:
+                pass
             self._dispatcher = None
 
     # ------------------------------------------------------------ 发布/订阅

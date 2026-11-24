@@ -20,7 +20,7 @@ from scripts.benchmark_support import LiveBudget, LiveMeter, TestBudgetExceeded
 
 class LiveBudgetTests(unittest.IsolatedAsyncioTestCase):
     async def test_internal_sdk_retry_does_not_deadlock_waiting_for_itself(self) -> None:
-        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        with tempfile.TemporaryDirectory() as tmp:
             budget=LiveBudget(Path(tmp)/'cost.json',limit_cny=.1)
             await budget.reserve('same:1',b'{}',8192)
             with self.assertRaises(TestBudgetExceeded):
@@ -29,7 +29,7 @@ class LiveBudgetTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_offpeak_policy_uses_verified_period_and_refuses_peak_boundary(self) -> None:
         for hour,minute,allowed in [(19,20,True),(8,50,False),(14,0,False)]:
-            with self.subTest(hour=hour),tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp,patch(
+            with self.subTest(hour=hour),tempfile.TemporaryDirectory() as tmp,patch(
                     'scripts.benchmark_support.datetime') as clock:
                 clock.now.return_value=datetime(2026,10,26,hour,minute,tzinfo=ZoneInfo('Asia/Shanghai'))
                 budget=LiveBudget(Path(tmp)/'cost.json',off_peak_only=True)
@@ -43,18 +43,17 @@ class LiveBudgetTests(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual(budget.rows,[])
 
     def test_cli_requires_explicit_live_flag_before_creating_output(self) -> None:
-        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        with tempfile.TemporaryDirectory() as tmp:
             out=Path(tmp)/'must-not-exist'
             result=subprocess.run([sys.executable,'-m','scripts.live_cache_benchmark',
                 '--output',str(out),'--budget-cny','1','--previous-cost-cny','.2421573'],
-                capture_output=True,text=True,encoding='utf-8',errors='replace',
-                env={**os.environ,'LITELLM_LOCAL_MODEL_COST_MAP':'True'})
+                capture_output=True,text=True,env={**os.environ,'LITELLM_LOCAL_MODEL_COST_MAP':'True'})
             self.assertEqual(result.returncode,2)
             self.assertIn('--run-live',result.stderr)
             self.assertFalse(out.exists())
 
     async def test_inflight_reservation_waits_for_usage_instead_of_cancelling(self) -> None:
-        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        with tempfile.TemporaryDirectory() as tmp:
             budget = LiveBudget(Path(tmp)/'cost.json',limit_cny=.12)
             first = await budget.reserve('first', b'{}',8192)
             waiting = asyncio.create_task(budget.reserve('second',b'{}',8192))
@@ -66,7 +65,7 @@ class LiveBudgetTests(unittest.IsolatedAsyncioTestCase):
             self.assertLess(budget.committed_cny,.12)
 
     async def test_reported_usage_is_idempotent_and_missing_usage_keeps_reserve(self) -> None:
-        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        with tempfile.TemporaryDirectory() as tmp:
             budget = LiveBudget(Path(tmp)/'cost.json',limit_cny=1,previous_cost_cny=.2421573)
             key = await budget.reserve('call:1',b'{}',8192)
             reserved = budget.committed_cny
@@ -80,7 +79,7 @@ class LiveBudgetTests(unittest.IsolatedAsyncioTestCase):
             self.assertAlmostEqual(cost,.2421573+(20*2+80*.04+20*8)/1e6)
 
     async def test_stopped_process_restores_unknown_reservation_without_waiting_forever(self) -> None:
-        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        with tempfile.TemporaryDirectory() as tmp:
             path=Path(tmp)/'cost.json'
             budget=LiveBudget(path,limit_cny=.1)
             await budget.reserve('old',b'{}',8192)
@@ -91,7 +90,7 @@ class LiveBudgetTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn('api_key',json.dumps(restored.rows))
 
     async def test_cancelled_waiter_never_creates_a_billable_request(self) -> None:
-        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        with tempfile.TemporaryDirectory() as tmp:
             budget=LiveBudget(Path(tmp)/'cost.json',limit_cny=.1)
             await budget.reserve('first',b'{}',8192)
             task=asyncio.create_task(budget.reserve('second',b'{}',8192))
@@ -103,15 +102,15 @@ class LiveBudgetTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_streamed_sse_and_json_both_release_reservation(self) -> None:
         for sse in (False,True):
-            with self.subTest(sse=sse), tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            with self.subTest(sse=sse), tempfile.TemporaryDirectory() as tmp:
                 budget=LiveBudget(Path(tmp)/'cost.json')
                 data=json.dumps({'usage':{'prompt_tokens':100,'completion_tokens':20,
                                          'prompt_cache_hit_tokens':80}}).encode()
                 if sse:
                     data=b'data: '+data+b'\r\n\r\ndata: [DONE]\r\n\r\n'
-                def handler(request, _data=data, _sse=sse):
-                    return httpx.Response(200,content=_data,headers={
-                        'content-type':'text/event-stream' if _sse else 'application/json'})
+                def handler(request):
+                    return httpx.Response(200,content=data,headers={
+                        'content-type':'text/event-stream' if sse else 'application/json'})
                 with LiveMeter(budget):
                     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
                         request=client.build_request('POST','https://api.deepseek.com/chat/completions',

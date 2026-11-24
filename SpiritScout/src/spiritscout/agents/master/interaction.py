@@ -3,11 +3,19 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import json
 import time
 from typing import Any
 
 from spiritscout.agents.master.contracts import MasterState
+from spiritscout.agents.master.evidence import (
+    SupervisionGate,
+    check_basis,
+    execution_digest,
+    platform_ref,
+    record_ref,
+)
 from spiritscout.agents.profiles import get_profile
 from spiritscout.core.exceptions import SpiritScoutError
 from spiritscout.core.ids import new_id
@@ -26,73 +34,102 @@ from spiritscout.gateway.context import (
 )
 
 
+class _SteeringUnavailable(Exception):
+    def __init__(self, reply: str) -> None:
+        self.reply = reply
+
+
 class MasterInteraction:
     _CHAT_INTERVAL = 1.0      # 消息轮询节拍（秒）——用户消息 1s 内直达灵枢
     _CHAT_HISTORY_MAX = 12    # 单次应答携带的对话窗口（上限；有会话对话史时取史末尾）
 
     async def _user_chat_watch(self) -> None:
-        """用户 ↔ 灵枢的即时对话通道（与子 Agent 的派发/督导完全隔离）。
-
-        用户会话中发来的消息 1 秒内直达灵枢，不等待子 Agent 的回合边界：
-        灵枢在自己的独立对话里直接回答用户（reply 经审计流实时可见），
-        需要子 Agent 调整方向或分析新附件时经环形台账下发建议——子 Agent
-        在其下一回合消费（执行中的模型调用无法被打断，这是两条通道之间
-        唯一的交接点）。通道失败不影响主链路。
-        """
-        assert self.ctx.audit is not None
-        # 对话上下文：会话对话史（跨续传持久化，用户消息已由 /messages
-        # 随发随落）优先——灵枢应答原地追加、封顶由会话层负责；无对话史
-        # 的装配（测试/离线）退回进程内独立窗口，行为同旧
-        seed = self.ctx.extra.get("dialogue_history")
-        own_history = not isinstance(seed, list)
-        history: list[dict[str, str]] = [] if own_history else seed
+        self._chat_lock = asyncio.Lock()
+        delay = self._CHAT_INTERVAL
         while True:
-            await asyncio.sleep(self._CHAT_INTERVAL)
-            feed = self._drain_user_feed()
-            if not feed:
-                continue
-            messages = [str(item.get("text") or "").strip()
-                        for item in feed if isinstance(item, dict)]
-            messages = [m for m in messages if m]
-            attachments = [str(item.get("path"))
-                           for item in feed if isinstance(item, dict)
-                           and item.get("path")]
-            if not messages and not attachments:
-                continue
-            reply, steering = await self._llm_user_chat(
-                messages, attachments, history)
-            if own_history:
-                for message in messages:
-                    history.append({"role": "user", "content": message[:1000]})
-            if not reply:
-                # 应答失败也要给用户可见的回执（意见内容已留在意见流不丢失）
-                reply = ("已收到你的消息并转达给执行中的智能体；灵枢应答通道"
-                         "暂时不可用，稍后会继续跟进。")
-            history.append({"role": "assistant", "content": reply[:2000]})
-            if own_history:
-                del history[:-self._CHAT_HISTORY_MAX]
-            self.ctx.audit.log("master.reply", self.agent_id, {
-                "text": reply[:4000]})
-            # 应答落黑板：拓扑图「你 → 灵枢」节点的回执数据源
-            with contextlib.suppress(Exception):
-                self.ctx.blackboard.write(
-                    BlackboardLayer.TOPOLOGY, new_id("reply"),
-                    {"kind": "reply", "text": reply[:1000],
-                     "about": messages[0][:300] if messages else "",
-                     "ts": time.time()},
-                    agent_type=AgentType.MASTER, updated_by=self.agent_id,
-                    dedup_key=f"reply|{time.time()}")
-            for item in steering:
-                self.ctx.ring.steer(item["agent"], item["hint"],
-                                    rationale=item.get("rationale", ""),
-                                    task_id=item.get("task_id", ""))
-            if steering:
-                self.ctx.audit.log("decision.change", self.agent_id, {
-                    "action": "user_chat_steering", "count": len(steering)})
+            await asyncio.sleep(delay)
+            try:
+                ok = await self._respond_user_feed()
+                delay = self._CHAT_INTERVAL if ok else min(30, delay * 2)
+            except Exception as exc:  # noqa: BLE001
+                self.ctx.audit.log("master.reply_failed", self.agent_id, {"error": str(exc)[:200]})
+                delay = min(30, delay * 2)
+
+    async def _respond_user_feed(self) -> bool:
+        lock = getattr(self, "_chat_lock", None)
+        if lock is None:
+            lock = self._chat_lock = asyncio.Lock()
+        async with lock:
+            while True:
+                feed = self._drain_user_feed()
+                if not feed:
+                    return True
+                control = self.ctx.extra.get('scan_controller')
+                if control is not None:
+                    batch = ':'.join(str(item.get('statement_id') or id(item)) for item in feed)
+                    await control.hold_for_user(batch)
+                seed = self.ctx.extra.get("dialogue_history")
+                history = seed if isinstance(seed, list) else getattr(self, "_chat_history", [])
+                self._chat_history = history
+                messages = [str(item.get("text") or "").strip() for item in feed if item.get("text")]
+                attachments = [str(path) for item in feed for attachment in item.get("attachments", [])
+                               if (path := attachment.get("path") if isinstance(attachment, dict) else attachment)]
+                attachments.extend(str(item["path"]) for item in feed if item.get("path"))
+                reply_preview = ""
+                try:
+                    result = await self._llm_user_chat(messages, attachments, history)
+                except _SteeringUnavailable as exc:
+                    reply_preview = exc.reply
+                    result = None
+                if any(item not in feed for item in self.ctx.extra.get("user_inbox", [])):
+                    # 在途回复尚未应用：先合并生成期间的新消息，避免向执行者发送旧指导。
+                    continue
+                if result is None:
+                    batch = (tuple(item.get("statement_id", str(id(item))) for item in feed), bool(reply_preview))
+                    if getattr(self, "_chat_failure_batch", None) != batch:
+                        self._chat_failure_batch = batch
+                        text = ("**指令未送达**。收件任务尚未就绪或已失效，消息保留待重试。\n\n" + reply_preview
+                                if reply_preview else
+                                "消息及附件已保存，当前回复通道未完成处理；尚未确认转达，会继续重试。")
+                        self.ctx.audit.log("master.reply", self.agent_id, {"text": text})
+                    return False
+                reply, steering = result
+                for index, item in enumerate(steering):
+                    source = ":".join(str(record.get("statement_id", id(record))) for record in feed)
+                    self.ctx.ring.steer(item["agent"], item["hint"], rationale=item.get("rationale", ""),
+                        task_id=item.get("task_id", ""), supersedes=item.get("supersedes"),
+                        source_id=f"user:{source}:{index}")
+                if not isinstance(seed, list):
+                    history.extend({"role": "user", "content": message} for message in messages)
+                    if attachments:
+                        history.append({"role": "user", "content": "上传附件：" + json.dumps(attachments, ensure_ascii=False)})
+                history.append({"role": "assistant", "content": reply})
+                self.ctx.audit.log("master.reply", self.agent_id, {"text": reply})
+                with contextlib.suppress(Exception):
+                    self.ctx.blackboard.write(BlackboardLayer.TOPOLOGY, new_id("reply"),
+                        {"kind": "reply", "text": reply, "ts": time.time()},
+                        agent_type=AgentType.MASTER, updated_by=self.agent_id)
+                callback = self.ctx.extra.get("on_user_feed")
+                if callback is not None:
+                    callback(feed)
+                else:
+                    inbox = self.ctx.extra.get("user_inbox") or []
+                    inbox[:] = [item for item in inbox if item not in feed]
+                self._chat_failure_batch = None
+                if steering:
+                    self.ctx.audit.log("decision.change", self.agent_id, {
+                        "action": "user_chat_steering", "count": len(steering)})
+                return True
+
+    def _user_input_revision(self) -> str:
+        context = self.ctx.blackboard.read(BlackboardLayer.TARGET_AUTH, "user-context") or {}
+        statements = [{key: item[key] for key in ("statement_id", "kind", "text", "attachments") if key in item}
+                      for item in context.get("statements", [])]
+        return hashlib.sha256(json.dumps(statements, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
 
     async def _llm_user_chat(self, messages: list[str], attachments: list[str],
                              history: list[dict[str, str]]
-                             ) -> tuple[str, list[dict[str, str]]]:
+                             ) -> tuple[str, list[dict[str, Any]]] | None:
         """灵枢回答用户（独立上下文）：直接答复 + 可选的子 Agent 方向建议。"""
         roster = "；".join(
             f"{get_profile(agent_type).name}({agent_type.value})"
@@ -101,6 +138,7 @@ class MasterInteraction:
         situation = self._engagement_status()
         payload = {
             "mission": self._mission()[:1000],
+            "scanner": self._scanner_context(),
             "world_state": self._world_state(),
             "agents": [a.value for a in self.ctx.agents],
             "roster": roster,
@@ -109,6 +147,8 @@ class MasterInteraction:
             "active_tasks": situation.get("active_tasks", []),
             "chat_history": history[-self._CHAT_HISTORY_MAX:],
             "new_messages": messages,
+            "steering_status": {task["task_id"]: self.ctx.ring.steerings_for(task["agent"], task_id=task["task_id"])
+                                for task in situation.get("active_tasks", [])} if self.ctx.ring else {},
             "attachments": attachments,
             "constraints": (
                 "你是灵枢，安全测试负责人。用户在会话进行中直接向你发消息，"
@@ -125,11 +165,13 @@ class MasterInteraction:
                 "展示给用户——用平实中文，不用 HAR、PoC 这类行话缩写）；"
                 "无需调整则 steering 给空列表。"
                 "针对具体任务的指令须填写 active_tasks 中的 task_id；仅当明确需要"
-                "通知该类型所有任务时才填写 broadcast=true。"
+                "通知该类型所有任务时才填写 broadcast=true。新指令不会自动取消旧指令；"
+                "确需替代时用 supersedes 指定 steering_status 中的旧指令 ID。"
                 "返回 JSON：{\"reply\": str, "
                 "\"steering\": [{\"agent\": str, \"task_id\": str, \"broadcast\": bool, \"hint\": str, "
                 "\"rationale\": str}]}"),
         }
+        input_feed = list(getattr(self.ctx, "extra", {}).get("user_inbox", []))
         try:
             resp = await chat_decision(
                 self.ctx.gateway,
@@ -138,17 +180,29 @@ class MasterInteraction:
                 task_type="meta_planning", response_format="json",
                 reasoning_effort="low",   # 对话应答要快，不与重推理抢档
             )
+            if any(item not in input_feed for item in getattr(self.ctx, "extra", {}).get("user_inbox", [])):
+                # 扫描控制也会产生副作用，不能等外层转发指导时才丢弃过时的模型输出。
+                return None
             data = extract_json(resp.content) or {}
-            reply = str(data.get("reply") or "").strip()[:4000]
-            steering = self._target_steering(
-                data.get("steering") or [], situation.get("active_tasks", []),
-                allow_broadcast=True)
+            if not isinstance(data, dict) or not isinstance(data.get("reply"), str):
+                raise TypeError("用户对话必须返回 JSON 对象和文字回复")
+            reply = data["reply"].strip()
+            raw = data.get("steering") or []
+            if not isinstance(raw, list) or not reply:
+                raise ValueError("用户对话应答或指令格式无效")
+            current = self._engagement_status().get("active_tasks", [])
+            steering = self._target_steering(raw, current, allow_broadcast=True)
+            if len(steering) != len(raw):
+                raise _SteeringUnavailable(reply)
+            control_result = await self._apply_scanner_control(data)
+            if control_result is not None and not control_result['ok']:
+                raise ValueError(control_result['error'])
             return reply, steering
         except (SpiritScoutError, OSError, ValueError, TypeError) as exc:
             # 对话通道失败不影响主链路，但留痕可见
             self.ctx.audit.log("master.reply_failed", self.agent_id,
                                {"error": str(exc)[:200]})
-            return "", []
+            return None
 
     # ------------------------------------------------------------ 环形督导
 
@@ -168,8 +222,13 @@ class MasterInteraction:
                 if item.get("statement_id"):
                     statement["statement_id"] = item["statement_id"]
                 record_user_statement(self.ctx.blackboard, statement)
-        inbox.clear()
         return items
+
+    def _light_supervision(self) -> bool:
+        from spiritscout.core.models import RunMode
+
+        return (bool((getattr(self.ctx, "extra", None) or {}).get("lightweight_local"))
+                and getattr(getattr(self.ctx, "policy", None), "mode", None) in (RunMode.CTF, RunMode.AWDP))
 
     async def _steering_watch(
             self, task_ids: list[str],
@@ -177,36 +236,36 @@ class MasterInteraction:
         """派发期并发督导：读各任务实时路线笔记 → LLM 判读全局 → 写方向建议。
 
         新补位任务通过共享名单进入观察；方向建议交子 Agent 权衡，竞赛暂缓
-        裁定经队列交调度器取消同题任务并回收实例。是否暂缓始终由模型决定。
+        裁定经队列交调度器；暂停派工、取消在途与释放实例由模型分别明确选择。
         用户消息不在这里消费——它们走独立的直达通道（_user_chat_watch），
         两条通道并行互不阻塞。
         """
         assert self.ctx.audit is not None
-        last_fingerprint = ""
+        gate = SupervisionGate()
         while True:
             await asyncio.sleep(self._STEER_INTERVAL)
-            digest = self._progress_digest(task_ids)
-            if not digest["tasks"]:
+            digest = self._progress_digest(task_ids, include_supervision=True)
+            if not digest["tasks"] or not gate.ready(
+                    digest, getattr(self.ctx, "journal", None), getattr(self.ctx, "ring", None)):
                 continue
-            # 投递新指令本身不是现场进展，避免“发指令→摘要变化→再发指令”自激循环。
-            facts = {**digest, "tasks": [{k: v for k, v in t.items() if k != "steering"}
-                                          for t in digest["tasks"]]}
-            fingerprint = json.dumps(facts, ensure_ascii=False, sort_keys=True)
-            if fingerprint == last_fingerprint:
-                continue
-            last_fingerprint = fingerprint
             steering = await self._llm_steer(digest, decisions)
             for item in steering:
+                # 用户直达通道可能在模型等待期间发出新指令，投递前再次核对所有权。
+                if self.ctx.ring.pending_steering(item["agent"], task_id=item.get("task_id", "")) is not None:
+                    continue
                 self.ctx.ring.steer(item["agent"], item["hint"],
                                     rationale=item.get("rationale", ""),
-                                    task_id=item.get("task_id", ""))
+                                    task_id=item.get("task_id", ""), supersedes=item.get("supersedes"))
 
-    def _progress_digest(self, task_ids: list[str]) -> dict[str, Any]:
+    def _progress_digest(self, task_ids: list[str], *, include_supervision: bool = False) -> dict[str, Any]:
         """本轮任务的实时进度摘要（子 Agent 随步上报的路线笔记）。"""
         bb = getattr(self.ctx, "blackboard", None)
         tasks: list[dict[str, Any]] = []
         for tid in task_ids:
-            data = bb.read(BlackboardLayer.TASK_STATE, tid) if bb is not None else None
+            read_versioned = getattr(bb, 'read_versioned', None)
+            versioned = read_versioned(BlackboardLayer.TASK_STATE, tid) if callable(read_versioned) else None
+            data, version = versioned if isinstance(versioned, tuple) and len(versioned) == 2 else (
+                bb.read(BlackboardLayer.TASK_STATE, tid) if bb is not None else None, None)
             if data is None:
                 continue
             task = data.get("task", {})
@@ -216,19 +275,33 @@ class MasterInteraction:
                 continue
             routes = [
                 {"route": r.get("name"), "status": r.get("status"),
+                 "route_id": r.get('route_id', ''),
                  "progress": r.get("progress"),
-                 "notes": [str(n)[:500] for n in (r.get("notes") or [])[-3:]]}
+                 "notes": [str(n)[:500] for n in (r.get("notes") or [])[-3:]],
+                 "notes_view": {'kind': 'agent_summary', 'partial': True,
+                                'digest': hashlib.sha256(json.dumps((r.get('notes') or [])[-3:],
+                                                                   ensure_ascii=False).encode()).hexdigest()[:16]}}
                 for r in data.get("routes", [])
             ]
             challenge = (task.get("payload") or {}).get("challenge") or {}
             tasks.append({"agent": task.get("agent_type"),
                           "task_id": tid,
+                          **({'blackboard_ref': {'layer': 'task_state', 'record_id': tid, 'version': version}}
+                             if version is not None else {}),
                           "challenge": {k: challenge[k] for k in ("id", "title")
                                         if k in challenge},
                           "steering": self.ctx.ring.steerings_for(
                               task.get("agent_type"), task_id=tid) if self.ctx.ring else [],
                           "title": str(task.get("title", ""))[:80],
                           "routes": routes})
+            if include_supervision:
+                tasks[-1]["_supervision"] = [
+                    {"route_id": r.get("route_id"), "status": r.get("status"),
+                     "findings": r.get("findings", []), "blockers": r.get("blockers", [])}
+                    for r in data.get("routes", [])]
+        if self._light_supervision():
+            for task in tasks:
+                task["executions"] = execution_digest(getattr(self.ctx, "journal", None), task["task_id"])
         platform = self.ctx.extra.get("platform")
         return {"tasks": tasks,
                 "platform_progress": {k: v for k, v in platform.progress().items() if k != "updated_at"} if platform is not None
@@ -269,6 +342,9 @@ class MasterInteraction:
             self, digest: dict[str, Any],
             decisions: asyncio.Queue[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
         """LLM 判读全局进度，产出需调整方向的子 Agent 建议（白名单校验）。"""
+        # 触发信号只用于本地去重，不改变已经发送过的督导提示词与快照契约。
+        digest = {**digest, "tasks": [{key: value for key, value in task.items() if key != "_supervision"}
+                                     for task in digest["tasks"]]}
         valid_agents = sorted({t["agent"] for t in digest["tasks"]
                                if t.get("agent")})
         if not valid_agents:
@@ -276,6 +352,7 @@ class MasterInteraction:
         try:
             payload: dict[str, Any] = {
                 "action": "steer",
+                "scanner": self._scanner_context(),
                 "mission": self._mission()[:1000],
                 "world_state": self._world_state(),
                 "business_context": shared_context(self.ctx.blackboard),
@@ -299,49 +376,108 @@ class MasterInteraction:
                             "笔记判断：谁走进了死胡同（建议换方向）、谁发现了高价值"
                             "线索（建议深挖或提醒同伴接力）、谁在同质重复做功"
                             "（建议避开同伴已覆盖的入口）。竞赛中某题反复探测而无新增"
-                            "有效信息时，建议保存断点、以待解结论收尾，把名额交给列表"
-                            "后续题，首轮扫完后再回访；不要只要求继续换路径穷举。"
-                            "进度百分比和命令成功不等于得分或有效线索。只对有明确调整必要的 "
-                            "Agent 给建议，一切正常则返回空列表。竞赛连续调度中，"
-                            "比较卡题与清单中尚未尝试的容易题的得分效率；决定暂缓时，"
-                            "输出 defer_challenges，系统会取消同题在途任务、关闭容器并补位。"
+                            "有效信息时先建议换方法、补信息或专项接力。未得分与耗时较长"
+                            "不等于无进展；有新证据或正在验证新假设时保留现场推进。"
+                            "把 investigation_frontier 当作共享调查前沿：优先推动能解决"
+                            "remaining_unknowns、改变后续决策的最小实验；同一 subject 的重复"
+                            "版本持续增加但 evidence_state/status 未变化时，要求换验证方法、"
+                            "交给更合适角色或按 stop_condition 收口。"
+                            "只对确有必要的 Agent 调整，一切正常返回空列表。"
+                            "defer_challenges 默认只暂停新增派工，cancel_running=true 才取消在途工作；"
+                            "确需腾名额或重置现场时明确 release_instance=true，系统先退场再关闭。"
+                            "释放需比较当前进展、重建代价与其他题实际机会，不能为轮换而轮换。"
                             "reason 简短保留已排除方向、有效线索和回访条件。"
                             "不要按固定时长或回合数机械跳题。有实质突破可继续。返回 JSON："
                             "{\"steering\": [{\"agent\": 仅 agents 列表之一, "
                             "\"task_id\": active_tasks 中对应任务的 task_id, "
-                            "\"hint\": 下一步指令, \"rationale\": 判断依据}], "
-                            "\"defer_challenges\": [{\"id\": 进度中在途赛题ID, \"reason\": str}]}"),
+                            "\"hint\": 下一步指令, \"rationale\": 判断依据, "
+                            "\"supersedes\": [需要明确替代的旧指令ID]}], "
+                            "\"defer_challenges\": [{\"id\": 进度中在途赛题ID, \"reason\": str, \"cancel_running\": bool, \"release_instance\": bool}]}"),
             }
             payload["constraints"] += (
                 "每条指令必须指定 task_id，不能把某题指令发给所有同类型任务。"
                 "steering.feedback 中 delivered 仅表示已投递，accepted 仅表示计划执行；"
                 "completed/blocked 是子 Agent 自报，结合后续工具结果判断实际效果。"
-                "若前次指令尚未奏效，结合反馈与新证据纠偏或暂缓，不要重复改写同一建议。"
+                "前次指令未 completed/blocked 时默认不追加普通指令；只有新执行证据改变了"
+                "判断、原方向被证伪或必须纠偏时，才把旧指令 id 放入 supersedes 后替代。"
                 "只引用对应任务的可见事实，不把截断摘要当完整源码，不臆测已经具备的能力；"
                 "以 platform_progress 的已完成题目为准，不能把已完成题当未尝试题。")
+            if self._light_supervision():
+                payload["constraints"] += (
+                    "executions 是本任务实际工具执行记录，不是仅有计划；即使没有漏洞发现也不能说没有执行。"
+                    "exit_code、stderr 和 error 必须一起看，execution_ok 不等于假设成立；预览不代表完整源码。"
+                    "attachments 只读，shell/python 默认 workdir 与 artifacts 可写。某个目录写入失败"
+                    "不证明整个沙箱只读，不因此改用在线服务或放弃本地分析。"
+                    "对已执行且结果明确的动作不要重复下指令；按实际证据选择后续方法或要求补充缺口。")
+            for task in payload['active_tasks']:
+                original = next(t for t in digest['tasks'] if t['task_id'] == task['task_id'])
+                if original.get('blackboard_ref'):
+                    task['basis_ref'] = record_ref(original['blackboard_ref'])
+            platform_progress = digest.get('platform_progress') or {}
+            platform_basis = platform_ref(platform_progress) if platform_progress else ''
+            if platform_basis:
+                payload['platform_basis_ref'] = platform_basis
+            payload['basis_contract'] = (
+                'defer_challenges 每项必须提供 basis_refs 数组，引用 active_tasks 的 basis_ref。'
+                'cancel_running/release_instance 还须引用同题 world_state.shared_facts 的版本化 '
+                'layer:record_id@version，或 platform_basis_ref；摘要和进度分数不能单独作为取消/释放依据。')
             resp = await chat_decision(
                 self.ctx.gateway,
                 decision_messages(self._system_prompt() + "\nROLE: collab_judge", payload, 16000),
                 audit=self.ctx.audit, actor=self.agent_id,
                 memory=decision_memory(self, "steering"),
                 task_type="meta_planning", response_format="json",
-                reasoning_effort=self._MASTER_EFFORT,
+                reasoning_effort=self._master_effort,
             )
             data = extract_json(resp.content) or {}
             active_ids = {str((t.get("challenge") or {}).get("id") or "")
                           for t in digest["tasks"]}
             raw_defer = data.get("defer_challenges") or []
-            deferred = [i for i in (raw_defer if isinstance(raw_defer, list) else [])
+            proposed = [i for i in (raw_defer if isinstance(raw_defer, list) else [])
                         if isinstance(i, dict) and str(i.get("id") or "") in active_ids
                         and i.get("id") and str(i.get("reason") or "").strip()]
+            visible_refs = {task['basis_ref'] for task in payload['active_tasks'] if task.get('basis_ref')}
+            for fact in (payload.get('world_state') or {}).get('shared_facts', []):
+                if isinstance(fact, dict) and isinstance(fact.get('blackboard_ref'), dict):
+                    visible_refs.add(record_ref(fact['blackboard_ref']))
+            if platform_basis:
+                visible_refs.add(platform_basis)
+            deferred = []
+            for item in proposed:
+                ids = [t['task_id'] for t in digest['tasks']
+                       if str((t.get('challenge') or {}).get('id') or '') == str(item['id'])]
+                refs = item.get('basis_refs')
+                if (not isinstance(refs, list) or not refs or any(not isinstance(ref, str) or ref not in visible_refs for ref in refs)
+                        or not check_basis(self.ctx.blackboard, item, ids, current_platform=platform_basis)):
+                    self.ctx.audit.log('decision.change', self.agent_id, {
+                        'action': 'steering_basis_rejected', 'challenge_id': str(item['id']),
+                        'reason': '依据缺失、未展示、版本已变化、跨题或摘要不足以取消现场'})
+                    continue
+                deferred.append({**item, '_steering_task_ids': ids})
             if deferred and decisions is not None:
                 decisions.put_nowait({"defer_challenges": deferred})
             items = data.get("steering")
             if not isinstance(items, list):
                 raise TypeError("steering 应答不是列表")
-            return self._target_steering(items, digest["tasks"])
+            steering = self._target_steering(items, digest["tasks"])
+            await self._apply_scanner_control(data)
+            return steering
         except Exception:  # noqa: BLE001 —— 督导失败不拖垮派发
             return []
+
+    def _steering_decision_current(self, item: dict[str, Any]) -> bool:
+        """入队之后现场还可能变化，实际取消／释放前再做一次本地校验。"""
+        if '_steering_task_ids' not in item:
+            return True  # 主规划／用户指令沿用已有决策通道。
+        platform = self.ctx.extra.get('platform')
+        progress = platform.progress() if platform is not None and hasattr(platform, 'progress') else {}
+        valid = check_basis(self.ctx.blackboard, item, item['_steering_task_ids'],
+                            current_platform=platform_ref(progress) if progress else '')
+        if not valid:
+            self.ctx.audit.log('decision.change', self.agent_id, {
+                'action': 'steering_basis_rejected', 'challenge_id': str(item.get('id') or ''),
+                'reason': '排队期间依据已变化，保留当前现场'})
+        return valid
 
     def _target_steering(self, items: list[Any], tasks: list[dict[str, Any]], *,
                          allow_broadcast: bool = False) -> list[dict[str, str]]:
@@ -363,9 +499,21 @@ class MasterInteraction:
                     "action": "steering_rejected", "agent": item["agent"],
                     "task_id": tid, "reason": "收件任务缺失、歧义或不属于该 Agent"})
                 continue
+            supersedes = item.get("supersedes") or []
+            if not isinstance(supersedes, list) or not all(isinstance(identifier, str) for identifier in supersedes):
+                continue
+            ring = getattr(self.ctx, "ring", None)
+            if not allow_broadcast and ring:
+                pending = ring.pending_steering(item["agent"], task_id=tid)
+                if pending is not None and pending["id"] not in supersedes:
+                    self.ctx.audit.log("decision.change", self.agent_id, {
+                        "action": "steering_pending", "task_id": tid,
+                        "instruction_id": pending["id"],
+                        "reason": "同一任务已有未收口指令；等待完成/阻塞反馈，或明确 supersedes 后纠偏"})
+                    continue
             out.append({"agent": item["agent"], "task_id": tid,
-                        "hint": item["hint"][:2000],
-                        "rationale": str(item.get("rationale", ""))[:600]})
+                        "hint": item["hint"], "rationale": str(item.get("rationale", "")),
+                        "supersedes": supersedes})
         return out
 
     # ------------------------------------------------------------ 节点：汇聚

@@ -6,7 +6,12 @@ from spiritscout.core.models import AgentType, BlackboardLayer
 
 # 写入方/消费方对照设计书 4.8.1 表
 LAYER_WRITE_PERMISSIONS: dict[AgentType, set[BlackboardLayer]] = {
-    AgentType.VERIFIER: {BlackboardLayer.VULN, BlackboardLayer.TASK_STATE},
+    AgentType.JS_REVERSE: {BlackboardLayer.ASSET, BlackboardLayer.TASK_STATE},
+    AgentType.VERIFIER: {
+        BlackboardLayer.VULN,
+        BlackboardLayer.TOPOLOGY,  # 独立复核可将 supported 假设更新为 refuted
+        BlackboardLayer.TASK_STATE,
+    },
     AgentType.MASTER: set(BlackboardLayer),  # 主 Agent 全权（焦点管理/终审）
     AgentType.BUSINESS_CONTEXT: {
         BlackboardLayer.ASSET,
@@ -16,6 +21,12 @@ LAYER_WRITE_PERMISSIONS: dict[AgentType, set[BlackboardLayer]] = {
     AgentType.RECON: {
         BlackboardLayer.ASSET,
         BlackboardLayer.RECON_CLUE,
+        BlackboardLayer.TASK_STATE,
+    },
+    AgentType.SCANNER: {
+        BlackboardLayer.ASSET,
+        BlackboardLayer.RECON_CLUE,
+        BlackboardLayer.VULN,
         BlackboardLayer.TASK_STATE,
     },
     AgentType.PORT_SCAN: {
@@ -53,6 +64,14 @@ LAYER_WRITE_PERMISSIONS: dict[AgentType, set[BlackboardLayer]] = {
                           BlackboardLayer.TASK_STATE},
     AgentType.REPORT: set(),  # 报告 Agent 只读
 }
+
+
+# 执行角色可在拓扑层发布带依据的共享事实；规则仍由用户上下文写入。
+for _agent, _layers in LAYER_WRITE_PERMISSIONS.items():
+    if BlackboardLayer.TASK_STATE in _layers:
+        _layers.add(BlackboardLayer.TASK_REPORT)
+    if _agent not in {AgentType.REPORT, AgentType.VERIFIER}:
+        _layers.add(BlackboardLayer.TOPOLOGY)
 
 
 def can_write(agent_type: AgentType, layer: BlackboardLayer) -> bool:

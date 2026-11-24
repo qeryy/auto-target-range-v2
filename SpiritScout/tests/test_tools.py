@@ -6,6 +6,7 @@ import sys
 import threading
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from unittest.mock import AsyncMock, patch
 
 from spiritscout.core.models import RunMode, Scope
 from spiritscout.policy import PolicyEngine, ScopeGuard
@@ -59,6 +60,34 @@ class _EchoHandler(BaseHTTPRequestHandler):
 
 
 class ToolBoundaryTests(unittest.IsolatedAsyncioTestCase):
+    async def test_tool_execution_obeys_question_dependencies_in_all_modes(self) -> None:
+        from spiritscout.policy.questions import QuestionBroker
+        from spiritscout.tools.invocation import ExecutionScope, current_execution_scope
+
+        for mode in (RunMode.SRC, RunMode.CTF, RunMode.COMPETITION):
+            executor = _RecordingExecutor()
+            registry = ToolRegistry(executor)
+            broker = QuestionBroker(interactive=mode != RunMode.COMPETITION)
+            registry.questions = broker
+            registry.register(ToolSpec(name="fixture", kind=ToolKind.CLI,
+                                      command_template=["fixture"], risk=RiskLevel.READONLY))
+            ask = asyncio.create_task(broker.ask("master", "fixture", [], blocking_task_ids=["blocked"]))
+            await asyncio.sleep(0)
+            token = current_execution_scope.set(ExecutionScope(task_id="blocked"))
+            try:
+                action = asyncio.create_task(registry.call("fixture", {}))
+                await asyncio.sleep(0)
+                if mode != RunMode.COMPETITION:
+                    self.assertEqual(executor.calls, 0)
+                    self.assertFalse(action.done())
+                    broker._resolve(broker.view()[0]["question_id"], {"answer": "fixture"})
+                self.assertTrue((await asyncio.wait_for(action, 1)).ok)
+                self.assertEqual(executor.calls, 1)
+                await ask
+            finally:
+                current_execution_scope.reset(token)
+                broker.cancel_all()
+
     async def test_legacy_denied_target_executes_without_backend_boundary_gate(self) -> None:
         """旧排除声明只传模型，执行层不做禁打匹配。"""
         executor = _RecordingExecutor()
@@ -101,6 +130,29 @@ class ToolBoundaryTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(result.ok)
         self.assertEqual(executor.calls, 1)
+
+    async def test_policy_denial_error_marks_platform_semantics(self) -> None:
+        """策略拒绝标明是平台拦截而非目标防御，避免模型当 WAF 去绕。"""
+        executor = _RecordingExecutor()
+        policy = PolicyEngine(
+            RunMode.SRC,
+            ScopeGuard(Scope(allowed_urls=["https://example.test/app"])),
+        )
+        policy.forbid_tool("external_probe")
+        registry = ToolRegistry(executor, policy=policy)
+        registry.register(ToolSpec(
+            name="external_probe", kind=ToolKind.CLI,
+            command_template=["probe", "{url}"], allowed_params={"url"},
+            target_params=("url",), risk=RiskLevel.READONLY,
+        ))
+
+        result = await registry.call(
+            "external_probe", {"url": "https://example.test/app"})
+
+        self.assertFalse(result.ok)
+        self.assertIn("平台策略拦截", result.error)
+        self.assertIn("不要尝试绕过", result.error)
+        self.assertEqual(executor.calls, 0)
 
     async def test_local_executor_preserves_success_return_code(self) -> None:
         executor = LocalExecutor()
@@ -192,6 +244,16 @@ class DnsResolveDeniedAddressTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(result.ok)
         self.assertTrue(result.parsed["ips"])
+
+    async def test_empty_answer_is_not_reported_as_verified(self) -> None:
+        from spiritscout.tools.builtin import dns_resolve
+
+        guard = ScopeGuard(Scope(allowed_domains=["empty.fixture.test"]))
+        with patch("asyncio.BaseEventLoop.getaddrinfo", new=AsyncMock(return_value=[])):
+            result = await dns_resolve("empty.fixture.test", guard=guard)
+
+        self.assertFalse(result.ok)
+        self.assertIn("没有 A 记录", result.error)
 
 
 if __name__ == "__main__":

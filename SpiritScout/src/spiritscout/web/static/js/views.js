@@ -1,136 +1,128 @@
 /* ================= 视图：会话详情/拓扑/报告 ================= */
 /* ================= 会话详情 ================= */
-const TABS = ["chat", "topo", "challenges", "vulns", "flags", "experience", "events", "deliverables", "writeup", "report"];
-const STEERING_STATUS_CN = {delivered: "已投递", accepted: "计划执行", completed: "已报告完成", blocked: "执行受阻"};
-$("#mobile-sessions-toggle").onclick = () => {
-  const open = document.querySelector(".side").classList.toggle("mobile-sessions-open");
-  $("#mobile-sessions-toggle").setAttribute("aria-expanded", String(open));
-};
-/* 会话在后端已经没了（另一个标签页删掉、后端清理、工作区被重置）。留着它的后果
-   是界面卡在一个永远刷不出来的会话页上：「会话不存在」按轮询节奏反复弹，侧栏那
-   一行也还挂着，点了又跳回同一个死页面。这里统一收口——摘掉本地记录、停流、清
-   状态、退回首页。返回是否确实清掉了当前会话。 */
-function dropMissingSession(id) {
-  S.sessions = (S.sessions || []).filter(s => s.session_id !== id);
-  renderSessions();
-  renderTaskDock();
-  if (S.cur !== id) return false;
-  S.cur = null;
-  S.state = null;
-  stopStreams();
-  show("home");
-  toast("会话已不存在，已退回列表", true);
-  return true;
-}
+const TABS = ["chat", "files", "topo", "assets", "opportunities", "challenges", "vulns", "flags", "experience", "traffic", "background", "events", "deliverables", "report", "delivery", "records"];
+const STEERING_STATUS_CN = {delivered: I18n.t("已投递"), accepted: I18n.t("计划执行"), completed: I18n.t("已报告完成"), blocked: I18n.t("执行受阻")};
 function openSession(id) {
-  /* 这里不做「本地列表里有没有」的判断：刚创建完的会话、从仪表盘或项目页进来的
-     已归档会话，都可能还没进 S.sessions，一刀切会把正常会话挡在门外。真被删掉的
-     会话由 refreshState 的 404 兜底（dropMissingSession）。 */
+  if (typeof ComposerCommands !== "undefined") ComposerCommands.reset();
+  if (typeof AssetSecretViewer !== "undefined") AssetSecretViewer.close();
   if (S.cur !== id) {
+    resetVulnPage(id);
     S.state = null;
+    const metrics = $("#session-metrics");
+    if (metrics) metrics.open = false;
+    // 附件暂存是会话私有状态：切到另一会话即清空，上一会话的 chip
+    // 不能泄漏到新会话（看起来像附件还在、会随下一条消息带走）
+    S.compFiles = [];
+    renderFileChips("#comp-files", S.compFiles);
     renderChallenges();
     $("#topo-ops-apv").replaceChildren();
     delete $("#topo-ops-apv").dataset.signature;
     $("#topo-ops-ask").replaceChildren();
     updateSessionActions();
   }
+  if (typeof BackgroundTasks !== "undefined") BackgroundTasks.close();
   S.cur = id; S.tab = "chat"; S.evSeen = 0; S.topoView = null;
+  if (typeof SessionNavigation !== "undefined") SessionNavigation.reset(id,
+    S.state?.session || S.sessions?.find(s => s.session_id === id));
+  $("#view-session").dataset.sessionId = id;
   SessionArchive.reset(id);
+  SessionFiles.reset(id);
   ToolParameters.reset(id);
-  WriteUp.reset();
-  SessionExperience.reset();          // 换会话别把上一个会话的经验留在页签里
-  if (window.innerWidth <= 860) {
-    document.querySelector(".side").classList.remove("mobile-sessions-open");
-    $("#mobile-sessions-toggle").setAttribute("aria-expanded", "false");
-  }
+  if (typeof ConsoleSidebar !== "undefined") ConsoleSidebar.closeOnMobile();
   show("session");
+  if (typeof SessionRail !== "undefined") SessionRail.begin(id);
   renderSessions();
-  document.querySelectorAll("#s-tabs button").forEach(b => {
-    b.classList.toggle("on", b.dataset.tab === "chat");
-    b.setAttribute("aria-selected", String(b.dataset.tab === "chat"));
-    b.tabIndex = b.dataset.tab === "chat" ? 0 : -1;
-  });
   for (const t of TABS) $("#tab-" + t).hidden = t !== "chat";
+  if (typeof SessionNavigation !== "undefined") SessionNavigation.sync("chat");
   refreshState();
   startStreams();
 }
-document.querySelectorAll("#s-tabs button").forEach(b => {
-  b.id = "session-tab-" + b.dataset.tab;
-  b.setAttribute("role", "tab");
-  b.setAttribute("aria-controls", "tab-" + b.dataset.tab);
-  b.setAttribute("aria-selected", String(b.classList.contains("on")));
-  b.tabIndex = b.classList.contains("on") ? 0 : -1;
-  const panel = $("#tab-" + b.dataset.tab);
+function selectSessionTab(tab) {
+  if (!TABS.includes(tab)) return;
+  if (typeof SessionNavigation !== "undefined" && !SessionNavigation.available(tab)) return;
+  S.tab = tab;
+  if (typeof SessionNavigation !== "undefined") SessionNavigation.sync(tab);
+  if (typeof TrafficPage !== "undefined") TrafficPage.sessionTab();
+  if (typeof CoveragePage !== "undefined") CoveragePage.navigate();
+  if (typeof BackgroundTasks !== "undefined") {
+    if (tab === "background") BackgroundTasks.open(); else BackgroundTasks.close();
+  }
+  for (const t of TABS) $("#tab-" + t).hidden = t !== tab;
+  const button = document.querySelector(`[data-tab="${tab}"]`);
+  button?.scrollIntoView({block: "nearest", inline: "nearest"});
+  if (tab === "topo") drawTopo();
+  if (tab === "assets") renderAssetLibrary();
+  if (tab === "opportunities") renderOpportunities();
+  if (tab === "challenges") renderChallenges();
+  if (tab === "vulns") renderVulns();
+  if (tab === "flags") renderFlags();
+  if (tab === "experience" && typeof SessionExperience !== "undefined") SessionExperience.load();
+  if (tab === "chat") { SessionObserver.render(); AgentWorkbench.render(); }
+  if (tab === "files") SessionFiles.refresh(true);
+  if (tab === "report") loadReport();
+  if (tab === "deliverables") SessionArchive.load();
+  if (["delivery", "records"].includes(tab) && typeof SessionNavigation !== "undefined") SessionNavigation.update(S.state);
+}
+document.querySelectorAll("#s-tabs [data-tab], #session-secondary [data-tab]").forEach(button => {
+  button.id = "session-tab-" + button.dataset.tab;
+  button.setAttribute("role", "tab");
+  button.setAttribute("aria-controls", "tab-" + button.dataset.tab);
+  button.setAttribute("aria-selected", String(button.dataset.tab === "chat"));
+  button.tabIndex = button.dataset.tab === "chat" ? 0 : -1;
+  const panel = $("#tab-" + button.dataset.tab);
   panel.setAttribute("role", "tabpanel");
-  panel.setAttribute("aria-labelledby", b.id);
-  b.onclick = () => {
-    S.tab = b.dataset.tab;
-    document.querySelectorAll("#s-tabs button").forEach(x => {
-      x.classList.toggle("on", x === b);
-      x.setAttribute("aria-selected", String(x === b));
-      x.tabIndex = x === b ? 0 : -1;
-    });
-    for (const t of TABS) $("#tab-" + t).hidden = t !== S.tab;
-    b.scrollIntoView({block:"nearest", inline:"nearest"});
-    if (S.tab === "topo") drawTopo();
-    if (S.tab === "challenges") renderChallenges();
-    if (S.tab === "vulns") renderVulns();
-    if (S.tab === "flags") renderFlags();
-    if (S.tab === "experience") SessionExperience.load(S.cur);
-    if (S.tab === "chat") { SessionObserver.render(); AgentWorkbench.render(); }
-    if (S.tab === "report") loadReport();
-    if (S.tab === "writeup") WriteUp.load();
-    if (S.tab === "deliverables") SessionArchive.load();
-  };
-});
-$("#s-tabs").addEventListener("keydown", event => {
-  const buttons = [...document.querySelectorAll("#s-tabs button")].filter(b => !b.hidden);
-  const index = buttons.indexOf(document.activeElement);
-  if (index < 0) return;
-  let next;
-  if (event.key === "ArrowRight") next = (index + 1) % buttons.length;
-  else if (event.key === "ArrowLeft") next = (index - 1 + buttons.length) % buttons.length;
-  else if (event.key === "Home") next = 0;
-  else if (event.key === "End") next = buttons.length - 1;
-  else return;
-  event.preventDefault(); buttons[next].focus(); buttons[next].click();
+  panel.setAttribute("aria-labelledby", button.id);
+  button.onclick = () => selectSessionTab(button.dataset.tab);
 });
 
 let stateRequestVersion = 0;
 let stateLoadingSession = null, stateQueued = false, stateRefreshTimer = null;
+let stateRefreshSession = null, stateLastSession = null, stateLastRefresh = 0;
 function scheduleStateRefresh() {
-  if (document.visibilityState === "hidden") return;
-  if (stateRefreshTimer) return;
-  stateRefreshTimer = setTimeout(() => { stateRefreshTimer = null; refreshState(); }, 120);
+  if (!S.cur || document.visibilityState === "hidden") return;
+  const sessionId = S.cur;
+  if (stateLoadingSession === sessionId) { stateQueued = true; return; }
+  if (stateRefreshTimer !== null) {
+    if (stateRefreshSession === sessionId) return;
+    clearTimeout(stateRefreshTimer);
+  }
+  // 短突发合并，连续工具事件最多约每 750ms 拉取一次；不拖延到流结束。
+  const elapsed = stateLastSession === sessionId ? Date.now() - stateLastRefresh : Infinity;
+  stateRefreshSession = sessionId;
+  stateRefreshTimer = setTimeout(() => {
+    stateRefreshTimer = null; stateRefreshSession = null;
+    if (S.cur === sessionId && document.visibilityState !== "hidden") refreshState();
+  }, Math.max(200, 750 - elapsed));
 }
 async function refreshState() {
   if (!S.cur) return;
   if (stateLoadingSession === S.cur) { stateQueued = true; return; }
   const sessionId = S.cur, version = ++stateRequestVersion;
+  if (stateRefreshTimer !== null) { clearTimeout(stateRefreshTimer); stateRefreshTimer = null; }
+  stateRefreshSession = null; stateQueued = false;
+  stateLastSession = sessionId; stateLastRefresh = Date.now();
   stateLoadingSession = sessionId;
   S.polling?.stateRequested();
   try {
     const state = await api(`/api/sessions/${sessionId}/state`);
     if (S.cur !== sessionId || version !== stateRequestVersion) return;
     S.state = state;
+    SessionFiles.sync(state.session);
+    if (typeof ComposerModels !== "undefined") ComposerModels.sync();
     renderSessionHead(); renderChips(); renderApprovals(); renderQuestions();
     if (S.tab === "topo") drawTopo();
+    if (S.tab === "assets") renderAssetLibrary();
+    if (S.tab === "opportunities") renderOpportunities();
     if (S.tab === "vulns") renderVulns();
     if (S.tab === "flags") renderFlags();
-    if (S.tab === "experience") SessionExperience.refreshIfStale();
+    if (S.tab === "experience" && typeof SessionExperience !== "undefined") SessionExperience.load();
     renderChallenges();
-    renderWriteUpTab();
     SessionObserver.render();
     AgentWorkbench.render();
     ToolParameters.refresh();
     if (S.tab === "deliverables") SessionArchive.refreshIfStale();
-  } catch (e) {
-    if (S.cur !== sessionId) return;
-    /* 404 说明这条会话已经没了，不是网络抖动：清掉并退回列表，否则按轮询节奏
-       一直弹「会话不存在」。其它错误照旧只提示。 */
-    if (e.status === 404) { dropMissingSession(sessionId); return; }
-    toast(e.message, true);
-  }
+    if (TERMINAL.has(state.session?.status) && !S.es) await SessionHistory.syncLatest();
+  } catch (e) { if (S.cur === sessionId) toast(e.message, true); }
   finally {
     if (version === stateRequestVersion) {
       stateLoadingSession = null;
@@ -139,32 +131,12 @@ async function refreshState() {
   }
 }
 
-/* WP 页签：CTF 解题模式可写；别的模式只要已经生成过 WP（比如跑完一轮自动写的那份）
-   也要能看——不然「交付物里有 WP、页签却找不到」就是这条判断漏的。 */
-function renderWriteUpTab() {
-  const button = document.querySelector('[data-tab="writeup"]');
-  if (!button) return;
-  const ctf = S.state?.session?.mode === "ctf";
-  const hasWp = !!S.state?.writeup?.exists;
-  button.hidden = !(ctf || hasWp);
-  if (!ctf && !hasWp && S.tab === "writeup") {   // 换了会话别停在已经不该存在的页签
-    S.tab = "chat";
-    for (const t of TABS) $("#tab-" + t).hidden = t !== "chat";
-    document.querySelectorAll("#s-tabs button").forEach(b => {
-      const on = b.dataset.tab === "chat";
-      b.classList.toggle("on", on);
-      b.setAttribute("aria-selected", String(on));
-      b.tabIndex = on ? 0 : -1;
-    });
-  }
-}
-
 /* 完成标记取自平台；解题中标记取自仍在执行的赛题任务。 */
 function renderChallenges() {
   const competition = S.state?.session?.mode === "competition";
   const button = document.querySelector('[data-tab="challenges"]');
   const counter = $("#s-challenge-progress"), box = $("#tab-challenges");
-  button.hidden = !competition;
+  if (typeof SessionNavigation === "undefined") button.hidden = !competition;
   counter.hidden = !competition;
   const progress = S.state?.challenge_progress;
   const solved = progress?.solved_ids || [], unsolved = progress?.unsolved_ids || [];
@@ -174,44 +146,46 @@ function renderChallenges() {
   const active = unsolved.filter(id => activeIds.has(id));
   const pending = unsolved.filter(id => !activeIds.has(id));
   const total = progress?.total_challenges;
-  counter.textContent = progress ? `已解出 ${solved.length} / ${total} 题${active.length ? ` · ${active.length} 题解题中` : ""}` : "等待读取题目列表";
+  counter.textContent = progress ? I18n.t`已解出 ${solved.length} / ${total} 题${active.length ? I18n.t` · ${active.length} 题解题中` : ""}` : I18n.t("等待读取题目列表");
   if (competition && S.tab !== "challenges") return;
   const signature = JSON.stringify([S.cur, competition, progress, active]);
   if (box.dataset.signature === signature) return;
   box.dataset.signature = signature;
   if (!competition) { box.replaceChildren(); return; }
   if (!progress) {
-    box.innerHTML = '<div class="card empty-note">等待读取赛方题目列表，获取后会在这里实时显示完成进度。</div>';
+    box.innerHTML = I18n.html('<div class="card empty-note">等待读取赛方题目列表，获取后会在这里实时显示完成进度。</div>');
     return;
   }
-  const labels = {solved: "已解出", active: "解题中", pending: "未完成"};
+  const labels = {solved: I18n.t("已解出"), active: I18n.t("解题中"), pending: I18n.t("未完成")};
   const icons = {solved: "✓", active: "▶", pending: "○"};
   const group = (ids, status) => `<section class="challenge-group">
     <h4>${labels[status]}<span>${ids.length}</span></h4>
-    ${ids.length ? `<ul class="challenge-grid">${ids.map(id => `<li class="challenge-id ${status}" aria-label="${esc(id)}，${labels[status]}"><span aria-hidden="true">${icons[status]}</span><code>${esc(id)}</code>${status === "active" ? '<small class="challenge-active-label">解题中</small>' : ""}</li>`).join("")}</ul>` : `<p class="challenge-empty">${status === "solved" ? "暂无已解出的题目" : "没有未完成题目"}</p>`}
+    ${ids.length ? `<ul class="challenge-grid">${ids.map(id => `<li class="challenge-id ${status}" aria-label="${esc(id)}，${labels[status]}"><span aria-hidden="true">${icons[status]}</span><code>${esc(id)}</code>${status === "active" ? I18n.html('<small class="challenge-active-label">解题中</small>') : ""}</li>`).join("")}</ul>` : `<p class="challenge-empty">${status === "solved" ? I18n.t("暂无已解出的题目") : I18n.t("没有未完成题目")}</p>`}
     </section>`;
-  box.innerHTML = `<section class="card challenge-board" aria-label="题目完成进度">
+  box.innerHTML = I18n.html`<section class="card challenge-board" aria-label="题目完成进度">
     <header class="challenge-heading"><div><h3>题目列表</h3><p>平台确认通关后实时标记</p></div>
       <div class="challenge-score"><strong>${solved.length}<span> / ${total}</span></strong><small>已解出 / 全部题目</small></div></header>
     <progress class="challenge-meter" value="${solved.length}" max="${Math.max(total, 1)}" aria-label="已解出题目进度"></progress>
-    ${total ? (active.length ? group(active, "active") : "") + group(solved, "solved") + group(pending, "pending") : '<p class="challenge-empty">赛方暂未提供题目。</p>'}
+    ${total ? (active.length ? group(active, "active") : "") + group(solved, "solved") + group(pending, "pending") : I18n.html('<p class="challenge-empty">赛方暂未提供题目。</p>')}
     </section>`;
 }
 
 /* 高风险动作即时确认：撞见高风险入口的分支挂起待裁决（G5 交互形态） */
-const APV_CN = { reverse_shell: "反弹连接", webshell_upload: "上传 WebShell",
-                 container_escape: "容器逃逸", brute_force: "口令爆破",
-                 delete_files: "删除文件", intrusive_write: "写入操作" };
+const APV_CN = { reverse_shell: I18n.t("反弹连接"), webshell_upload: I18n.t("上传 WebShell"),
+                 container_escape: I18n.t("容器逃逸"), brute_force: I18n.t("口令爆破"),
+                 delete_files: I18n.t("删除文件"), intrusive_write: I18n.t("写入操作") };
 function renderApprovals() {
   const list = (S.state && S.state.pending_approvals) || [];
   const box = $("#topo-ops-apv"), sessionId = S.cur;
   const signature = JSON.stringify([sessionId, list]);
   if (box.dataset.signature === signature) { updateSessionActions(); return; }
   box.dataset.signature = signature;
-  box.innerHTML = list.map(a => `
+  box.innerHTML = list.map(a => I18n.html`
     <div class="apv">
-      <div class="apv-title">⚠ 高风险动作待确认：${esc(APV_CN[a.action] || a.action)}</div>
-      <div class="apv-detail">${esc(a.detail || "")}<br>仅允许本次调用；其他调用仍需分别确认。拒绝只拦截本次调用，其余分支照常推进。</div>
+      <div class="apv-title">⚠ 高风险动作待确认：${esc(APV_CN[a.action] || I18n.t("执行外部工具操作"))}</div>
+      <p class="apv-purpose">${esc(a.purpose || a.detail || I18n.t("请先核实本次操作的目标和影响。"))}</p>
+      <details class="apv-technical"><summary>查看工具与调用信息</summary><div class="apv-detail">${esc(a.detail || "")}</div></details>
+      <p class="apv-scope">仅允许本次调用。拒绝后，其余任务继续执行。</p>
       <div class="apv-ops">
         <button class="btn primary sm" data-apv="${esc(a.approval_id)}" data-allow="1">允许本次调用</button>
         <button class="btn sm" data-apv="${esc(a.approval_id)}" data-allow="0">拒绝</button>
@@ -221,7 +195,7 @@ function renderApprovals() {
     try {
       await api(`/api/sessions/${sessionId}/approvals/${b.dataset.apv}`,
         { method: "POST", body: JSON.stringify({ allow: b.dataset.allow === "1" }) });
-      toast(b.dataset.allow === "1" ? "已允许本次调用" : "已拒绝本次调用");
+      toast(b.dataset.allow === "1" ? I18n.t("已允许本次调用") : I18n.t("已拒绝本次调用"));
       refreshState();
     } catch (e) { toast(e.message, true); refreshState(); }
   });
@@ -260,21 +234,21 @@ function renderQuestions() {
       card.className = "apv ask";
       card.dataset.questionId = q.question_id;
     }
-    const signature = JSON.stringify([q.agent, q.question, q.options, q.multiple, q.targets]);
+    const signature = JSON.stringify([q.agent, q.question, q.options, q.multiple, q.targets, q.secret]);
     if (card.dataset.signature !== signature) {
       card.dataset.signature = signature;
       const options = q.options || [];
       const targets = q.targets || [];
       const multiple = Boolean(q.multiple);
-      card.innerHTML = `
+      card.innerHTML = I18n.html`
         <div class="ask-head">
           <span class="ask-badge" aria-hidden="true">问</span>
-          <div class="apv-title">${esc(agentName(q.agent) || q.agent || "智能体")} 向你提问</div>
+          <div class="apv-title">${esc(agentName(q.agent) || q.agent || I18n.t("智能体"))} 向你提问</div>
         </div>
         <div class="apv-detail">${esc(q.question || "")}</div>
-        ${options.length ? `<div class="ask-block">
-          <div class="ask-label">选择你的答复${multiple ? `<span class="ask-label-tag">可多选</span>` : ""}</div>
-          <div class="ask-ops" role="group" aria-label="${multiple ? "候选回答，可选择多项" : "候选回答"}">
+        ${options.length ? I18n.html`<div class="ask-block">
+          <div class="ask-label">选择你的答复${multiple ? I18n.html`<span class="ask-label-tag">可多选</span>` : ""}</div>
+          <div class="ask-ops" role="group" aria-label="${multiple ? I18n.t("候选回答，可选择多项") : I18n.t("候选回答")}">
             ${options.map((option, i) => `<button type="button" class="ask-opt" data-qchoice="${i}"${multiple ? ` aria-pressed="false"` : ""}>
               <span class="ask-opt-idx" aria-hidden="true">${i + 1}</span>
               <span class="ask-opt-text">${esc(option)}</span>
@@ -282,25 +256,22 @@ function renderQuestions() {
             </button>`).join("")}
           </div>
         </div>` : ""}
-        ${targets.length ? `<div class="ask-block">
-          <div class="ask-label">同时授权新目标<span class="ask-label-tag">可选</span></div>
+        ${targets.length ? I18n.html`<div class="ask-block">
+          <div class="ask-label">本次涉及的目标</div>
           <div class="ask-targets">
             ${targets.map(raw => {
               const t = typeof raw === "string" ? { target: raw, why: "" } : raw;
-              return `<label class="ask-target">
-                <input type="checkbox" data-qtarget value="${esc(t.target)}">
-                <span class="ask-target-body">
-                  <span class="ask-target-host">${esc(t.target)}</span>
-                  <span class="ask-target-why">${t.why ? esc(t.why) : "本次测试需要使用该目标"}</span>
-                </span>
-              </label>`;
+              return `<div class="ask-target"><span class="ask-target-body">
+                <span class="ask-target-host">${esc(t.target)}</span>
+                ${t.why ? `<span class="ask-target-why">${esc(t.why)}</span>` : ""}
+              </span></div>`;
             }).join("")}
           </div>
-          <div class="ask-targets-hint">这些目标目前不在授权范围内。勾选后随本次答复一并加入本次会话的授权范围；不勾选不影响你选择的答复。</div>
+          <div class="ask-targets-hint">选择答复或直接说明允许测试的目标即可；只确认你明确同意的范围。</div>
         </div>` : ""}
         <div class="ask-free">
-          <textarea rows="2" maxlength="1000" aria-label="你的答复" placeholder="${multiple ? "可补充说明…（Enter 提交，Shift+Enter 换行）" : "或输入自定义答复…（Enter 发送，Shift+Enter 换行）"}" data-qfree></textarea>
-          <button type="button" class="ask-send" data-qsend>${multiple ? "提交答复" : "发送答复"}</button>
+          ${q.secret?I18n.html('<input type="password" maxlength="256" autocomplete="one-time-code" aria-label="本次验证码" placeholder="本次验证码，仅用于当前验证" data-qfree>'):`<textarea rows="2" maxlength="1000" aria-label="${I18n.t('你的答复')}" placeholder="${multiple ? I18n.t("可补充说明…（Enter 提交，Shift+Enter 换行）") : I18n.t("或输入自定义答复…（Enter 发送，Shift+Enter 换行）")}" data-qfree></textarea>`}
+          <button type="button" class="ask-send" data-qsend>${multiple ? I18n.t("提交答复") : I18n.t("发送答复")}</button>
         </div>
         <div class="ask-status" role="status" aria-live="polite"></div>`;
       const input = card.querySelector("[data-qfree]");
@@ -311,20 +282,19 @@ function renderQuestions() {
       const syncSend = () => {
         if (!multiple) return;
         const count = picked().length;
-        sendButton.textContent = count ? `提交所选（${count}）` : "提交答复";
+        sendButton.textContent = count ? I18n.t`提交所选（${count}）` : I18n.t("提交答复");
       };
       const sendText = () => {
         const text = input.value.trim();
         const choices = multiple ? picked() : [];
-        const targets = collectTargets(card);
-        if (!choices.length && !text && !targets.length) {
+        if (!choices.length && !text) {
           input.focus();
-          toast(multiple ? "先选择至少一项，或填写答复" : "先填写答复内容", true);
+          toast(multiple ? I18n.t("先选择至少一项，或填写答复") : I18n.t("先填写答复内容"), true);
           return;
         }
         const body = choices.length
-          ? { choices, add_targets: targets }
-          : { text, add_targets: targets };
+          ? { choices }
+          : { text };
         if (choices.length && text) body.text = text;
         answerQuestion(q.question_id, body, card, sessionId);
       };
@@ -335,8 +305,7 @@ function renderQuestions() {
           syncSend();
           return;
         }
-        answerQuestion(q.question_id, { choice: Number(button.dataset.qchoice),
-          add_targets: collectTargets(card) }, card, sessionId);
+        answerQuestion(q.question_id, { choice: Number(button.dataset.qchoice) }, card, sessionId);
       });
       sendButton.onclick = sendText;
       input.onkeydown = event => {
@@ -351,9 +320,6 @@ function renderQuestions() {
   });
   updateSessionActions();
 }
-function collectTargets(card) {
-  return [...card.querySelectorAll("[data-qtarget]:checked")].map(c => c.value);
-}
 async function answerQuestion(qid, body, card, sessionId) {
   const key = `${sessionId}:${qid}`;
   if (answeringQuestions.has(key)) return;
@@ -362,7 +328,7 @@ async function answerQuestion(qid, body, card, sessionId) {
   const controls = [...card.querySelectorAll("button, input, textarea")];
   controls.forEach(control => { control.disabled = true; });
   status.classList.remove("error");
-  status.textContent = "正在提交答复…";
+  status.textContent = I18n.t("正在提交答复…");
   card.setAttribute("aria-busy", "true");
   try {
     await api(`/api/sessions/${sessionId}/questions/${qid}`,
@@ -371,12 +337,12 @@ async function answerQuestion(qid, body, card, sessionId) {
       ++stateRequestVersion;  // 丢弃提交前的旧快照，防止已答问题重新出现。
       S.state.pending_questions = (S.state.pending_questions || []).filter(q => q.question_id !== qid);
       renderQuestions();
-      toast("已答复，智能体将继续");
+      toast(I18n.t("已答复，智能体将继续"));
       refreshState();
     }
   } catch (e) {
     status.classList.add("error");
-    status.textContent = `提交失败：${e.message}。答复已保留，可重试。`;
+    status.textContent = I18n.t`提交失败：${e.message}。答复已保留，可重试。`;
     if (S.cur === sessionId) { toast(e.message, true); refreshState(); }
   } finally {
     answeringQuestions.delete(key);
@@ -385,15 +351,27 @@ async function answerQuestion(qid, body, card, sessionId) {
   }
 }
 
-/* 仪表盘：实时 token 消耗与会话态势（数据面 = /state；计数格式走 count.js） */
+/* 仪表盘：实时 token 消耗与会话态势（数据面 = /state） */
+const fmtK = n => n >= 1e6 ? (n / 1e6).toFixed(2) + "M"
+  : n >= 1000 ? (n / 1000).toFixed(1) + "k" : String(n ?? 0);
 let dashRenderVersion = 0;
+const dashRequests = new Map();
 async function renderDash() {
   const box = $("#dash-body");
   if (!box) return;
   const version = ++dashRenderVersion;
+  Dashboard.loading(box);
   box.setAttribute("aria-busy", "true");
   try {
-    const metrics = await api(`/api/dashboard?period=${encodeURIComponent(Dashboard.period)}`);
+    const period = Dashboard.period;
+    let request = dashRequests.get(period);
+    if (!request) {
+      request = api(`/api/dashboard?period=${encodeURIComponent(period)}`).finally(() => {
+        if (dashRequests.get(period) === request) dashRequests.delete(period);
+      });
+      dashRequests.set(period, request);
+    }
+    const metrics = await request;
     if (S.view !== "dash" || version !== dashRenderVersion) return;
     Dashboard.render(box, metrics);
   } catch (e) {
@@ -403,160 +381,132 @@ async function renderDash() {
   }
 }
 
-/* ===== 会话页模型选择：本会话优先使用的模型 =====
-   空值 = 跟随「模型」页排的优先级链（那份顺序由后端定时重读，改完不用重启）。
-   选定后只影响本会话：灵枢车道与未在编队页指派的子 Agent 用它，编队页给
-   具体子 Agent 的指派仍然优先。保存即生效，运行中改也认。 */
-function sessionModelOptions(session, models) {
-  const cur = (session && session.model) || "";
-  const ids = (models || []).map(m => (typeof m === "string" ? m : (m && m.model))).filter(Boolean);
-  const opts = ['<option value="">自动 · 跟随全局优先级</option>'];
-  for (const id of ids) {
-    opts.push(`<option value="${esc(id)}"${id === cur ? " selected" : ""}>${esc(id)}</option>`);
+const sessionControlPending = new Set();
+const sessionMessagePending = new Set();
+function syncComposerControl() {
+  const button = $("#comp-send"), input = $("#comp-input");
+  const state = S.state?.session, session = state?.session_id === S.cur ? state : null;
+  const draft = !!input.value.trim() || !!S.compFiles?.length;
+  const active = session && (!TERMINAL.has(session.status) || session.paused);
+  const action = draft || !active ? "send" : session.paused ? "resume" : "pause";
+  const pending = sessionControlPending.has(S.cur) || sessionMessagePending.has(S.cur);
+  const labels = {send:I18n.t("发送消息"), pause:I18n.t("暂停任务"), resume:I18n.t("继续任务")};
+  button.dataset.action = action;
+  button.setAttribute("aria-label", pending ? I18n.t("正在处理") : labels[action]);
+  button.title = pending ? I18n.t("正在处理…") : labels[action];
+  button.setAttribute("aria-busy", String(pending));
+  button.disabled = !S.cur || pending || (action === "send" && !draft);
+  button.classList.toggle("ready", draft || !!active);
+  const glyph = action === "pause" ? '<rect x="6" y="6" width="12" height="12" rx="1.5" fill="currentColor" stroke="none"/>'
+    : action === "resume" ? '<path d="m9 5 11 7-11 7z" fill="currentColor" stroke="none"/>'
+    : '<path d="M12 19V5M5 12l7-7 7 7"/>';
+  const signature = `${action}:${pending}`;
+  if (button.dataset.signature !== signature) {
+    button.dataset.signature = signature;
+    button.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${pending ? '<circle cx="12" cy="12" r="7" stroke-dasharray="30 14"/>' : glyph}</svg>`;
   }
-  // 选过但它已从注册表消失（停用/改名/删除）：如实列出，后端会退回优先级链
-  if (cur && !ids.includes(cur)) {
-    opts.push(`<option value="${esc(cur)}" selected>${esc(cur)}（已下线）</option>`);
-  }
-  return opts.join("");
+  input.disabled = sessionMessagePending.has(S.cur);
+  $("#comp-attach").disabled = input.disabled;
 }
-
-function sessionModelChip(session, models) {
-  const cur = (session && session.model) || "";
-  return `<select id="s-model" class="tag model-chip${cur ? " on" : ""}"
-      title="本会话优先使用的模型（自动 = 按「模型」页排的优先级链选）">
-      ${sessionModelOptions(session, models)}</select>`;
-}
-
-async function loadSessionModels(opts) {
-  const fresh = !!(opts && opts.fresh);
-  if (!fresh && S.sessionModels && S.sessionModels.length) return S.sessionModels;
+async function toggleTaskPause() {
+  const s = S.state?.session, sessionId = S.cur;
+  if (!s || s.session_id !== sessionId || (TERMINAL.has(s.status) && !s.paused) || sessionControlPending.has(sessionId)) return;
+  const paused = !s.paused;
+  sessionControlPending.add(sessionId);
+  syncComposerControl();
   try {
-    const data = await api("/api/models");
-    S.sessionModels = (data && data.models) || [];
-  } catch { S.sessionModels = S.sessionModels || []; }
-  return S.sessionModels;
-}
-
-/* 模型列表不能"拉一次管一辈子"：在「模型」页改完供应商、停用或删掉某个模型，
-   会话页的下拉还列着它，选下去只会被后端退回优先级链。所以每次点开下拉都重查
-   一次。同一次点击会连发 pointerdown 与 focus，用 in-flight + 短窗口合并成一次
-   请求，浏览器里看到的仍然是"点一下、查一次"。 */
-const SESSION_MODELS_DEDUPE_MS = 400;
-
-function modelIdsOf(models) {
-  return (models || [])
-    .map(m => (typeof m === "string" ? m : (m && m.model)))
-    .filter(Boolean)
-    .join("|");
-}
-
-function refreshSessionModels(select) {
-  const now = Date.now();
-  // 同一次点击会连发 pointerdown + focus（键盘还有 keydown），400ms 内并成一次查询
-  if (now - (S.sessionModelsAskedAt || 0) < SESSION_MODELS_DEDUPE_MS) {
-    return S.sessionModelsInFlight || Promise.resolve(S.sessionModels);
+    const updated = await api(`/api/sessions/${encodeURIComponent(sessionId)}/${paused ? "pause" : "resume"}`,
+      {method:"POST", body:"{}"});
+    if (S.cur !== sessionId) return;
+    if (S.state?.session) Object.assign(S.state.session, updated);
+    toast(paused ? I18n.t("已请求暂停，当前调用返回后暂停") : I18n.t("已继续原任务"));
+  } catch (e) { toast(e.message, true); }
+  finally {
+    sessionControlPending.delete(sessionId);
+    if (S.cur === sessionId) { renderSessionHead(); refreshState(); }
   }
-  S.sessionModelsAskedAt = now;
-  const before = modelIdsOf(S.sessionModels);
-  S.sessionModelsInFlight = loadSessionModels({fresh: true}).then(list => {
-    // 列表变了才重绘：没变就别动 DOM，免得把正在展开的下拉顶掉
-    if (select && select.isConnected && modelIdsOf(list) !== before) {
-      const keep = select.value;
-      select.innerHTML = sessionModelOptions({model: keep}, list);
-      if (keep) select.value = keep;
-    }
-    return list;
-  }).finally(() => { S.sessionModelsInFlight = null; });
-  return S.sessionModelsInFlight;
 }
-
-async function saveSessionModel(sessionId, model) {
-  const data = await api(`/api/sessions/${sessionId}/model`,
-    { method: "POST", body: JSON.stringify({ model }) });
-  if (S.state && S.state.session && S.state.session.session_id === sessionId) {
-    S.state.session.model = (data && data.model) || "";
-  }
-  return data;
+function showSessionReportTab(mode) {
+  if (typeof SessionNavigation !== "undefined") { SessionNavigation.configure(S.state?.session || {mode}); return; }
+  const report = $('#s-tabs [data-tab="report"]');
+  if (report) report.hidden = !mode || mode === "src";
 }
-
 function renderSessionHead() {
   const s = S.state.session;
+  showSessionReportTab(s.mode);
+  if (typeof SessionNavigation !== "undefined") SessionNavigation.update(S.state);
+  renderSessionProxy(s);
+  // 附件清单来自轮询状态（S.state.attachments），详情接口同名字段兜底
+  const attachmentsOf = () => S.state?.attachments || s.attachments || [];
   const running = !TERMINAL.has(s.status);
+  const waiting = s.status === "running" && s.phase === "queued";
   $("#s-title").textContent = s.title || s.target || s.session_id;
   $("#s-title").title = s.target || "";
   $("#op-rename").onclick = () => startRename(S.cur, $("#s-title"));
-  const headStatus = statusInfo(s);
   $("#s-meta").innerHTML = [
-    `<span class="pill ${esc(headStatus.key)}">${esc(headStatus.text)}</span>`,
-    running && s.paused ? `<span class="pill paused">已暂停</span>` : "",
+    `<span class="pill ${waiting ? "queued" : s.status}">${waiting ? I18n.t("等待调度") : STATUS_CN[s.status] || s.status}</span>`,
+    running && s.paused ? I18n.html`<span class="pill paused">已暂停</span>` : "",
     `<span class="tag blue">${MODE_CN[s.mode] || s.mode}</span>`,
-    sessionModelChip(s, S.sessionModels || []),
-    `<button type="button" class="tag proj-chip" data-move-project title="项目分区 · 点击移动会话">${esc(projectName(s.project_id))}</button>`,
+    // 附件常驻凭据：滑窗滚出首屏后用户仍能确认附件已随题交付（悬浮列名，点击回溯）
+    attachmentsOf().length ? I18n.html`<button type="button" class="tag" data-attachments
+      title="${esc(attachmentsOf().map(a => a.name).join("\n"))}">附件 ${attachmentsOf().length}</button>` : "",
+    I18n.html`<button type="button" class="tag proj-chip" data-move-project title="切换会话所属项目" aria-label="切换项目：${esc(projectName(s.project_id))}" aria-haspopup="dialog"><span>${esc(projectName(s.project_id))}</span><svg class="proj-chevron" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="m4 6 4 4 4-4"/></svg></button>`,
     // 用时扣除暂停与执行间隙区间（门内累计，实时随轮询刷新）
-    s.started_at ? `<span class="tag">用时 ${fmtDur(s.started_at + (s.excluded_seconds || 0), s.finished_at)}</span>` : "",
+    s.started_at ? I18n.html`<span class="tag">用时 ${fmtDur(s.started_at + (s.excluded_seconds || 0), s.finished_at)}</span>` : "",
     `<span class="tag mono">${esc(s.session_id)}</span>`,
-    s.side_session?.parent_session_id ? '<button type="button" class="tag" data-side-parent>返回来源会话</button>' : "",
+    s.side_session?.parent_session_id ? I18n.html('<button type="button" class="tag" data-side-parent>返回来源会话</button>') : "",
   ].join("");
-  const modelSelect = $("#s-meta #s-model");
-  if (modelSelect) {
-    modelSelect.onchange = async () => {
-      const picked = modelSelect.value;
-      try {
-        await saveSessionModel(S.cur, picked);
-        toast(picked ? `本会话改用 ${picked}，下一批调用生效` : "已回到全局优先级");
-        refreshState();
-      } catch (e) { toast(e.message, true); }
-      renderSessionHead();
-    };
-    // 每次点开下拉都重查模型列表（键盘打开也算），别让已经下线的模型留在选项里
-    const refresh = () => refreshSessionModels(modelSelect);
-    modelSelect.addEventListener("pointerdown", refresh);
-    modelSelect.addEventListener("focus", refresh);
-    modelSelect.addEventListener("keydown", refresh);
-    if (!S.sessionModels || !S.sessionModels.length || S.sessionModelsFor !== s.session_id) {
-      S.sessionModelsFor = s.session_id;
-      loadSessionModels({fresh: true}).then(list => {
-        // 拉回来才有真选项：只为当前这个会话补渲染，别把别的视图顶掉
-        if (list.length && S.state && S.state.session
-            && S.state.session.session_id === s.session_id) renderSessionHead();
-      });
-    }
-  }
   const sideParent=$("#s-meta [data-side-parent]");
   if(sideParent) sideParent.onclick=()=>openSession(s.side_session.parent_session_id);
+  const attChip=$("#s-meta [data-attachments]");
+  if(attChip) attChip.onclick=()=>{
+    // 经存档点轨道回溯：命中附件名的横条点击即定位（窗口外自动补页）
+    const names=attachmentsOf().map(a => a.name);
+    const bar=[...(document.querySelector("#um-rail")?.children || [])]
+      .find(el => names.some(n => (el.dataset.preview || "").includes(n)));
+    bar?.click();
+  };
   const moveProject = $("#s-meta [data-move-project]");
   if (moveProject) moveProject.onclick = () => ProjectsPage.moveSession(S.cur);
-  $("#s-err").innerHTML = [
-    S.state?.recovery?.unresolved_count > 0
-      ? `<div class="pause-banner">有 ${Number(S.state.recovery.unresolved_count)} 次操作的结果尚待核对。继续任务时，灵枢会收到这些记录；请先核实效果，避免重复操作。</div>` : "",
-    running && s.paused
-      ? `<div class="pause-banner">已暂停，当前步骤完成后停止。仍可发送消息。</div>` : "",
-    s.error ? `<div class="err-banner">${esc(s.error)}</div>` : "",
-  ].join("");
-  $("#comp-send").disabled = false;
-  $("#comp-attach").disabled = false;
+  $("#s-err").innerHTML = s.error ? `<div class="err-banner">${esc(s.error)}</div>` : "";
+  syncComposerControl();
   $("#comp-input").placeholder = running
-    ? "给灵枢提意见、补充线索或上传附件…"
-    : "继续对话——灵枢带着这段会话的完整上下文";
-  if(s.side_session) $("#comp-input").placeholder=`与 ${agentName(s.side_session.agent)} 继续旁路对话，补充任务或线索…`;
-  $("#s-ops").innerHTML = `
-    ${running ? `<button class="btn sm" id="op-pause">${s.paused ? "继续" : "暂停"}</button>` : ""}
-    ${running ? `<button class="btn danger sm" id="op-stop">停止</button>` : ""}
-    <a class="btn sm" href="/api/sessions/${S.cur}/report/download" download>下载报告</a>
-    <a class="btn sm" href="/api/sessions/${S.cur}/audit/download" download>导出审计</a>
-    <button class="btn danger sm" id="op-del" ${running ? "disabled" : ""}>删除</button>`;
-  if (running) $("#op-pause").onclick = async () => {
-    const url = `/api/sessions/${S.cur}/${s.paused ? "resume" : "pause"}`;
-    try { await api(url, { method: "POST", body: "{}" });
-      toast(s.paused ? "已继续" : "已暂停——在途步骤跑完即停"); refreshState(); }
-    catch (e) { toast(e.message, true); }
-  };
+    ? I18n.t("补充消息或线索，输入 / 使用命令…")
+    : I18n.t("继续对话，或输入 / 使用命令…");
+  $("#comp-input").title = running
+    ? s.paused ? I18n.t("任务暂停中 · 可补充消息，点击继续任务后推进") : I18n.t("Enter 发送 · Shift+Enter 换行 · / 命令")
+    : I18n.t("Enter 发送 · Shift+Enter 换行 · 发送后继续对话");
+  if(s.side_session) $("#comp-input").placeholder=I18n.t`与 ${agentName(s.side_session.agent)} 继续旁路对话，补充任务或线索…`;
+  const moreOpen = $("#session-more")?.open || false;
+  $("#s-ops").innerHTML = I18n.html`
+    <details class="session-more" id="session-more" ${moreOpen ? "open" : ""}><summary class="action-icon" title="更多操作" aria-label="更多操作"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/></svg></summary><div class="session-more-menu">
+      ${s.mode === "src" ? "" : I18n.html`<a class="btn sm" href="/api/sessions/${encodeURIComponent(S.cur)}/report/download" download="${I18n.t("报告.md")}">下载报告</a>`}
+      <a class="btn sm" href="/api/sessions/${encodeURIComponent(S.cur)}/audit/download" download>导出审计</a>
+      <button class="btn sm" id="op-storage">清理存储</button>
+      ${running ? I18n.html`<button class="btn danger sm" id="op-stop">结束任务</button>` : ""}
+      <button class="btn danger sm" id="op-del" ${running ? "disabled" : ""}>删除会话</button>
+    </div></details>`;
   if (running) $("#op-stop").onclick = async () => {
-    try { await api(`/api/sessions/${S.cur}/stop`, { method: "POST", body: "{}" });
-      toast("已发送停止"); refreshState(); } catch (e) { toast(e.message, true); }
+    const sessionId = S.cur;
+    try { await api(`/api/sessions/${encodeURIComponent(sessionId)}/stop`, {method:"POST", body:"{}"});
+      toast(I18n.t("已结束任务，记录与成果保留")); if(S.cur === sessionId) refreshState(); }
+    catch(e) { toast(e.message, true); }
   };
+  $("#op-storage").onclick = () => SessionStorage.open(S.cur);
   $("#op-del").onclick = (ev) => armDelete(ev.currentTarget, S.cur);
+}
+
+function renderSessionProxy(session) {
+  const root=$("#s-proxy-route");
+  root.hidden=session.mode!=="src";
+  if(root.hidden)return;
+  const route=session.proxy_route;
+  const name=!route ? I18n.t("未记录代理方案") : route.id==="direct" ? I18n.t("直连") : route.name || route.id;
+  root.textContent=I18n.t`会话出口：${name}`;
+  root.title=!route ? I18n.t("此历史会话未保存代理快照，无法确认当时的方案。") :
+    [I18n.t("创建会话时锁定的方案"),route.id,
+      ...(route.nodes || []).map(node=>`${node.name || node.type} · ${node.server || ""}:${node.port || ""}`),
+      route.exit_ip ? I18n.t`开工时验证的出口 IP：${route.exit_ip}` : ""].filter(Boolean).join("\n");
 }
 
 /* Flag 概览：无提交接口时显示「已提取」数；接了判定接口才显示「通过/已提交」 */
@@ -569,39 +519,28 @@ function renderChips() {
   const v = st.vulns.by_status || {};
   const mu = st.model_usage || {};
   const tokens = mu.used_tokens ?? mu.total_tokens ?? mu.tokens;
-  const rounds = (st.round_views || []).length;
+  const rounds = st.decision_rounds ?? (st.round_views || []).length;
   const bc = st.business_context || {};
-  const coverage = { observed_transaction_flow: "交易流", public_flow: "公开流程",
-                     entry_only: "仅入口", none: "无" }[bc.coverage];
-  const phase = { queued: "等待调度", starting: "启动任务", mode_routing: "判断任务类型", intent_routing: "理解续聊意图",
-    model_preflight: "检查模型", platform_profile: "解析平台档案",
-    scope_confirmation: "确认测试范围",
-    master_reply: "灵枢回复中", runtime_starting: "初始化工具与智能体",
-    executing: "执行中", completed: "已完成", failed: "失败", stopped: "已停止",
-    interrupted: "已中断" }[TERMINAL.has(st.session.status) ? st.session.status : st.session.phase] || st.session.phase || "等待启动";
+  const coverage = { observed_transaction_flow: I18n.t("交易流"), public_flow: I18n.t("公开流程"),
+                     entry_only: I18n.t("仅入口"), none: I18n.t("无") }[bc.coverage];
+  const phase = { queued: I18n.t("等待调度"), starting: I18n.t("启动任务"), mode_routing: I18n.t("判断任务类型"), intent_routing: I18n.t("理解续聊意图"),
+    model_preflight: I18n.t("检查模型"), platform_profile: I18n.t("解析平台档案"),
+    scope_confirmation: I18n.t("确认测试范围"),
+    master_reply: I18n.t("灵枢回复中"), runtime_starting: I18n.t("初始化工具与智能体"),
+    executing: I18n.t("执行中"), completed: I18n.t("已完成"), failed: I18n.t("失败"), stopped: I18n.t("已停止"),
+    stopping: I18n.t("正在停止"), interrupted: I18n.t("已中断") }[TERMINAL.has(st.session.status) ? st.session.status : st.session.phase] || st.session.phase || I18n.t("等待启动");
   const firstChip = st.session.mode === "src" && coverage
-    ? ["业务覆盖", coverage] : ["当前阶段", phase];
+    ? [I18n.t("业务覆盖"), coverage] : [I18n.t("当前阶段"), phase];
   $("#s-chips").innerHTML = [
     firstChip,
-    ["收录漏洞", v.accepted || 0], ["候选/核验中", (v.candidate || 0) + (v.verifying || 0)],
+    [I18n.t("收录漏洞"), v.accepted || 0], [I18n.t("候选/核验中"), (v.candidate || 0) + (v.verifying || 0)],
     ["Flag", flagChipValue(st.flags)],
-    ["决策轮次", rounds || "—"],
-    ["Token", tokens != null ? fmtCount(tokens) : "—"],
+    [I18n.t("主控轮次"), rounds],
+    ["Token", tokens != null ? Number(tokens).toLocaleString(I18n.dateLocale) : "—"],
   ].map(([k, x]) => `<div class="chip"><b>${x}</b>${k}</div>`).join("");
 }
 
 /* ================= 拓扑画布 ================= */
-function topoModel() {
-  const tp = (S.state && S.state.topology) || { dag_nodes: [], tasks: [] };
-  const nodes = (tp.dag_nodes || []).map(n => ({...n})), tasks = tp.tasks || [];
-  const cardsOf = n => {
-    const ids = new Set(n.task_ids || []);
-    return tasks.filter(t => ids.has(t.task_id) || t.parent_dag_node === n.node_id);
-  };
-  const orphans = tasks.filter(t =>
-    !nodes.some(n => (n.task_ids || []).includes(t.task_id) || t.parent_dag_node === n.node_id));
-  return { nodes, cardsOf, orphans };
-}
 const nodeStatus = s => ({ done: "done", completed: "done", active: "active",
                            running: "active" }[String(s || "").toLowerCase()] || "pending");
 
@@ -633,9 +572,11 @@ function topoApplyView(box, v) {
   if (stage) stage.style.transform = `translate(${v.tx}px, ${v.ty}px) scale(${v.s})`;
 }
 function topoFit(box, w, h) {
-  const vw = Math.max(box.clientWidth, 240), vh = Math.max(box.clientHeight, 240);
+  const live = box.querySelector("#topo-live");
+  const reserved = live ? live.offsetTop + live.offsetHeight + 12 : 0;
+  const vw = Math.max(box.clientWidth, 240), vh = Math.max(box.clientHeight - reserved, 180);
   const s = Math.min(vw / (w + 28), vh / (h + 28), 1.2);
-  return { s, tx: (vw - w * s) / 2, ty: (vh - h * s) / 2 };
+  return { s, tx: (vw - w * s) / 2, ty: reserved + (vh - h * s) / 2 };
 }
 function topoZoom(box, k) {
   const v = S.topoView;
@@ -648,407 +589,156 @@ function topoZoom(box, k) {
   topoApplyView(box, v);
 }
 
+function renderTopoActivity() {
+  const panel = $("#topo-live");
+  if (!panel || !S.state) return;
+  const summaries = typeof TaskTrace !== "undefined" ? TaskTrace.progressSnapshot() : [];
+  const rows = TopologyLayout.activity(S.state, summaries);
+  const status = S.state.session?.status || "created";
+  const labels = {running:I18n.t("执行中"),done:I18n.t("已完成"),completed:I18n.t("已完成"),failed:I18n.t("失败"),cancelled:I18n.t("已停止"),stopped:I18n.t("已停止"),interrupted:I18n.t("已中断"),pruned:I18n.t("已暂缓")};
+  const hasFacts = S.topoGraph?.nodes.some(node=>node.kind==="finding");
+  panel.innerHTML = `<header><b>${TERMINAL.has(status) ? I18n.t("最后推进情况") : I18n.t("当前推进")}</b><span>${esc(labels[status] || status)}</span></header>
+    ${rows.length ? rows.map(row=>`<div class="topo-live-row"><strong>${esc(actorName(row.actor || ""))} · ${esc(labels[row.status] || row.status || I18n.t("执行中"))}</strong><p>${esc(row.text || I18n.t("尚未收到阶段说明。"))}</p></div>`).join("") : I18n.html('<p>尚未收到子任务进展，初始化与执行记录见会话页。</p>')}
+    ${!hasFacts ? I18n.html('<small>尚未发布有依据的产出事实；正在执行不代表没有推进。</small>') : ''}`;
+}
+
+async function loadTopoRules(record, offset = 0) {
+  const session=S.cur, key=JSON.stringify([session,record.record_id,record.version]);
+  S.topoRuleCache ||= new Map();
+  let cached=S.topoRuleCache.get(key);
+  const panel=SessionTopology.detailPanel();
+  if (!offset && cached) {
+    const target=panel?.querySelector(".topo-rule-content");
+    if(target) target.textContent=cached.text || I18n.t("该记录未包含用户规则或任务原话。");
+  } else {
+    try {
+      const data=await api(`/api/sessions/${encodeURIComponent(session)}/topology/rules?record_id=${encodeURIComponent(record.record_id)}&offset=${offset}`);
+      if(S.cur!==session || panel?._curId!==record.id) return;
+      if(offset && cached?.version!==data.version) throw new Error(I18n.t("规则已更新，请重新打开记录"));
+      cached={text:(offset ? cached?.text || "" : "")+data.text,next:data.next_offset,version:data.version};
+      S.topoRuleCache.set(key,cached);
+      panel.querySelector(".topo-rule-content").textContent=cached.text || I18n.t("该记录未包含用户规则或任务原话。");
+    } catch(error) {
+      if(S.cur===session && panel?._curId===record.id) panel.querySelector(".topo-rule-content").textContent=I18n.t`读取失败：${error.message}`;
+      return;
+    }
+  }
+  if(panel?._curId===record.id) {
+    const more=panel.querySelector("[data-rules-more]");
+    if(more) {more.hidden=cached?.next == null;more.onclick=()=>loadTopoRules(record,cached.next);}
+  }
+}
+
 function drawTopo() {
   const box = $("#topo");
   if (!S.state) { box.innerHTML = ""; return; }
-  const { nodes, cardsOf, orphans } = topoModel();
-  const running = !TERMINAL.has(S.state.session.status);
-  // 督导台账（灵枢实时给子 Agent 的方向建议），任务卡据此挂提示芯片
-  const ring = S.state.ring || { attempts: 0, steering: {} };
-  const taskCard = t => {
-    const tot = t.routes_total || 0, done = t.routes_done || 0;
-    const pct = tot ? Math.round(done / tot * 100) : (t.status === "done" ? 100 : 0);
-    const stCls = t.status === "done" ? "green" : t.status === "failed" ? "red" : "blue";
-    const steer = (ring.task_steering || {})[t.task_id] || (ring.steering || {})[t.agent_type];
-    const steerStatus = steer ? [...new Set(Object.values(steer.feedback || {})
-      .filter(f => f.task_id === t.task_id).map(f => STEERING_STATUS_CN[f.status] || f.status))].join(" / ") : "";
-    return `<div class="tcard" data-agent="${esc(t.agent_type || "")}" data-task="${esc(t.task_id || "")}">
-      <div class="row1"><span class="who">${esc(agentName(t.agent_type))}</span>
-        <span class="what" title="${esc(TASK_CN[t.task_type] || t.task_type || "")}">${esc(TASK_CN[t.task_type] || t.task_type || "")}</span>
-        <span class="tag ${stCls} st">${esc(t.status || "")}</span></div>
-      ${tot ? `<div class="prog ${done === tot ? "done" : ""}"><i style="width:${pct}%"></i></div>` : ""}
-      <div class="steps">${tot ? `路线 ${done}/${tot} · ` : ""}步骤 ${t.steps || 0}</div>
-      ${steer ? `<div class="steer-chip" title="${esc(steer.rationale || "")}">灵枢（${esc(steerStatus || "待接收")}）：${esc(steer.hint || "")}</div>` : ""}
-    </div>`;
-  };
-
-  // 先收集节点和来源边，全部就绪后统一计算横向层级。
-  const depthIndex = new Map(nodes.map(n => [n.node_id, 0]));
-  const ORPHAN = "__orphan__";
-  if (orphans.length) {
-    depthIndex.set(ORPHAN, 0);
-  }
-  // 路由分支层：每个任务的路线作为子分支节点挂在其后（推理摘要并入分支）
-  const routeMeta = new Map();
-  const digestFor = agentType => {
-    for (const [k, v] of S.think) {
-      if (String(k).replace(/-[0-9a-f]{8,}$/i, "").replace(/-/g, "_") === agentType)
-        return (v.tail || "").replace(/\s+/g, " ").slice(-150);
-    }
-    return "";
-  };
-  const routesAll = [];
-  const routeSeen = new Map();
-  [...nodes, ...(orphans.length ? [{node_id: ORPHAN, task_ids: orphans.map(t => t.task_id)}] : [])].forEach(n => {
-    cardsOf(n).forEach(t => {
-      ((t && t.routes) || []).forEach(r => {
-        const key = JSON.stringify([n.node_id, t.task_id, r.route_id || r.name || ""]);
-        const prev = routeSeen.get(key);
-        if (prev) {
-          prev.status = prev.status === "done" ? "done" : r.status;
-          prev.progress = Math.max(prev.progress || 0, r.progress || 0);
-          if (r.note) prev.note = r.note;
-        } else {
-          const item = { parent: n.node_id, agent: t.agent_type,
-                         task_id: t.task_id, route_id: r.route_id,
-                         name: r.name, status: r.status,
-                         progress: r.progress, note: r.note };
-          routeSeen.set(key, item);
-          routesAll.push(item);
-        }
-      });
-    });
-  });
-  if (routesAll.length) {
-    routesAll.forEach(r => {
-      const id = `__route_${JSON.stringify([r.parent, r.task_id, r.route_id || r.name || ""])}`;
-      depthIndex.set(id, 0);
-      routeMeta.set(id, r);
-      nodes.push({ node_id: id, title: r.name || "路线",
-                   tactic: `${Math.round((r.progress || 0) * 100)}%`,
-                   status: r.status === "running" ? "running" : r.status,
-                   depends_on: [] });
-    });
-  }
-
-  // 发现优先连接到来源路线；路线不在图上时只接受唯一的任务或轮次来源。
-  const findings = (S.state && S.state.findings) || [];
-  // 展示上限：防画布刷屏；被折叠的数量写进图例，台账仍在发现组详情
-  const uniqAssets = [...new Map(
-    findings.filter(f => f.type === "asset")
-            .map(f => [String(f.url || f.text || ""), f])).values()];
-  const dispFindings = [
-    ...uniqAssets.slice(-12),
-    ...findings.filter(f => f.type === "note").slice(-10),
-    ...findings.filter(f => f.type === "flag").slice(-4),
-  ].sort((a, b) => (a.ts || 0) - (b.ts || 0));
-  const foldedFindings = Math.max(0, findings.length - dispFindings.length);
-  const uniqueRoute = candidates => candidates.length === 1 ? candidates[0][0] : "";
-  const producerOf = f => {
-    if (f.parent_finding_id) {
-      const index = dispFindings.findIndex(x => x.finding_id === f.parent_finding_id);
-      if (index >= 0) return FNODE(index);
-    }
-    const candidates = [...routeMeta].filter(([, r]) =>
-      (!f.task_id || r.task_id === f.task_id) &&
-      (!f.parent_dag_node || r.parent === f.parent_dag_node) &&
-      (!f.agent || r.agent === f.agent) &&
-      (f.route_id ? r.route_id === f.route_id : f.route && r.name === f.route));
-    const route = uniqueRoute(candidates);
-    if (route) return route;
-    if (f.task_id) {
-      const owners = nodes.filter(n => cardsOf(n).some(t => t.task_id === f.task_id));
-      if (owners.length === 1) return owners[0].node_id;
-      if (orphans.some(t => t.task_id === f.task_id)) return ORPHAN;
-    }
-    if (f.parent_dag_node && depthIndex.has(f.parent_dag_node)) return f.parent_dag_node;
-    // 旧记录只有轮次时，必须唯一匹配，不能随意挂到同轮其他任务。
-    const owners = nodes.filter(n => n.round_created === f.round && f.round != null);
-    return owners.length === 1 ? owners[0].node_id : "";
-  };
-  const FNODE = i => `__finding_${dispFindings[i].finding_id || JSON.stringify([dispFindings[i].task_id, dispFindings[i].agent, dispFindings[i].route, dispFindings[i].type, dispFindings[i].url, dispFindings[i].text, dispFindings[i].ts])}`;
-  if (dispFindings.length) {
-    dispFindings.forEach((f, i) => {
-      const id = FNODE(i);
-      depthIndex.set(id, 0);
-      const kind = ({ note: "笔记", flag: "Flag", asset: "入口" })[f.type]
-        || f.type || "发现";
-      nodes.push({ node_id: id,
-                   title: String(f.url || f.text || "").slice(0, 90),
-                   tactic: f.round ? `${kind} · R${f.round}` : kind,
-                   status: f.type === "flag" ? "done" : "running",
-                   depends_on: [] });
-    });
-  }
-  // 过程投影与调度 DAG 分层：观察/产物是独立节点，随后进入下一步上下文。
-  const process = S.state.topology?.process || {nodes:[],edges:[]};
-  const processMeta = new Map((process.nodes || []).map(n=>[n.id,n]));
-  const processEdges = new Map();
-  const processKinds = {step:"执行步骤",observation:"工具观察",finding:"发现记录",artifact:"输出产物"};
-  for(const p of processMeta.values()) {
-    depthIndex.set(p.id,0);
-    const dependencies=(process.edges || []).filter(e=>e.target === p.id && processMeta.has(e.source));
-    let parent="";
-    if(!dependencies.length) {
-      const candidates=[...routeMeta].filter(([,r])=>r.task_id === p.task_id && r.route_id === p.route_id);
-      if(candidates.length === 1) parent=candidates[0][0];
-    }
-    nodes.push({node_id:p.id,title:p.kind === "step" && p.body ? p.body.replace(/\s+/g," ").slice(0,90) : p.title,
-      tactic:processKinds[p.kind] || "执行记录",status:p.status,
-      depends_on:dependencies.length ? dependencies.map(e=>e.source) : parent ? [parent] : []});
-    for(const e of dependencies) processEdges.set(JSON.stringify([e.source,e.target]),e.kind);
-  }
-  S.topoProcess=processMeta;
-  const ids = [...depthIndex.keys()];
-  if (!ids.length) {
-    box.innerHTML = `<div class="empty-note">等待灵枢规划——任务拓扑将在此实时展开</div>`;
-    renderApprovals();
-    renderQuestions();
-    return;
-  }
-  const nodeOf = new Map(nodes.map(n => [n.node_id, n]));
-  const preds = new Map(ids.map(id => [id, []])), succs = new Map(ids.map(id => [id, []]));
-  for (const n of nodes) {
-    if (!depthIndex.has(n.node_id)) continue;
-    for (const dep of (n.depends_on || [])) {
-      if (!depthIndex.has(dep)) continue;
-      preds.get(n.node_id).push(dep);
-      succs.get(dep).push(n.node_id);
-    }
-  }
-  // 路由分支连线：路线节点 ← 产生它的任务节点
-  routesAll.forEach(r => {
-    const id = `__route_${JSON.stringify([r.parent, r.task_id, r.route_id || r.name || ""])}`;
-    if (depthIndex.has(r.parent)) {
-      preds.get(id).push(r.parent);
-      succs.get(r.parent).push(id);
-    }
-  });
-  // 只按已知出处连线；未知出处的旧发现作为独立根节点保留。
-  dispFindings.forEach((f, i) => {
-    const src = producerOf(f), id = FNODE(i);
-    if (src && src !== id && depthIndex.has(src)) {
-      preds.get(id).push(src);
-      succs.get(src).push(id);
-    }
-  });
-  const graph = TopologyLayout.layers(ids, preds);
-  const layerIds = graph.columns;
-  graph.depth.forEach((d, id) => depthIndex.set(id, d));
-  topoReorder(layerIds, preds, succs);
-
-  const expanded = S.topoExpand || {};
-  const cardHtml = n => {
-    if (String(n.node_id).startsWith("__route_")) {
-      const r = routeMeta.get(n.node_id) || {};
-      const pct = Math.round((r.progress || 0) * 100);
-      const st = nodeStatus(r.status);
-      const digest = digestFor(r.agent);
-      const isExp = expanded[n.node_id];
-      return `<div class="tnode bnode" data-node="${esc(n.node_id)}" style="visibility:hidden">
-        <div class="tact"><span class="dot ${st}"></span><b title="${esc(r.name || "")}">${esc(agentName(r.agent))} · ${esc(r.name || "")}</b>
-          <span class="tac">${pct}%</span></div>
-        <div class="prog ${pct === 100 ? "done" : ""}"><i style="width:${pct}%"></i></div>
-        ${r.note ? `<div class="rt-note">${esc(isExp ? r.note : (r.note || "").slice(0, 120))}</div>` : ""}
-        ${digest ? `<div class="mind-digest">${esc(digest)}</div>` : ""}
-      </div>`;
-    }
-    const st = nodeStatus(n.status);
-    return `<div class="tnode ${st === "active" ? "active" : ""}" data-node="${esc(n.node_id)}"
-      style="visibility:hidden">
-      <div class="tact"><span class="dot ${st}"></span><b title="${esc(n.title || n.tactic)}">${esc(n.title || n.tactic)}</b>
-        <span class="tac" title="${esc(n.tactic || "")}">${esc(n.tactic || "")}</span></div>
-      <div class="tcards">${cardsOf(n).map(taskCard).join("")}</div></div>`;
-  };
-  const orphanCard = `<div class="tnode" data-node="${ORPHAN}" style="visibility:hidden">
-      <div class="tact"><span class="dot ${running ? "active" : "done"}"></span><b>下发任务</b></div>
-      <div class="tcards">${orphans.map(taskCard).join("")}</div></div>`;
-  const steerItems = [...Object.entries(ring.steering || {}),
-    ...Object.values(ring.task_steering || {}).map(v => [v.agent, v])];
-  const opinions = (S.state && S.state.user_opinions) || [];
-  const latestOp = opinions.length ? opinions[opinions.length - 1] : null;
-  const replies = (S.state && S.state.master_replies) || [];
-  const latestReply = replies.length ? replies[replies.length - 1] : null;
-  const unodeHtml = (latestOp || latestReply) ? `<div class="unode" id="topo-unode" style="visibility:hidden">
-      <b>你<span class="utag">意见 ${opinions.length}</span></b>
-      ${latestOp ? `<div class="txt">${esc(latestOp.text || "")}</div>` : ""}
-      ${latestReply ? `<div class="reply-txt" title="${esc(latestReply.text || "")}">灵枢：${esc(latestReply.text || "")}</div>` : ""}
-      <small>消息直达灵枢并转达执行中的智能体</small></div>` : "";
-
-  // 节点详情的数据源随图一并留存（点击路线/发现/孤儿节点时取用）
-  S.topoRouteMeta = routeMeta;
-  S.topoFindings = new Map(dispFindings.map((f, i) => [FNODE(i), f]));
-  S.topoOrphans = orphans;
-  box.innerHTML = `<div id="topo-stage">
-      <svg class="edges"></svg>
-      ${unodeHtml}
-      <div class="hub ${running ? "live" : ""}" id="topo-hub" style="visibility:hidden"><b>灵枢</b><small>主 Agent · 集中决策</small></div>
-      ${ids.filter(id => id !== ORPHAN).map(id => cardHtml(nodeOf.get(id))).join("")}
-      ${orphans.length ? orphanCard : ""}
-    </div>
-    <div class="topo-tools">
-      <button id="topo-zin" title="放大">＋</button>
-      <button id="topo-zout" title="缩小">－</button>
-      <button id="topo-fit" title="适应窗口">⤢</button>
-    </div>
-    <div class="topo-hint">滚轮缩放 · 拖拽平移 · 双击复位 · 点击节点看详情${processMeta.size ? ` · ${processMeta.size} 个过程节点（实线：产出，虚线：进入后续上下文或执行先后）` : ""}${process.has_more ? " · 展示最近过程，更早记录见会话历史" : ""}${foldedFindings > 0 ? ` · 黑板 ${findings.length} 条发现（展示最近 ${dispFindings.length} 条）` : ""}</div>
-    <div class="topo-detail" id="topo-detail" hidden>
-      <div class="td-head"><b id="td-title"></b>
-        <button class="td-close" id="td-close">×</button></div>
-      <div class="td-body" id="td-body"></div>
-    </div>`;
-  renderApprovals();
-  renderQuestions();
-
-  // ---- 先隐藏渲染量高，再按层堆叠定位（节点高度随路线卡片数变化）
-  const stage = box.querySelector("#topo-stage");
-  const hubEl = box.querySelector("#topo-hub");
-  const unodeEl = box.querySelector("#topo-unode");
-  const elOf = new Map(ids.map(id =>
-    [id, stage.querySelector(`[data-node="${CSS.escape(id)}"]`)]));
-  const heights = new Map(ids.map(id => [id, elOf.get(id).offsetHeight]));
-  const hubH = hubEl.offsetHeight, hubW = hubEl.offsetWidth;
-  const unW = unodeEl ? unodeEl.offsetWidth : 0;
-  const unH = unodeEl ? unodeEl.offsetHeight : 0;
-  const unX = TOPO_GEO.PAD;
-  const hubXpos = unX + unW + (unodeEl ? 26 : 0);   // 意见节点占灵枢左侧
-  const layout = TopologyLayout.positions(layerIds, preds, heights, TOPO_GEO.GAP_Y, TOPO_GEO.PAD);
-  const totalH = layout.height - TOPO_GEO.PAD * 2;
-  const centerY = TOPO_GEO.PAD + totalH / 2;
-  const xOf = new Map(), yOf = layout.y;
-  let cx = hubXpos + hubW + TOPO_GEO.HUB_GAP;
-  layerIds.forEach(arr => {
-    for (const id of arr) xOf.set(id, cx);
-    cx += TOPO_GEO.NODE_W + TOPO_GEO.GAP_X;
-  });
-  const stageW = cx - TOPO_GEO.GAP_X + TOPO_GEO.PAD;
-  const stageH = totalH + TOPO_GEO.PAD * 2;
-  for (const id of ids) {
-    const el = elOf.get(id);
-    el.style.transform = `translate(${xOf.get(id)}px, ${yOf.get(id)}px)`;
-    el.style.visibility = "";
-  }
-  hubEl.style.transform =
-    `translate(${hubXpos}px, ${centerY - hubH / 2}px)`;
-  if (unodeEl) {
-    unodeEl.style.transform = `translate(${unX}px, ${centerY - unH / 2}px)`;
-    unodeEl.style.visibility = "";
-  }
-  hubEl.style.visibility = "";
-  stage.style.width = stageW + "px";
-  stage.style.height = stageH + "px";
-
-  // ---- 连线：源右缘 → 目标左缘，水平三次贝塞尔（缩放随画布同步）
-  const svg = stage.querySelector("svg.edges");
-  svg.setAttribute("width", stageW);
-  svg.setAttribute("height", stageH);
-  svg.setAttribute("viewBox", `0 0 ${stageW} ${stageH}`);
-  const hubX = hubXpos + hubW, hubY = centerY;
-  const link = (x1, y1, x2, y2, cls, title = "") => {
-    const dx = Math.max(30, (x2 - x1) * 0.42);
-    return `<path class="${cls}" d="M ${x1} ${y1} C ${x1 + dx} ${y1}, ${x2 - dx} ${y2}, ${x2} ${y2}">${title ? `<title>${esc(title)}</title>` : ""}</path>`;
-  };
-  const midY = id => yOf.get(id) + heights.get(id) / 2;
-  let paths = "";
-  if (unodeEl) {
-    // 你 → 灵枢：意见流入决策环
-    paths += link(unX + unW, hubY, hubXpos, hubY, "user-edge");
-  }
-  for (const n of nodes) {
-    const id = n.node_id;
-    if (!xOf.has(id)) continue;
-    const st = nodeStatus(n.status);
-    const deps = preds.get(id) || [];
-    if (!deps.length) paths += link(hubX, hubY, xOf.get(id), midY(id), st);
-    for (const d of deps) {
-      const kind=processEdges.get(JSON.stringify([d,id]));
-      paths += link(xOf.get(d) + TOPO_GEO.NODE_W, midY(d), xOf.get(id), midY(id),
-        kind === "context" || kind === "sequence" ? "context-edge" : st,
-        kind === "context" ? "该观察或产物已在后续步骤前产生；进入后续上下文，不代表已验证因果" :
-          kind === "sequence" ? "同一路线的执行先后" : kind === "produces" ? "此步骤产生的观察或产物" : "");
-    }
-  }
-  if (orphans.length) {
-    paths += link(hubX, hubY, xOf.get(ORPHAN), midY(ORPHAN), running ? "active" : "done");
-  }
-  // 督导连线：灵枢 → 建议所指向的角色任务节点（悬停看完整建议）
-  for (const [agent, v] of steerItems) {
-    const el = v.task_id
-      ? stage.querySelector(`.tcard[data-task="${CSS.escape(v.task_id)}"]`)
-      : stage.querySelector(`.tcard[data-agent="${CSS.escape(agent)}"]`);
-    const tn = el && el.closest("[data-node]");
-    const nid = tn && tn.dataset.node;
-    if (nid && xOf.has(nid)) {
-      paths += link(hubX, hubY, xOf.get(nid), midY(nid), "steer-edge",
-                    `灵枢 → ${agentName(agent)}：${v.hint || ""}`);
-    }
-  }
-  svg.innerHTML = paths;
-
-  // ---- 视图：首次进入自动适应，此后保留用户平移/缩放
-  if (!S.topoView) {
-    S.topoView = topoFit(box, stageW, stageH);
-    if(processMeta.size && S.topoView.s<0.35) {
-      const latest=[...processMeta.keys()].at(-1);
-      S.topoView={s:0.65,tx:box.clientWidth/2-((xOf.get(latest) || 0)+TOPO_GEO.NODE_W/2)*0.65,
-        ty:box.clientHeight/2-midY(latest)*0.65};
-    }
-  } else if(S.topoViewport) {
-    S.topoView.tx+=(box.clientWidth-S.topoViewport.width)/2;
-    S.topoView.ty+=(box.clientHeight-S.topoViewport.height)/2;
-  }
-  S.topoViewport={width:box.clientWidth,height:box.clientHeight};
-  topoApplyView(box, S.topoView);
-  box.querySelector("#topo-zin").onclick = () => topoZoom(box, 1.25);
-  box.querySelector("#topo-zout").onclick = () => topoZoom(box, 0.8);
-  box.querySelector("#topo-fit").onclick = () => {
-    S.topoView = topoFit(box, stageW, stageH);
-    topoApplyView(box, S.topoView);
-  };
+  const routes = typeof TaskTrace !== "undefined" ? TaskTrace.routeSnapshot() : [];
+  SessionTopology.render(S.state, routes);
+  renderTopoActivity(); renderApprovals(); renderQuestions();
 }
 
-/* 画布手势：滚轮以指针为中心缩放、按住拖拽平移、双击复位（绑定一次） */
-(function bindTopoGestures() {
-  const box = $("#topo");
-  box.addEventListener("wheel", (ev) => {
-    if (!S.topoView || S.tab !== "topo") return;
-    ev.preventDefault();
-    const r = box.getBoundingClientRect();
-    const mx = ev.clientX - r.left, my = ev.clientY - r.top, v = S.topoView;
-    const ns = Math.min(2.4, Math.max(0.3, v.s * Math.exp(-ev.deltaY * 0.0015)));
-    v.tx = mx - (mx - v.tx) * (ns / v.s);
-    v.ty = my - (my - v.ty) * (ns / v.s);
-    v.s = ns;
-    topoApplyView(box, v);
-  }, { passive: false });
-  let drag = null;
-  let downPos = null;
-  let downTarget = null;
-  box.addEventListener("pointerdown", (ev) => {
-    if (ev.button !== 0 || !S.topoView || ev.target.closest("button, input, textarea, select, a")) return;
-    ev.preventDefault();
-    downPos = { x: ev.clientX, y: ev.clientY };
-    downTarget = ev.target.closest("[data-node]");
-    drag = { x: ev.clientX, y: ev.clientY, tx: S.topoView.tx, ty: S.topoView.ty };
-    box.setPointerCapture(ev.pointerId);
-    box.classList.add("grabbing");
-  });
-  box.addEventListener("pointermove", (ev) => {
-    if (!drag) return;
-    S.topoView.tx = drag.tx + ev.clientX - drag.x;
-    S.topoView.ty = drag.ty + ev.clientY - drag.y;
-    topoApplyView(box, S.topoView);
-  });
-  const stop = (ev) => {
-    if (downPos && ev && ev.type === "pointerup") {
-      const dx = Math.abs(ev.clientX - downPos.x);
-      const dy = Math.abs(ev.clientY - downPos.y);
-      if (dx < 6 && dy < 6 && downTarget) {
-        const id = downTarget.dataset.node;
-        if (id) showNodeDetail(id, downTarget);
-      }
-    }
-    drag = null; downPos = null; downTarget = null;
-    box.classList.remove("grabbing");
-  };
-  box.addEventListener("pointerup", stop);
-  box.addEventListener("pointercancel", stop);
-  box.addEventListener("dblclick", (ev) => {
-    if (ev.target.closest(".topo-tools")) return;
-    S.topoView = null;
-    drawTopo();
-  });
-})();
+function renderAssetLibrary() {
+  if(!S.state)return;
+  const routes=typeof TaskTrace!=="undefined" ? TaskTrace.routeSnapshot() : [];
+  SessionTopology.render(S.state,routes,true);
+}
+
+function renderOpportunities() {
+  const root=$("#tab-opportunities"),pool=S.state?.testing_opportunities || {};
+  const scorecard=S.state?.expert_scorecard || {};
+  const rows=pool.prioritized || [],yieldData=pool.action_yield || {},portfolio=pool.portfolio_review || {};
+  const signature=JSON.stringify([S.cur,rows,pool.stalled,yieldData,portfolio,scorecard]);
+  if(root._content===signature)return;root._content=signature;
+  const kind={vulnerability_hypothesis:I18n.t("漏洞假设"),investigation_lead:I18n.t("调查线索")};
+  const work={independent_verification:I18n.t("独立复核"),minimal_hypothesis_test:I18n.t("最小假设实验"),resolve_blocker:I18n.t("消除阻塞"),authenticity_disambiguation:I18n.t("真实性消歧"),evidence_followup:I18n.t("证据跟进")};
+  const direction={productive:I18n.t("当前有产出"),blocked:I18n.t("等待可解除条件"),diminishing:I18n.t("边际收益下降"),exhausted:I18n.t("当前方向已穷尽")};
+  const capabilityLabel={
+    TA0043:I18n.t("斥候 · 事实补证"),"JS-REVERSE":I18n.t("析微 · 脚本与接口"),
+    TA0001:I18n.t("破壁 · Web 边界测试"),TA0007:I18n.t("听风 · 服务测绘"),
+    "HOST-VULN":I18n.t("贯甲 · 服务审计"),"BUSINESS-CONTEXT":I18n.t("知行 · 业务边界"),
+    "SCANNER-CONTROL":I18n.t("探微 · 定向扫描"),"VERIFICATION-QUEUE":I18n.t("鉴真 · 独立复核")};
+  const effective=yieldData.effective_action_rate==null?I18n.t("暂无样本"):`${Math.round(yieldData.effective_action_rate*100)}%`;
+  const concentration=portfolio.target_concentration || {};
+  root.innerHTML=I18n.html`<section class="opportunity-dashboard">
+    <header class="opportunity-head"><div><h3>行动机会</h3><p>按当前证据的信息收益、执行就绪度与重复成本排序；分数不是漏洞结论。</p></div>
+      <div class="opportunity-metrics"><span><b>${effective}</b>有效动作</span><span><b>${Number(yieldData.empty_completion_count||0)}</b>空完成</span><span><b>${Number(yieldData.tool_calls||0)}</b>工具调用</span><span><b>${Number(yieldData.detection_signals||0)}</b>拦截信号</span><span><b>${Number((pool.stalled||[]).length)}</b>停滞机会</span></div></header>
+    ${(portfolio.low_yield_capabilities||[]).length || concentration.over_concentrated?`<aside class="opportunity-review"><b>攻击面复盘</b>${concentration.over_concentrated?`<span>行动过度集中于 ${esc(concentration.target||"单一目标")}（${Math.round(Number(concentration.share||0)*100)}%）</span>`:""}${(portfolio.low_yield_capabilities||[]).length?`<span>连续低收益能力：${portfolio.low_yield_capabilities.map(item=>esc(item.capability||"")).join("、")}</span>`:""}</aside>`:""}
+    ${(scorecard.calibration||[]).length?`<aside class="opportunity-review"><b>专家校准</b>${scorecard.calibration.slice(0,4).map(item=>`<span>${esc(item)}</span>`).join("")}</aside>`:""}
+    ${rows.length?`<div class="grid-cards">${rows.slice(0,12).map((item,index)=>`<article class="card opportunity-card ${item.stalled?"stalled":""}">
+      <div class="h"><span class="opportunity-rank">#${index+1}</span><b>${esc(item.subject||item.claim||I18n.t("待评估机会"))}</b><span class="tag ${item.priority_score>=70?"green":item.priority_score<35?"":"gold"}">${Number(item.priority_score||0)}</span></div>
+      <div class="opportunity-meta"><span>${esc(kind[item.kind]||item.kind||"")}</span><span>${esc(work[item.recommended_work]||item.recommended_work||"")}</span><span class="tag ${item.direction_state==="productive"?"green":item.direction_state==="diminishing"?"gold":""}">${esc(direction[item.direction_state]||item.direction_state||"")}</span><span>边际收益 ${Math.round(Number(item.marginal_yield||0)*100)}%</span></div>
+      ${item.expected_information?I18n.html`<p><b>预期新增：</b>${esc(item.expected_information)}</p>`:""}
+      ${item.decision_impact?I18n.html`<p><b>决策影响：</b>${esc(item.decision_impact)}</p>`:""}
+      ${item.next_minimal_experiment?I18n.html`<p><b>最小实验：</b>${esc(item.next_minimal_experiment)}</p>`:""}
+      ${item.stop_condition?I18n.html`<p class="muted"><b>停止条件：</b>${esc(item.stop_condition)}</p>`:""}
+      ${(item.blockers||[]).length?I18n.html`<div class="opportunity-blockers"><b>当前阻塞：</b>${item.blockers.slice(0,3).map(blocker=>`<p>${esc(blocker.description||blocker.prerequisite||blocker.type||"")}${blocker.user_resolvable?" · 可由用户补充条件":""}</p>`).join("")}</div>`:""}
+      ${item.pivot_recommendation && ["blocked","diminishing","exhausted"].includes(item.direction_state)?I18n.html`<p class="opportunity-pivot"><b>${item.direction_state==="blocked"?I18n.t("解除阻塞："):item.direction_state==="exhausted"?I18n.t("收口建议："):I18n.t("换路建议：")}</b>${esc(item.pivot_recommendation)}</p>`:""}
+      ${(item.capability_candidates||[]).length?I18n.html`<div class="opportunity-capabilities"><b>能力候选：</b>${item.capability_candidates.map(c=>`<span class="tag ${c.preferred?"green":""}" title="${esc(c.basis||"")}">${esc(capabilityLabel[c.tactic]||c.capability||c.tactic||"")}${c.yield?.attempts?` · ${Math.round(Number(c.yield.marginal_yield||0)*100)}%`:""}</span>`).join("")}</div>`:""}
+      <details><summary>优先级依据</summary><ul>${(item.priority_components||[]).map(c=>`<li><b>${Number(c.points)>0?"+":""}${Number(c.points||0)}</b> ${esc(c.basis||c.name||"")}</li>`).join("")}</ul><code>${esc(item.opportunity_ref||"")}</code></details>
+    </article>`).join("")}</div>`:I18n.html`<div class="empty-note">当前还没有形成可排序的行动机会。</div>`}
+  </section>`;
+}
+
+function topoFocus(id) { SessionTopology.focus(id); }
+
+function topoCollection(group) {
+  S.topoQueries ||= {}; S.topoPages ||= {};
+  const query = S.topoQueries[group.id] || "";
+  const items = group.members.filter(n => `${n.title} ${n.body || ""}`.toLocaleLowerCase().includes(query.toLocaleLowerCase()));
+  const page = Math.min(S.topoPages[group.id] || 0, Math.max(0, Math.ceil(items.length / 20) - 1));
+  S.topoPages[group.id] = page;
+  const rows = items.slice(page * 20, page * 20 + 20);
+  return I18n.html`<label class="topo-search-label">筛选资料<input data-topo-search type="search" value="${esc(query)}" placeholder="输入地址、标题或记录内容"></label>
+    <div class="topo-collection-list">${rows.map(n => `<button data-topo-record="${esc(n.id)}"><b>${esc(n.title)}</b><small>${esc(n.actor || I18n.t("原始记录"))} · ${esc(n.record_id || "")}</small></button>`).join("") || I18n.html('<p class="td-note">没有匹配的资料</p>')}</div>
+    <div class="topo-pagination"><button data-topo-page="-1" ${page === 0 ? "disabled" : ""}>上一页</button><span>${items.length ? page*20+1 : 0}–${Math.min((page+1)*20, items.length)} / ${items.length}</span><button data-topo-page="1" ${(page+1)*20 >= items.length ? "disabled" : ""}>下一页</button></div>`;
+}
+
+function topoRecordDetail(p) {
+  if(p.projection || p.semantic_group) return SessionTopology.projectionDetail(p)
+    + (p.record_id && p.body ? I18n.html`<details class="topo-original"><summary>原探索记录</summary><pre>${esc(p.body)}</pre></details>` : "");
+  if(p.kind==="exploration") {
+    const states={open:I18n.t("待探索"),running:I18n.t("探索中"),blocked:I18n.t("受阻"),supported:I18n.t("有支持"),refuted:I18n.t("已反驳"),exhausted:I18n.t("已走不通"),closed:I18n.t("已结束")};
+    const relations=[...(S.topoGraph?.edges || []),...(S.topoGraph?.links || [])].filter(e=>e.source===p.id || e.target===p.id);
+    const ids=[...new Set(relations.map(e=>e.source===p.id ? e.target : e.source))];
+    return I18n.html`<p class="td-note">${esc(states[p.state] || p.state)} · 探索记录，状态由 Agent 维护。</p>
+      <p class="td-note topo-fact-text">${esc(p.title)}</p>${p.reason ? I18n.html`<p class="td-note">原因：${esc(p.reason)}</p>` : ""}
+      <div class="topo-related"><b>资产、父探索与产出</b>${ids.map(id=>`<button data-topo-record="${esc(id)}">${esc(S.topoProcess.get(id)?.title || id)}</button>`).join("") || I18n.html('<p>尚无显式关联</p>')}</div>
+      <details class="topo-original"><summary>完整探索记录</summary><pre>${esc(p.body || "")}</pre></details>`;
+  }
+  if(p.kind==="milestone") return I18n.html`<p class="td-note">路线推进说明；属于 Agent 当时的观察与计划，不自动代表已验证事实。</p><p class="td-note topo-rule-content">${esc(p.body)}</p>`;
+  if(p.kind==="rule") return I18n.html('<p class="td-note topo-rule-content">正在读取原文…</p><button class="btn sm" data-rules-more hidden>继续读取原文</button>');
+  const source = p.provenance?.producer || {};
+  let payload={};try{payload=JSON.parse(p.body || '{}');}catch{/* 历史记录仍按原文显示。 */}
+  const attrs=payload.attrs || {},fingerprint=payload.fingerprint || {};
+  const scriptIntel=p.node_type==='script' ? I18n.html`<section class="topo-related"><b>脚本情报</b>
+    <p class="td-note"><code>SHA256 ${esc(fingerprint.sha256 || I18n.t('未记录'))}</code></p>
+    <p class="td-note">静态接口 ${Number(attrs.route_count || (attrs.routes || []).length)} 条 · 秘密引用 ${(attrs.secrets || []).length} 条 · ${esc(attrs.verification_status || I18n.t('待核实'))}</p>
+    ${(attrs.routes || []).length ? `<details><summary>静态接口线索</summary><pre>${esc(attrs.routes.join('\n'))}</pre></details>` : ''}
+    ${[...(attrs.parameters || []),...(attrs.config_keys || [])].length ? `<details><summary>参数与配置键</summary><pre>${esc([...(attrs.parameters || []),...(attrs.config_keys || [])].join('\n'))}</pre></details>` : ''}
+    ${(attrs.algorithm_calls || []).length ? `<details><summary>算法调用证据</summary><pre>${esc(attrs.algorithm_calls.join('\n'))}</pre></details>` : ''}
+    ${attrs.analysis && Object.keys(attrs.analysis).length ? `<details><summary>逆向分析</summary><pre>${esc(JSON.stringify(attrs.analysis,null,2))}</pre></details>` : ''}
+    ${attrs.script_ref ? `<p class="td-note">脱敏源码引用：<code>${esc(attrs.script_ref)}</code> · Agent 可分页读取</p>` : ''}
+    ${attrs.source_map_url ? `<p class="td-note">Source map：${esc(attrs.source_map_url)}${attrs.source_index != null ? ` · #${esc(String(attrs.source_index))}` : ''}</p>` : ''}
+    ${(attrs.secrets || []).length ? `<div>${attrs.secrets.map(secret=>`<p class="td-note"><code>${esc(secret.secret_ref)}</code> · ${esc(secret.kind)} · ${esc(secret.status || I18n.t('待核实'))} <button type="button" class="btn sm" data-secret-ref="${esc(secret.secret_ref)}" data-secret-target="${esc(payload.value || p.title)}">查看明文（会记录）</button></p>`).join('')}</div>` : ''}
+  </section>` : '';
+  const origins = [source.agent_id || p.actor, source.tool_name, source.step_id].filter(Boolean);
+  const relations = [...(S.topoGraph?.edges || []),...(S.topoGraph?.links || []),...(S.topoGraph?.assets?.edges || [])].flatMap(e => e.references || [e]).filter(e => e.target === p.id || e.source === p.id
+    || p.relation && e.record_id === p.record_id);
+  const related = [...new Set(relations.flatMap(e => e.source === p.id ? [e.target] : e.target === p.id ? [e.source] : [e.source,e.target]))];
+  const collection = S.topoGraph?.groups.find(g => g.members.some(n => n.id === p.id));
+  const assetRelations = [...(S.topoProcess?.values() || [])].filter(n=>n.relation &&
+    [n.source_ref,n.target_ref].includes(`${p.layer}:${p.record_id}`));
+  const isAsset=S.topoGraph?.assets?.nodes.some(n=>n.id===p.id);
+  return I18n.html`${collection ? I18n.html`<button class="topo-back" data-topo-record="${esc(collection.id)}">← 返回${esc(collection.title)}</button>` : ""}<div class="td-agent">${esc(origins.join(" · ") || I18n.t("未记录来源"))}</div>
+    <p class="td-note topo-fact-text">${esc(p.title)}</p>
+    ${p.report ? FileCards.card({rel:p.report.path,name:p.report.name,size:p.report.size}) : ""}
+    ${scriptIntel}
+    ${isAsset && p.layer && p.record_id ? `<section class="asset-test-summary" data-asset-tests-summary><h4>${I18n.t('关联测试记录')}</h4><p class="muted">${I18n.t('正在读取…')}</p></section>` : ''}
+    ${assetRelations.length ? I18n.html`<div class="topo-related"><b>资产关系与依据</b>${assetRelations.map(n=>`<button data-topo-record="${esc(n.id)}">${esc(n.title)}</button>`).join("")}</div>` : ''}
+    ${related.length ? I18n.html`<div class="topo-related"><b>明确引用的关联记录</b>${related.map(id => `<button data-topo-record="${esc(id)}">${esc(S.topoProcess?.get(id)?.title || id)}</button>`).join("")}</div>` : I18n.html('<p class="td-note">暂无明确的事实依赖关系。</p>')}
+    ${isAsset && p.layer && p.record_id ? `<button type="button" class="btn sm" data-archive-ref="${esc(p.layer+':'+p.record_id)}">${I18n.t('查看原始记录与版本')}</button>` : I18n.html`<details class="topo-original"><summary>查看完整记录与来源</summary><p class="td-note">${esc(p.layer || "")} · ${esc(p.record_id || "")} · v${esc(String(p.version || ""))}</p><pre>${esc(p.body || I18n.t("规则原文保存在黑板，按引用读取。"))}</pre></details>`}`;
+}
+
 window.addEventListener("resize", () => { if (S.tab === "topo" && S.state) drawTopo(); });
 
 /* ================= 任务/漏洞/Flag ================= */
@@ -1061,10 +751,13 @@ function evLine(e) {
 }
 
 function showNodeDetail(nodeId) {
-  const panel = $("#topo-detail");
+  if(S.tab==='topo' && S.topoGraph?.assets?.nodes.some(n=>n.id===nodeId)) {
+    SessionTopology.openAssets(nodeId);return;
+  }
+  const panel = SessionTopology.detailPanel();
   if (!panel) return;
   if (panel.hidden === false && panel._curId === nodeId) {
-    panel.hidden = true; panel._curId = null; return;
+    panel.hidden = true; panel._curId = null; topoFocus(null); return;
   }
   panel._curId = nodeId;
   panel.hidden = false;
@@ -1085,37 +778,35 @@ function showNodeDetail(nodeId) {
     const p=S.topoProcess?.get(nodeId);
     if(p) {
       title=p.title;
-      body=`<div class="td-task"><div class="td-agent">第 ${esc(String(p.turn))} 步 · ${esc(p.route || p.route_id)} · ${esc(p.task_id)}</div>
-        <div class="td-note" style="white-space:pre-wrap">${esc(p.body || "尚无公开进展说明")}</div>
-        <div class="td-empty">工具观察仅记录返回；发现记录由 Agent 提出，均保留审计出处 #${esc(String(p.seq || ""))}。</div></div>`;
+      body = p.kind === "collection" ? topoCollection(p) : topoRecordDetail(p);
     }
   } else if (nodeId.startsWith("__route_")) {
     // 路线分支节点：执行现场全量呈现（agent / 状态 / 进度 / 最新笔记）
     const r = (S.topoRouteMeta || new Map()).get(nodeId);
     if (r) {
-      title = `${agentName(r.agent)} · ${r.name || "路线"}`;
+      title = `${agentName(r.agent)} · ${r.name || I18n.t("路线")}`;
       const pct = Math.round((r.progress || 0) * 100);
       body = `<div class="td-task">
         <div class="td-route-h"><b>${esc(r.status || "")}</b><span class="mono">${pct}%</span></div>
         <div class="prog ${pct === 100 ? "done" : ""}"><i style="width:${pct}%"></i></div>
         ${r.note ? `<div class="td-note">${esc(r.note)}</div>`
-                : '<div class="td-empty">路线尚无现场笔记</div>'}
+                : I18n.html('<div class="td-empty">路线尚无现场笔记</div>')}
       </div>`;
     }
   } else if (nodeId.startsWith("__finding_")) {
     // 发现节点：完整内容与出处（哪条路线/哪一轮写下——黑板记录直读）
     const f = (S.topoFindings || new Map()).get(nodeId);
     if (f) {
-      title = ({ note: "共享笔记", flag: "Flag", asset: "入口 / 资产" })[f.type] || "发现";
+      title = ({ note: I18n.t("共享笔记"), flag: "Flag", asset: I18n.t("入口 / 资产") })[f.type] || I18n.t("发现");
       const who = [f.agent && agentName(f.agent), f.route,
-                   f.round != null ? `第 ${f.round} 轮` : ""].filter(Boolean).join(" · ");
+                   f.round != null ? I18n.t`第 ${f.round} 轮` : ""].filter(Boolean).join(" · ");
       body = `<div class="td-task">
-        ${who ? `<div class="td-agent">出处：${esc(who)}</div>` : ""}
+        ${who ? I18n.html`<div class="td-agent">出处：${esc(who)}</div>` : ""}
         ${f.url ? `<div class="td-note" style="word-break:break-all">${esc(f.url)}</div>` : ""}
         <div class="td-note" style="white-space:pre-wrap">${esc(f.text || "")}</div></div>`;
     }
   } else if (nodeId === "__orphan__") {
-    title = "下发任务";
+    title = I18n.t("下发任务");
     const list = S.topoOrphans || [];
     body = list.map(taskDetail).join("");
   }
@@ -1126,109 +817,155 @@ function showNodeDetail(nodeId) {
     title = node?.title || nodeId;
     const tasks = (S.state?.topology?.tasks || []).filter(t => t.parent_dag_node === nodeId);
     body = tasks.length ? tasks.map(taskDetail).join("")
-                        : '<div class="td-empty">暂无任务数据</div>';
+                        : I18n.html('<div class="td-empty">暂无任务数据</div>');
   }
-  $("#td-title").textContent = title;
-  $("#td-body").innerHTML = body;
-  panel.querySelector("#td-close").onclick = () => { panel.hidden = true; };
+  panel.querySelector(".td-title").textContent = title;
+  panel.querySelector(".td-body").innerHTML = body;
+  topoFocus(nodeId);
+  const record=S.topoProcess?.get(nodeId);
+  if(record && typeof CoveragePage!=='undefined')CoveragePage.assetSummary(record,panel);
+  if(record?.kind==="rule") loadTopoRules(record);
+  panel.querySelector(".td-close").onclick = () => { panel.hidden = true; panel._curId = null; topoFocus(null); };
+  panel.querySelectorAll("[data-topo-record]").forEach(button => {
+    button.onclick = () => {panel._curId = null;showNodeDetail(button.dataset.topoRecord);};
+  });
+  if (typeof AssetSecretViewer !== "undefined") AssetSecretViewer.bind(panel);
+  panel.querySelectorAll('[data-archive-ref]').forEach(button=>button.onclick=()=>SessionArchive.openReference(button.dataset.archiveRef));
+  panel.querySelectorAll("[data-topo-page]").forEach(button => {
+    button.onclick = () => {S.topoPages[nodeId] += Number(button.dataset.topoPage);panel._curId=null;showNodeDetail(nodeId);};
+  });
+  const search = panel.querySelector("[data-topo-search]");
+  if (search) search.oninput = () => {
+    const position = search.selectionStart;
+    S.topoQueries[nodeId] = search.value; S.topoPages[nodeId] = 0;
+    panel._curId = null; showNodeDetail(nodeId);
+    const fresh = panel.querySelector("[data-topo-search]");fresh.focus();fresh.setSelectionRange(position, position);
+  };
 }
 
-let vulnPageSession = null, vulnOffset = 0, vulnRows = null, vulnLoading = false, vulnGeneration = 0;
-async function loadVulnPage(offset) {
+let vulnPageSession = null, vulnOffset = 0, vulnPage = null, vulnLoading = false, vulnGeneration = 0;
+let vulnSnapshot = null, vulnCategory = "", vulnConfirmedOnly = true, vulnError = "";
+function resetVulnPage(session) {
+  vulnPageSession = session;
+  vulnOffset = 0;
+  vulnPage = null;
+  vulnLoading = false;
+  vulnGeneration++;
+  vulnSnapshot = null;
+  vulnCategory = "";
+  vulnConfirmedOnly = true;
+  vulnError = "";
+}
+
+async function loadVulnPage(offset, category = vulnCategory, confirmedOnly = vulnConfirmedOnly) {
   const session = S.cur, version = ++vulnGeneration;
+  const params = new URLSearchParams({offset: String(offset), limit: "50"});
+  if (S.state.session?.mode === "src") {
+    if (category) params.set("category", category);
+    if (confirmedOnly) params.set("confirmed_only", "true");
+  }
   vulnLoading = true; renderVulns();
+  const active = () => S.cur === session && version === vulnGeneration;
   try {
-    const page = await api(`/api/sessions/${encodeURIComponent(session)}/vulnerabilities?offset=${offset}&limit=50`);
-    if (S.cur !== session || version !== vulnGeneration) return;
-    vulnOffset = offset; vulnRows = page.items;
-  } catch (error) { if (S.cur === session) toast(`漏洞读取失败：${error.message}`, true); }
-  finally { if (S.cur === session && version === vulnGeneration) {vulnLoading = false;renderVulns();} }
-}
-function renderVulns() {
-  if (vulnPageSession !== S.cur) {vulnPageSession=S.cur;vulnOffset=0;vulnRows=null;vulnLoading=false;vulnGeneration++;}
-  const vs = vulnOffset ? (vulnRows || []) : (S.state.vulns.items || []);
-  $("#tab-vulns").innerHTML = vs.length ? `<div class="grid-cards">${vs.map(v => {
-    const [sevCn, sevCls] = SEV_CN[v.severity] || [v.severity || "未定级", "blue"];
-    return `<div class="card vcard">
-      <div class="h"><b>${esc(v.title || v.vuln_type || "漏洞")}</b>
-        <span class="tag ${sevCls}">${sevCn}</span>
-        <span class="tag ${v.status === "accepted" ? "green" : ""}">${esc(({candidate:"待独立复测",verifying:"鉴真复测中",inconclusive:"证据不足 · 未收录",accepted:"确认收录",rejected_false_positive:"误报 · 不收录",rejected_compliance:"不符合规则 · 不收录"})[v.status] || v.status || "")}</span>
-        ${v.poc_verified ? `<span class="tag gold">PoC 已验证</span>` : ""}</div>
-      ${v.endpoint ? `<div class="ep">${esc(v.endpoint)}</div>` : ""}
-      ${v.verification?.reason ? `<p>${esc(v.verification.reason)}</p>` : ""}
-      ${v.verification?.rule_quote ? `<p class="muted">危害规则：${esc(v.verification.rule_quote)}</p>` : ""}
-      <div class="muted" style="font-size:11.5px">${esc(v.vuln_type || "")}${v.cvss_score != null ? " · CVSS " + v.cvss_score : ""} · ${esc(v.vuln_id || "")}</div>
-    </div>`; }).join("")}</div>`
-    : `<div class="empty-note">尚无漏洞记录</div>`;
-  const total = S.state.vulns.total ?? vs.length;
-  if (total > 50 || vulnOffset) {
-    $("#tab-vulns").insertAdjacentHTML("afterbegin", `<div class="vuln-pagination"><span>共 ${total} 条 · 当前 ${vulnOffset+1}–${vulnOffset+vs.length}</span><button class="btn sm" data-vuln-prev ${vulnLoading || !vulnOffset ? "disabled" : ""}>上一页</button><button class="btn sm" data-vuln-next ${vulnLoading || vulnOffset+vs.length>=total ? "disabled" : ""}>下一页</button><button class="btn sm" data-vuln-refresh ${vulnLoading ? "disabled" : ""}>${vulnLoading ? "读取中…" : "刷新当前页"}</button></div>`);
-    $("[data-vuln-prev]").onclick=()=>loadVulnPage(Math.max(0,vulnOffset-50));
-    $("[data-vuln-next]").onclick=()=>loadVulnPage(vulnOffset+50);
-    $("[data-vuln-refresh]").onclick=()=>loadVulnPage(vulnOffset);
+    const page = await api(`/api/sessions/${encodeURIComponent(session)}/vulnerabilities?${params}`);
+    if (!active()) return;
+    if (offset && offset >= page.total) return loadVulnPage(0, category, confirmedOnly);
+    vulnOffset = offset;
+    vulnPage = page;
+    vulnCategory = category;
+    vulnConfirmedOnly = confirmedOnly;
+    vulnError = "";
+  } catch (error) {
+    if (active()) {
+      vulnError = I18n.t`漏洞读取失败：${error.message}`;
+      toast(vulnError, true);
+    }
+  } finally {
+    if (active()) {
+      vulnLoading = false;
+      if (S.tab === "vulns") renderVulns();
+    }
   }
 }
-/* 复制一段文本。navigator.clipboard 只在安全上下文（HTTPS 或 localhost）里可用，
-   从局域网 IP 打开控制台时会拿不到，所以留一条 textarea + execCommand 的退路。 */
-async function copyText(text) {
-  try {
-    if (navigator.clipboard && window.isSecureContext) {
-      await navigator.clipboard.writeText(text);
-      return true;
+
+function renderVulns() {
+  if (!S.state) return;
+  if (vulnPageSession !== S.cur) resetVulnPage(S.cur);
+  const state = S.state.vulns;
+  const src = S.state.session?.mode === "src";
+  if (src && !vulnLoading) {
+    const snapshot = JSON.stringify([state.total, state.by_status, state.items.map(v => [v.vuln_id, v.version])]);
+    if (snapshot !== vulnSnapshot) {
+      vulnSnapshot = snapshot;
+      loadVulnPage(vulnOffset);
+      return;
     }
-  } catch { /* 落到兜底 */ }
-  const ta = document.createElement("textarea");
-  ta.value = text;
-  ta.setAttribute("readonly", "");
-  ta.style.cssText = "position:fixed;top:-1000px;left:0;opacity:0";
-  document.body.append(ta);
-  ta.select();
-  let ok = false;
-  try { ok = document.execCommand("copy"); } catch { ok = false; }
-  ta.remove();
-  return ok;
+  }
+  const vs = src || vulnOffset ? (vulnPage?.items || []) : (state.items || []);
+  const total = (src ? vulnPage?.total : state.total) ?? vs.length;
+  const counts = src ? vulnPage?.category_counts || [] : [];
+  const root = $("#tab-vulns");
+  const signature = JSON.stringify([S.cur, src, vs, total, counts, vulnCategory, vulnConfirmedOnly,
+    vulnOffset, vulnLoading, vulnError]);
+  if(root._content===signature)return;
+  const focused = root.contains(document.activeElement) ? document.activeElement : null;
+  const previous=VulnerabilityDetails.capture(root);
+  root._content=signature;
+  $("#tab-vulns").innerHTML = vs.length ? `<div class="grid-cards">${vs.map(v => {
+    const level = src ? VulnerabilityDetails.severity(v) : v.severity;
+    const score = src ? VulnerabilityDetails.cvss(v) : (v.cvss_score != null ? {score:v.cvss_score,version:v.cvss_version} : null);
+    const [sevCn, sevCls] = SEV_CN[level] || [level || I18n.t(src ? "待定级" : "未定级"), "blue"];
+    return `<div class="card vcard">
+      <div class="h"><b>${esc(v.title || v.vuln_type || I18n.t("漏洞"))}</b>
+        <span class="tag ${sevCls}">${sevCn}</span>
+        <span class="tag ${v.status === "accepted" ? "green" : ""}">${esc(({candidate:I18n.t("待独立复测"),verifying:I18n.t("鉴真复测中"),inconclusive:I18n.t("证据不足 · 未收录"),accepted:I18n.t("确认收录"),rejected_false_positive:I18n.t("误报 · 不收录"),rejected_compliance:I18n.t("不符合规则 · 不收录")})[v.status] || v.status || "")}</span>
+        ${v.poc_verified ? I18n.html`<span class="tag gold">PoC 已验证</span>` : ""}</div>
+      ${v.endpoint ? `<div class="ep">${esc(v.endpoint)}</div>` : ""}
+      ${v.vulnerability_ids?.length ? `<p>${esc(v.vulnerability_ids.join(" · "))}</p>` : ""}
+      ${v.verification?.reason ? `<p>${esc(v.verification.reason)}</p>` : ""}
+      ${v.verification?.rule_quote ? I18n.html`<p class="muted">危害规则：${esc(v.verification.rule_quote)}</p>` : ""}
+      <div class="muted" style="font-size:11.5px">${esc((src && v.taxonomy_id !== "unclassified" && findingCategoryLabel(v)) || v.vuln_type || "")}${score ? " · CVSS " + esc(score.version || "") + " " + esc(score.score) : ""} · ${esc(v.vuln_id || "")}</div>
+      ${VulnerabilityDetails.html(v, src)}
+    </div>`; }).join("")}</div>`
+    : `<div class="empty-note">${esc(vulnLoading ? I18n.t("读取中…") : vulnError ||
+        (src && vulnConfirmedOnly ? I18n.t("暂无已收录漏洞") : I18n.t("尚无漏洞记录")))}</div>`;
+  VulnerabilityDetails.mount(root,vs,previous,src);
+  if (src || total > 50 || vulnOffset) {
+    const count = vs.length ? I18n.t`共 ${total} 条 · 当前 ${vulnOffset+1}–${vulnOffset+vs.length}` : "";
+    root.insertAdjacentHTML("afterbegin", I18n.html`<div class="vuln-pagination"><span>${count}</span>
+      <button class="btn sm" type="button" data-vuln-action="prev" ${vulnLoading || !vulnOffset ? "disabled" : ""}>上一页</button>
+      <button class="btn sm" type="button" data-vuln-action="next" ${vulnLoading || vulnOffset+vs.length>=total ? "disabled" : ""}>下一页</button>
+      <button class="btn sm" type="button" data-vuln-action="refresh" ${vulnLoading ? "disabled" : ""}>刷新当前页</button></div>`);
+    root.querySelector('[data-vuln-action="prev"]').onclick = () => loadVulnPage(Math.max(0, vulnOffset - 50));
+    root.querySelector('[data-vuln-action="next"]').onclick = () => loadVulnPage(vulnOffset + 50);
+    root.querySelector('[data-vuln-action="refresh"]').onclick = () => loadVulnPage(vulnOffset);
+  }
+  if (src && counts.length) {
+    const countField = vulnConfirmedOnly ? "confirmed_count" : "count";
+    root.insertAdjacentHTML("afterbegin", I18n.html`<div class="finding-categories" role="group" aria-label="漏洞状态">
+      <button class="btn sm" type="button" data-vuln-scope="confirmed" aria-pressed="${vulnConfirmedOnly}">已收录</button>
+      <button class="btn sm" type="button" data-vuln-scope="all" aria-pressed="${!vulnConfirmedOnly}">所有漏洞记录</button></div>
+      <div class="finding-categories" role="group" aria-label="漏洞分类">${findingCategoryButtons(counts, vulnCategory, countField)}</div>`);
+    root.querySelectorAll("[data-vuln-scope]").forEach(button => {
+      button.onclick = () => loadVulnPage(0, vulnCategory, button.dataset.vulnScope === "confirmed");
+      if (focused?.dataset.vulnScope === button.dataset.vulnScope) button.focus({preventScroll: true});
+    });
+    root.querySelectorAll("[data-finding-category]").forEach(button => {
+      button.onclick = () => loadVulnPage(0, button.dataset.findingCategory);
+      if (focused?.dataset.findingCategory === button.dataset.findingCategory) button.focus({preventScroll: true});
+    });
+  }
 }
-
-/* 点一下复制这条 Flag，按钮就地变「已复制」再自己复原。
-   期间置 disabled 防连点；就算这中间列表重渲染了，改的也只是个已脱离文档的
-   旧节点，不会串到别的卡片上。 */
-async function copyFlagByIndex(button, item) {
-  const ok = await copyText(item.value);
-  const label = button.querySelector("span");
-  button.disabled = true;
-  button.classList.toggle("copied", ok);
-  if (label) label.textContent = ok ? "已复制" : "复制失败";
-  setTimeout(() => {
-    if (label) label.textContent = "复制";
-    button.classList.remove("copied");
-    button.disabled = false;
-  }, 1400);
-}
-
 function renderFlags() {
   const f = S.state.flags;
-  const box = $("#tab-flags");
-  if (!f || !f.items.length) {
-    box.innerHTML = `<div class="empty-note">尚无 Flag 记录</div>`;
-    return;
-  }
-  box.innerHTML = `<div class="grid-cards">${f.items.map((x, i) => `
+  $("#tab-flags").innerHTML = f && f.items.length ? `<div class="grid-cards">${f.items.map(x => `
     <div class="card flag-card">
       <div class="v">${esc(x.value)}</div>
-      <div class="flag-foot">
-        <span class="tag ${x.accepted ? "gold" : x.submitted ? "blue" : "green"}">
-          ${x.accepted ? "已判定" : x.submitted ? "已提交" : "已提取"}</span>
-        <span class="muted flag-chal">${esc(x.challenge_id || "")}</span>
-        <button class="flag-copy" type="button" data-flag="${i}"
-                title="复制这条 Flag" aria-label="复制这条 Flag">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"
-               stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h8"/></svg><span>复制</span>
-        </button>
-      </div>
-    </div>`).join("")}</div>`;
-  box.querySelectorAll(".flag-copy").forEach(button => {
-    button.onclick = () => copyFlagByIndex(button, f.items[Number(button.dataset.flag)]);
-  });
+      <div><span class="tag ${x.accepted ? "gold" : x.submitted ? "blue" : "green"}">
+        ${x.accepted ? I18n.t("已判定") : x.submitted ? I18n.t("已提交") : I18n.t("已提取")}</span>
+        <span class="muted" style="font-size:11.5px"> ${esc(x.challenge_id || "")}</span></div>
+    </div>`).join("")}</div>`
+    : I18n.html`<div class="empty-note">尚无 Flag 记录</div>`;
 }
 
 /* ---- 解题轨迹：按真实发生顺序还原成一条可读时间线 ---- */
@@ -1236,28 +973,81 @@ let traceStick = true;
 let traceRenderTarget = null;
 const TRACE_AGENT_SLOTS = new Map();
 const TRACE_TURNS = new Map();
-function traceBeginRender() {
+function traceIsPresent(row) {
+  return !!row && (row.isConnected || window.TraceViewport?.has(row.closest?.(".tl") || row));
+}
+function traceBeginRender({isolate = false} = {}) {
   const live = $("#trace-box"), stage = document.createElement("div");
   stage.className = "trace trace-staging";
   stage.setAttribute("aria-hidden", "true");
   stage.style.width = `${live.getBoundingClientRect().width}px`;
   stage.style.height = `${live.clientHeight}px`;
+  if (isolate) stage.traceContext = {session:S.cur, restore:TaskTrace.capture(), turns:new Map(TRACE_TURNS), think:new Map(S.think)};
   live.parentNode.append(stage);
   traceRenderTarget = stage;
   return stage;
 }
-function traceEndRender(stage, commit) {
-  if (traceRenderTarget === stage) traceRenderTarget = null;
-  if (commit) $("#trace-box").replaceChildren(...stage.childNodes);
+function traceEndRender(stage, commit, mode = "replace") {
+  const owned = traceRenderTarget === stage;
+  if (owned) traceRenderTarget = null;
+  const context = stage.traceContext;
+  if (owned && context?.session === S.cur) {
+    context.restore(); TRACE_TURNS.clear(); context.turns.forEach((row,key)=>TRACE_TURNS.set(key,row));
+    S.think.clear(); context.think.forEach((value,key)=>S.think.set(key,value));
+  }
+  if (window.TraceViewport) {
+    if (commit) {
+      $("#trace-box").dispatchEvent(new CustomEvent("reader:render", {detail:stage}));
+      window.TraceViewport.commit([...stage.children], mode);
+    }
+    stage.remove(); return;
+  }
+  if (commit && mode === "prepend") {
+    $("#trace-box").prepend(...stage.childNodes); stage.remove(); return;
+  }
+  if (commit) {
+    const live = $("#trace-box"), reused = new Map();
+    live.dispatchEvent(new CustomEvent("reader:render", {detail:stage}));
+    const key = row => row.dataset?.taskId
+      ? JSON.stringify([row.dataset.agent,row.dataset.taskId,row.dataset.stepKey || row.dataset.taskPart]) : null;
+    const existing = new Map([...live.children].map(row => [key(row),row]).filter(([id]) => id));
+    const desired = [...stage.childNodes].map(row => {
+      const previous = existing.get(key(row));
+      if (!previous) return row;
+      // 阅读筛选与定位属于视图状态，不应使未变化的历史正文失去 DOM 复用。
+      if (previous.classList.contains("reader-target")) row.classList.add("reader-target");
+      if (previous.getAttribute?.("tabindex") === "-1") row.setAttribute("tabindex", "-1");
+      // 部分页的路线标签可能随最早可见轮次补全；只更新这行上下文，
+      // 正文或明细不同的节点仍使用完整的新投影。
+      const context = previous.querySelector(".task-context"), nextContext = row.querySelector(".task-context");
+      const text = context?.textContent;
+      if (context && nextContext && text !== nextContext.textContent) context.textContent = nextContext.textContent;
+      if (!previous.isEqualNode(row)) {
+        if (context && context.textContent !== text) context.textContent = text;
+        return row;
+      }
+      reused.set(row,previous);
+      return previous;
+    });
+    // 先移除离窗节点，保留交叠窗口的节点及其布局、选区和内部滚动状态。
+    const keep = new Set(desired);
+    for (const row of [...live.childNodes]) if (!keep.has(row)) row.remove();
+    desired.forEach((row,index) => {
+      if (live.childNodes[index] !== row) live.insertBefore(row,live.childNodes[index] || null);
+    });
+    TaskTrace.adoptRows(reused);
+  }
   stage.remove();
 }
 function traceReset({preservePanels = false} = {}) {
   if (traceScrollFrame !== null) cancelAnimationFrame(traceScrollFrame);
   traceScrollFrame = null; traceForceScroll = false;
+  traceLastScrollTop = 0;
   if (!preservePanels) { SessionObserver.reset(); AgentWorkbench.reset(); }
-  TaskTrace.reset();
-  (traceRenderTarget || $("#trace-box")).innerHTML = '<div class="empty-note">等待任务开始</div>';
-  TRACE_AGENT_SLOTS.clear();
+  TaskTrace.reset({preserveTools:preservePanels});
+  if (!traceRenderTarget && window.TraceViewport) window.TraceViewport.clear();
+  else (traceRenderTarget || $("#trace-box")).innerHTML = I18n.html('<div class="empty-note">等待任务开始</div>');
+  if (!preservePanels) TRACE_AGENT_SLOTS.clear();
   TRACE_TURNS.clear();
   S.think.clear();
   traceStick = true;
@@ -1282,16 +1072,25 @@ function traceRow(e, body, cls = "") {
     <time class="t">${esc(traceClock(e.ts))}</time><div class="b">${body}</div></div>`;
 }
 function traceAppend(e, body, cls = "") {
-  const box = traceRenderTarget || $("#trace-box");
+  const box = traceRenderTarget || window.TraceViewport?.sink || $("#trace-box");
   box.querySelector(".empty-note")?.remove();
   box.insertAdjacentHTML("beforeend", traceRow(e, body, cls));
   traceScroll();
   const row = box.lastElementChild;
   if (row.classList.contains("tl-turn")) TRACE_TURNS.set(String(e.actor || ""), row);
   row.dataset.eventTs = e.ts || "";
+  row.dataset.eventType = e.type || "";
+  row.dataset.agent = String(e.actor || "");
+  if (!traceRenderTarget) window.TraceViewport?.append(row);
   return row;
 }
 let traceScrollFrame = null, traceForceScroll = false;
+let traceLastScrollTop = 0;
+function traceStopFollowing() {
+  traceStick = false;
+  traceForceScroll = false;
+  window.TraceViewport?.stop();
+}
 function traceScroll(force = false) {
   traceForceScroll ||= force;
   if (traceScrollFrame !== null) return;
@@ -1305,46 +1104,59 @@ function traceScroll(force = false) {
 function traceScrollNow(force = false) {
   const box = $("#trace-box");
   if (!box) return;
+  if (window.TraceViewport) {
+    if (force) window.TraceViewport.toEnd();
+    traceStick = window.TraceViewport.isAtEnd();
+    $("#trace-jump").hidden = traceStick || box.scrollHeight <= box.clientHeight + 2;
+    return;
+  }
   if (force || traceStick) {
-    box.scrollTop = box.scrollHeight;
+    if (window.TraceViewport) window.TraceViewport.toEnd();
+    else box.scrollTop = box.scrollHeight;
     traceStick = true;
+    traceLastScrollTop = box.scrollTop;
   }
   $("#trace-jump").hidden = traceStick || box.scrollHeight <= box.clientHeight + 2;
 }
 function traceTurn(actor) {
   const row = TRACE_TURNS.get(String(actor || ""));
-  return row?.isConnected ? row : null;
+  return traceIsPresent(row) ? row : null;
 }
-function traceCloseThinking(turn) {
+function traceCloseThinking(turn, callId) {
   turn?.querySelectorAll(".tl-think.live").forEach(el => {
+    if (callId && el.dataset.callId && el.dataset.callId !== callId) return;
     el.classList.remove("live");
     const summary = el.querySelector("summary");
-    if (summary) summary.textContent = "思考过程";
+    if (summary) summary.textContent = I18n.t("思考过程");
   });
 }
-function traceFinishThinking(turn) {
-  traceCloseThinking(turn);
+function traceFinishThinking(turn, callId) {
+  traceCloseThinking(turn, callId);
   // 回合收尾：流式期间的纯文本替换为 Markdown 渲染（表格/代码块/列表）。
   // 已渲染的块标记 .md，后续文本段另起新块，不再往里拼原文
   turn?.querySelectorAll(".tl-say:not(.md)").forEach(el => {
+    if (callId && el.dataset.callId && el.dataset.callId !== callId) return;
     el.classList.add("md");
     el.innerHTML = mdRender(el.textContent || "");
   });
 }
 function argBrief(name, args) {
   args = args && typeof args === "object" ? args : {};
-  if (args._redacted) return "正在读取参数";
+  if (args._redacted) return I18n.t("正在读取参数");
   const one = v => String(v ?? "").replace(/\s+/g, " ").trim();
+  if (name === "skill_open") return one(args.skill_id);
+  if (name === "skill_read") return `${one(args.skill_id)} / ${one(args.path)}`;
+  if (name === "skill_search") return one(args.query || args.domain || I18n.t("浏览技能目录"));
   if (name === "http_request") {
     let target = one(args.path || args.url || "/");
     try { if (/^https?:\/\//i.test(target)) target = new URL(target).pathname + new URL(target).search; } catch {}
     return `${one(args.method || "GET").toUpperCase()} ${target}`.slice(0, 180);
   }
   if (name === "shell") return one(args.command).slice(0, 180);
-  if (name === "python") return one(args.code).split("\n")[0].slice(0, 180) || "运行脚本";
+  if (name === "python") return one(args.code).split("\n")[0].slice(0, 180) || I18n.t("运行脚本");
   if (name === "note") return one(args.text).slice(0, 180);
-  if (name === "analyze_text") return "分析题面文本";
-  if (name === "analyze_attachments") return "分析全部附件";
+  if (name === "analyze_text") return I18n.t("分析题面文本");
+  if (name === "analyze_attachments") return I18n.t("分析全部附件");
   if (name.startsWith("mcp__")) {
     const parts = name.split("__");
     const server = parts[1] || "mcp";
@@ -1355,13 +1167,13 @@ function argBrief(name, args) {
     return `${one(server)} · ${one(tool)}${first !== undefined ? `(${one(String(first)).slice(0, 60)})` : ""}`;
   }
   const compact = one(JSON.stringify(args));
-  return compact === "{}" ? "执行" : compact.slice(0, 180);
+  return compact === "{}" ? I18n.t("执行") : compact.slice(0, 180);
 }
 /* 工具足迹条：回合尾逐行列出模型实际使用的工具与命令原文 */
 const TOOLS_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>';
 function toolFootprint(name, args) {
   args = args && typeof args === "object" ? args : {};
-  if (args._redacted) return "参数见调用卡片";
+  if (args._redacted) return I18n.t("参数见调用卡片");
   const cut = s => { s = String(s ?? "").trim(); return s.length > 400 ? s.slice(0, 400) + " …" : s; };
   if (name === "shell") return cut(args.command);
   if (name === "python") return cut(String(args.code ?? "").split("\n")[0]);
@@ -1377,30 +1189,58 @@ function traceToolsStrip(turn) {
   if (!flow) return null;
   let strip = flow.querySelector(".tl-tools");
   if (!strip) {
-    flow.insertAdjacentHTML("beforeend", `<div class="tl-tools"><div class="th">${TOOLS_SVG}
+    flow.insertAdjacentHTML("beforeend", I18n.html`<div class="tl-tools"><div class="th">${TOOLS_SVG}
       <span>已使用 <b class="n">0</b> 个工具</span></div><div class="lines"></div></div>`);
     strip = flow.lastElementChild;
   }
   flow.append(strip);   // 始终钉在回合流末尾，后续动作卡插在其前
   return strip;
 }
-function tracePush(e, {observe = true} = {}) {
+function traceRetryStatus(e) {
+  const box = traceRenderTarget || $("#trace-box"), d = e.detail || {};
+  const pending = e.type === "model.retry_scheduled" || e.type === "model.retrying";
+  let row = [...box.querySelectorAll("[data-retry-call]")].find(item => item.dataset.retryCall === d.call_id);
+  if (!row && !pending) return;
+  if (!row) {
+    row = traceAppend(e, '<div class="model-retry-message" role="status"></div>', "tl-sys tl-retry");
+    row.dataset.retryCall = d.call_id || "";
+  }
+  const message = row.querySelector(".model-retry-message");
+  row.dataset.eventType = e.type;
+  row.dataset.retryState = e.type === "model.call" ? "recovered" : e.type;
+  if (e.type === "model.retry_scheduled") {
+    const seconds = Math.ceil(Number(d.delay_seconds) || 0);
+    const at = new Date(Number(d.retry_at) * 1000).toLocaleTimeString(I18n.dateLocale, {hour12:false});
+    message.textContent = I18n.t`模型服务暂时不可用，${seconds} 秒后重试（${at}）。`;
+  } else if (e.type === "model.retrying") message.textContent = I18n.t("正在重新连接模型服务…");
+  else if (e.type === "model.call") message.textContent = I18n.t("模型服务已恢复，继续执行。");
+  else if (e.type === "model.cancelled") message.textContent = I18n.t("已取消模型重试。");
+  else message.textContent = I18n.t("模型服务未恢复，已停止本次重试。");
+}
+function tracePush(e, {observe = true, eventId = null, animate = observe} = {}) {
   const box = traceRenderTarget || $("#trace-box");
   if (!box) return;
   const d = (typeof e.detail === "object" && e.detail) || {};
   const actor = String(e.actor || "");
   if (observe) { SessionObserver.push(e); AgentWorkbench.push(e); }
   const sideSession=S.state?.session?.side_session || S.sessions?.find(s=>s.session_id===S.cur)?.side_session;
-  if(sideSession && !["user.message","user.attachment","agent.reply","agent.reply_failed","engagement.paused","engagement.resumed","system.lifecycle"].includes(e.type)) return;
-  if (typeof TaskTrace !== "undefined" && !sideSession && TaskTrace.push(e)) return;
+  if(sideSession && !["user.message","user.answered","user.attachment","agent.reply","agent.reply_failed","engagement.paused","engagement.resumed","system.lifecycle"].includes(e.type)) return;
+  if (/^model\.(retry_scheduled|retrying|call|failed|cancelled)$/.test(e.type)) traceRetryStatus(e);
+  if (typeof TaskTrace !== "undefined" && !sideSession && TaskTrace.push(e, eventId, {animate: animate && !traceRenderTarget})) return;
   switch (e.type) {
+    case "context.compaction_requested":
+      traceAppend(e, I18n.html`<div class="m">已请求手动压缩，等待下一次模型调用。</div>`, "tl-sys");
+      break;
+    case "context.manual_compacted":
+      traceAppend(e, I18n.html`<div class="m">${esc(actorName(actor))} · 上下文整理：约 ${esc(d.estimated_tokens_before)} → ${esc(d.estimated_tokens_after)} tokens（离线估算）${d.changed ? "" : I18n.t(" · 当前没有可进一步缩小的旧历史")}</div>`, "tl-sys");
+      break;
     case "task.start":
-      traceAppend(e, `<div class="m">开始执行 · ${esc(actorName(actor))}</div>`, "tl-sys");
+      traceAppend(e, I18n.html`<div class="m">开始执行 · ${esc(actorName(actor))}</div>`, "tl-sys");
       break;
     case "agent.turn": {
       traceFinishThinking(traceTurn(actor));
-      const turn = traceAppend(e, `<div class="hd"><span class="who">${esc(actorName(actor))}</span>
-        <span class="k">第 ${esc(d.turn || "?")} 回合${d.forced_finish ? " · 正在收尾" : ""}</span></div>
+      const turn = traceAppend(e, I18n.html`<div class="hd"><span class="who">${esc(actorName(actor))}</span>
+        <span class="k">第 ${esc(d.turn || "?")} 回合${d.forced_finish ? I18n.t(" · 正在收尾") : ""}</span></div>
         ${d.turn === 1 && d.angle ? `<div class="ang">${esc(d.angle)}</div>` : ""}<div class="flow"></div>`, "tl-turn");
       turn.dataset.turn = String(d.turn || "");
       break;
@@ -1409,9 +1249,11 @@ function tracePush(e, {observe = true} = {}) {
       const kind = d.kind || "text";
       if (kind === "tool_call") break;
       const turn = traceTurn(actor) || traceAppend(e,
-        `<div class="hd"><span class="who">${esc(actorName(actor))}</span><span class="k">本页回合片段</span></div><div class="flow"></div>`, "tl-turn");
+        I18n.html`<div class="hd"><span class="who">${esc(actorName(actor))}</span><span class="k">本页回合片段</span></div><div class="flow"></div>`, "tl-turn tl-frag");
       if (kind === "reset") {
-        turn.querySelectorAll(".tl-say,.tl-think,.tl-thinkchip").forEach(el => el.remove());
+        turn.querySelectorAll(".tl-say,.tl-think,.tl-thinkchip").forEach(el => {
+          if (!d.call_id || !el.dataset.callId || el.dataset.callId === d.call_id) el.remove();
+        });
         const rec = S.think.get(actor);
         if (rec) { rec.chars = 0; rec.tail = ""; }
         break;
@@ -1427,35 +1269,55 @@ function tracePush(e, {observe = true} = {}) {
         if (!rec) { rec = { chars: 0, tail: "" }; S.think.set(actor, rec); }
         rec.chars += text.length;
         rec.tail = (rec.tail + text).slice(-6000);
+        const mode = S.state?.session?.mode;
+        if((mode === "src" || mode === "ctf" || mode === "competition") && /^master(?:-|$)/.test(actor)) {
+          const callId = d.call_id || "";
+          let thinking=[...turn.querySelectorAll(".tl-think.live")].find(el => (el.dataset.callId || "") === callId);
+          if(!thinking) {
+            flow.insertAdjacentHTML("beforeend",I18n.html('<details class="tl-think live"><summary>思考中</summary><div class="bd"></div></details>'));
+            thinking=flow.lastElementChild;
+            thinking.dataset.callId=callId;
+          }
+          const body=thinking.querySelector(".bd");
+          if(body.lastChild?.nodeType===3)body.lastChild.appendData(text);
+          else body.append(document.createTextNode(text));
+          traceScroll();
+          break;
+        }
         let chip = flow.querySelector(".tl-thinkchip");
         if (!chip) {
           flow.insertAdjacentHTML("beforeend",
-            '<div class="tl-thinkchip" title="在上方子 Agent 工作台查看实时分析"></div>');
+            I18n.html('<div class="tl-thinkchip" title="在上方子 Agent 工作台查看实时分析"></div>'));
           chip = flow.lastElementChild;
         }
-        chip.textContent = `推理 ${fmtCount(rec.chars)} 字`;
+        chip.textContent = I18n.t`推理 ${fmtK(rec.chars)} 字`;
         break;
       }
       const text = d.text || "";
       if (!text) break;
-      traceCloseThinking(turn);   // 文本开始：只关思考气泡，不渲染半截文本
+      traceCloseThinking(turn, d.call_id);   // 文本开始：只关同一次调用的思考气泡
       let el = flow.querySelector(".tl-say:last-child");
       if (el && el.classList.contains("md")) el = null;   // 已渲染块不回填原文
+      if (el && (el.dataset.callId || "") !== (d.call_id || "")) el = null;
       if (!el) {
         flow.insertAdjacentHTML("beforeend", '<div class="tl-say"></div>');
         el = flow.lastElementChild;
+        el.dataset.callId=d.call_id || "";
       }
-      el.textContent += text;
+      el._publicRaw = (el._publicRaw || '') + text;
+      const publicText = TaskTrace.commentaryText(el._publicRaw);
+      if (typeof StreamText !== "undefined") StreamText.plain(el, publicText, {animate: animate && !traceRenderTarget});
+      else el.textContent = publicText;
       traceScroll();
       break;
     }
     case "agent.tool_call": {
       const turn = traceTurn(actor) || traceAppend(e,
-        `<div class="hd"><span class="who">${esc(actorName(actor))}</span><span class="k">工具执行</span></div><div class="flow"></div>`, "tl-turn");
+        I18n.html`<div class="hd"><span class="who">${esc(actorName(actor))}</span><span class="k">工具执行</span></div><div class="flow"></div>`, "tl-turn tl-frag");
       traceFinishThinking(turn);
       const flow = turn.querySelector(".flow");
       for (const c of (d.calls || [])) {
-        flow.insertAdjacentHTML("beforeend", `<div class="tl-act" data-id="${esc(c.id || "")}">
+        flow.insertAdjacentHTML("beforeend", I18n.html`<div class="tl-act" data-id="${esc(c.id || "")}">
           <button class="hd" type="button" aria-expanded="false"><span class="nm" title="${esc(c.name || "?")}">${esc(SessionObserver.toolName(c.name))}</span>
             <span class="ar">${esc(c.preview || argBrief(c.name, c.arguments))}</span><span class="st">进行中</span>
             <span class="cv" aria-hidden="true">⌄</span></button><div class="nt"></div><pre class="tl-output"></pre></div>`);
@@ -1490,14 +1352,14 @@ function tracePush(e, {observe = true} = {}) {
         el = acts[acts.length - 1];
       }
       if (!el) {
-        traceAppend(e, `<details><summary>${esc(SessionObserver.toolName(d.name || "工具"))} · ${d.ok ? "已返回" : "失败"}（调用见更早记录）</summary><pre>${esc(SessionObserver.cleanText(d.result || d.note || "未记录原始响应"))}</pre></details>`, "tl-sys");
+        traceAppend(e, I18n.html`<details><summary>${esc(SessionObserver.toolName(d.name || I18n.t("工具")))} · ${d.ok ? I18n.t("已返回") : I18n.t("失败")}（调用见更早记录）</summary><pre>${esc(SessionObserver.cleanText(d.result || d.note || I18n.t("未记录原始响应")))}</pre></details>`, "tl-sys");
         break;
       }
       const st = el.querySelector(".st");
-      st.textContent = d.ok ? "已返回" : "失败";
+      st.textContent = d.ok ? I18n.t("已返回") : I18n.t("失败");
       st.className = "st " + (d.ok ? "y" : "n");
       el.querySelector(".nt").textContent = SessionObserver.resultSummary(d);
-      el.querySelector(".tl-output").textContent = SessionObserver.cleanText(d.result || d.note || "未记录原始响应");
+      el.querySelector(".tl-output").textContent = SessionObserver.cleanText(d.result || d.note || I18n.t("未记录原始响应"));
       if (!d.ok) {
         el.classList.add("open");
         el.querySelector("button.hd").setAttribute("aria-expanded", "true");
@@ -1506,6 +1368,10 @@ function tracePush(e, {observe = true} = {}) {
       break;
     }
     case "agent.conclude": {
+      if (S.state?.session?.mode === "src") {
+        traceFinishThinking(traceTurn(actor));
+        break;
+      }
       const turn = traceTurn(actor);
       traceFinishThinking(turn);
       if (turn) turn.querySelector(".flow").insertAdjacentHTML("beforeend",
@@ -1535,215 +1401,206 @@ function tracePush(e, {observe = true} = {}) {
       break;
     }
     case "flag.extracted":
-      traceAppend(e, `<div class="m">捕获 Flag · ${esc(d.value_preview || "")}</div>`, "tl-flag");
+      traceAppend(e, I18n.html`<div class="m">捕获 Flag · ${esc(d.value_preview || "")}</div>`, "tl-flag");
       break;
-    case "model.started":
-      traceAppend(e, `<div class="m">${esc(actorName(actor))} · 正在调用 ${esc(d.model || "模型")} · ${esc(SessionObserver.toolName(d.task_type || "任务决策"))}</div>`, "tl-sys");
+    case "model.call":
+      if(traceIsPresent(TRACE_TURNS.get(actor))) traceFinishThinking(TRACE_TURNS.get(actor), d.call_id);
       break;
-    case "model.call": {
-      // 调用收尾即定格 Markdown：文本流已结束，不等下一次回合边界
-      // （否则纯推理续轮/会话收尾前的流式正文会一直保持原文）
-      traceFinishThinking(traceTurn(actor));
-      const n = SessionObserver.usageFor(e, S.state);
-      const row = traceAppend(e, `<div class="m"><strong>${esc(d.model || "模型")} 已返回</strong> · <span class="model-tokens">${n == null ? "单次用量未记录" : `${Number(n).toLocaleString("zh-CN")} token`}</span> · ${(Number(d.latency_ms || 0) / 1000).toFixed(1)} 秒${d.task_type ? ` · ${esc(d.task_type)}` : ""}</div>`, "tl-sys tl-model");
-      row.dataset.callTs = e.ts || "";
-      break;
-    }
     case "model.failed":
     case "task.failed":
     case "llm.step_fallback":
-      traceFinishThinking(traceTurn(actor));   // 调用异常收尾：已流入的正文同样要定格
-      traceAppend(e, `<div class="tl-err">${esc(actorName(actor))} · ${esc(d.error || "执行未成功，等待重新决策")}</div>`, "tl-sys");
+      traceFinishThinking(traceTurn(actor), d.call_id);   // 调用异常收尾：已流入的正文同样要定格
+      traceAppend(e, `<div class="tl-err">${esc(actorName(actor))} · ${esc(d.error || I18n.t("执行未成功，等待重新决策"))}</div>`, "tl-sys");
       break;
     case "model.cancelled":
-      traceFinishThinking(traceTurn(actor));
-      traceAppend(e, `<div class="m">${esc(actorName(actor))} · 模型调用已取消，本次用量未返回</div>`, "tl-sys");
+      traceFinishThinking(traceTurn(actor), d.call_id);
+      traceAppend(e, `<div class="m">${esc(actorName(actor))} · ${I18n.t("模型调用已取消")}</div>`, "tl-sys");
       break;
     case "task.cancelled":
     case "task.pruned":
-      traceAppend(e, `<div class="m">${esc(actorName(actor))} · ${e.type === "task.cancelled" ? "任务已撤销" : "路线已剪枝"}</div>`, "tl-sys");
+      traceAppend(e, `<div class="m">${esc(actorName(actor))} · ${e.type === "task.cancelled" ? I18n.t("任务已撤销") : I18n.t("路线已剪枝")}</div>`, "tl-sys");
       break;
     case "task.done":
       traceFinishThinking(traceTurn(actor));
-      traceAppend(e, `<div class="m">${esc(actorName(actor))} 已完成任务</div>`, "tl-sys");
+      traceAppend(e, I18n.html`<div class="m">${esc(actorName(actor))} 已完成任务</div>`, "tl-sys");
       break;
-    case "user.message":
-      traceAppend(e, `<div class="bubble"><div class="btxt">${esc(d.content || "")}</div></div>`, "tl-user");
+    case "user.answered": {
+      if (!String(d.answer || "").trim()) break; // 停止回收不是用户答复。
+      const question = d.question ? `<div class="ask-answer-context">${esc(d.question)}</div>` : "";
+      const row = traceAppend(e, `<div class="bubble">${question}<div class="btxt">${esc(d.answer)}</div></div>`, "tl-user");
+      if (d.question_id) row.dataset.questionId = String(d.question_id);
       break;
+    }
+    case "user.message": {
+      const row = traceAppend(e, `<div class="bubble"><div class="btxt">${esc(d.content || "")}</div></div>`, "tl-user");
+      if (d.message_id) row.dataset.messageId = String(d.message_id);
+      break;
+    }
     case "system.lifecycle":
       if (d.action === "session_kickoff")
-        traceAppend(e, `<div class="m">${sideSession ? "子 Agent 正在准备回复…" : "灵枢开工准备中——加载任务配置…"}</div>`, "tl-sys");
+        traceAppend(e, `<div class="m">${sideSession ? I18n.t("子 Agent 正在准备回复…") : I18n.t("灵枢开工准备中——加载任务配置…")}</div>`, "tl-sys");
       break;
     case "engagement.paused":
-      traceAppend(e, `<div class="m">已暂停，当前步骤完成后停止。</div>`, "tl-sys");
+      traceAppend(e, I18n.html`<div class="m">已暂停新步骤，在途动作会继续收尾。</div>`, "tl-sys");
+      break;
+    case "agent.waiting":
+      traceAppend(e, I18n.html`<div class="m">${d.kind === "shell" ? I18n.t`等待后台 Shell ${esc(d.job_id || "")}：${esc(d.condition || I18n.t("进程退出"))}` : I18n.t`等待定时唤醒：${esc(new Date(d.wake_at * 1000).toLocaleString(I18n.dateLocale, {hour12:false}))}`} · Agent 已挂起，不消耗模型调用</div>`, "tl-sys");
+      break;
+    case "shell.notification":
+      traceAppend(e, I18n.html`<div class="m">后台任务「${esc(d.label || d.job_id)}」${d.kind === "condition" ? (d.matched ? I18n.t("已命中输出条件") : I18n.t("结束时未命中条件")) : I18n.t`已结束 · 退出码 ${esc(d.returncode ?? "—")}`}，可在「后台任务」查看输出。</div>`, "tl-sys");
+      break;
+    case "agent.wait_ready":
+      traceAppend(e, `<div class="m">${d.timed_out ? I18n.t("监测等待已超时，后台进程仍可继续运行") : d.kind === "shell" && !d.matched ? I18n.t("后台进程已结束，未匹配等待值") : I18n.t("等待条件已满足，Agent 继续任务")}</div>`, "tl-sys");
       break;
     case "engagement.resumed":
-      traceAppend(e, `<div class="m">已继续${d.paused_seconds ? `（暂停 ${fmtElapsed(d.paused_seconds)}，不计入用时）` : ""}</div>`, "tl-sys");
+      traceAppend(e, I18n.html`<div class="m">已继续${d.paused_seconds ? I18n.t`（暂停 ${fmtElapsed(d.paused_seconds)}，不计入用时）` : ""}</div>`, "tl-sys");
       break;
     case "system.gap":
       // 执行间隙（合盖待机/Ctrl+Z/VM 快照）：时间线如实标记，区间不计入用时
-      traceAppend(e, `<div class="m">💤 检测到执行间隙 ${fmtElapsed(d.gap_seconds || 0)}——控制台刚刚未在运行，该区间不计入用时</div>`, "tl-sys");
+      traceAppend(e, I18n.html`<div class="m">💤 检测到执行间隙 ${fmtElapsed(d.gap_seconds || 0)}——控制台刚刚未在运行，该区间不计入用时</div>`, "tl-sys");
       break;
     case "user.attachment": {
-      const sz = fmtSize(d.size);
-      traceAppend(e, `<div class="bubble"><div class="btxt">📎 ${esc(d.name || "")}${sz ? ` <span class="k">${esc(sz)}</span>` : ""}</div>
-        ${d.path ? `<div class="bpath">${esc(d.path)}</div>` : ""}</div>`, "tl-user");
+      // 用户上传的文件同样以文件卡片呈现：可直接再预览/下载（attachments/ 一直在）
+      const rel = d.rel || (d.name ? `attachments/${d.name}` : "");
+      const row = traceAppend(e, `<div class="bubble">${FileCards.card({ rel, name: d.name, size: d.size, side: "user" })}</div>`, "tl-user");
+      if (d.message_id) row.dataset.messageId = String(d.message_id);
+      break;
+    }
+    case "file.shared": {
+      if (d.task_id) SessionFiles.refresh(true);
+      // 智能体/用户把产出文件发进会话：左侧文件卡片，可在线预览或下载
+      const who = actorName(actor) || I18n.t("灵枢");
+      const seal = actor && actor !== "master" ? String(who).slice(0, 1) : I18n.t("灵");
+      traceAppend(e, `<i class="seal" aria-label="${esc(who)}">${esc(seal)}</i>
+        <div class="bubble"><div class="who">${esc(who)}</div>
+        ${FileCards.card({ rel: d.path, name: d.name, size: d.size })}
+        ${d.note ? `<div class="btxt fc-note">${esc(d.note)}</div>` : ""}</div>`, "tl-master tl-conv");
+      break;
+    }
+    case "report.ready": {
+      // 异步报告完成：作为灵枢的文件消息出现，点开即可阅读/下载
+      const rname = String(d.path || "").split("/").pop() || I18n.t("解题报告.md");
+      traceAppend(e, I18n.html`<i class="seal" aria-label="灵枢">灵</i>
+        <div class="bubble"><div class="who">灵枢</div><div class="btxt">解题报告已生成</div>
+        ${FileCards.card({ rel: `reports/${rname}`, name: rname, size: d.size })}</div>`, "tl-master tl-conv");
       break;
     }
     case "verification.queued":
-      traceAppend(e, `<div class="m">候选入口已交给鉴真独立复测 · ${esc(d.vuln_id)}</div>`, "tl-sys");
+      traceAppend(e, I18n.html`<div class="m">候选入口已交给鉴真独立复测 · ${esc(d.vuln_id)}</div>`, "tl-sys");
       break;
     case "verification.started":
-      traceAppend(e, `<div class="hd"><span class="who">鉴真</span><span class="k">独立危害复测</span></div><p>${esc(d.title || d.vuln_id)}</p>`, "tl-master");
+      traceAppend(e, I18n.html`<div class="hd"><span class="who">鉴真</span><span class="k">独立危害复测</span></div><p>${esc(d.title || d.vuln_id)}</p>`, "tl-master");
       break;
     case "verification.result":
-      traceAppend(e, `<details class="secretary-card" open><summary>鉴真 · ${esc(({confirmed:"确认危害，收录",false_positive:"误报，不收录",out_of_rules:"不符合规则，不收录",inconclusive:"证据不足，未收录"})[d.verdict] || "复测完成")}</summary><p>${esc(d.title || "")}</p><p>${esc(d.reason || "")}</p>${d.rule_quote ? `<p>用户危害规则：${esc(d.rule_quote)}</p>` : ""}${[...(d.evidence || []),...(d.controls || [])].map(ref=>`<p class="mono">${esc(ref.execution_id)} · ${esc(ref.quote)}</p>`).join("")}</details>`, "tl-master");
+      traceAppend(e, I18n.html`<details class="secretary-card" open><summary>鉴真 · ${esc(({confirmed:I18n.t("确认危害，收录"),false_positive:I18n.t("误报，不收录"),out_of_rules:I18n.t("不符合规则，不收录"),inconclusive:I18n.t("证据不足，未收录")})[d.verdict] || I18n.t("复测完成"))}</summary><p>${esc(d.title || "")}</p><p>${esc(d.reason || "")}</p>${d.rule_quote ? I18n.html`<p>用户危害规则：${esc(d.rule_quote)}</p>` : ""}${[...(d.evidence || []),...(d.controls || [])].map(ref=>`<p class="mono">${esc(ref.execution_id)} · ${esc(ref.quote)}</p>`).join("")}</details>`, "tl-master");
       break;
     case "verification.error":
-      traceAppend(e, `<div class="m">独立复测未完成，不收录：${esc(d.error || "原因未提供")}</div>`, "tl-sys");
+      traceAppend(e, I18n.html`<div class="m">独立复测未完成，不收录：${esc(d.error || I18n.t("原因未提供"))}</div>`, "tl-sys");
       break;
     case "secretary.suggested":
-      traceAppend(e, `<details class="secretary-card"><summary>秘书 · ${(d.suggestions || []).length} 条参谋建议</summary>${(d.suggestions || []).map(item => `<article><strong>${esc(item.summary)}</strong><p>${esc(item.benefit)}</p><small>不确定性：${esc(item.uncertainty || "未说明")}</small><p class="mono">${esc((item.evidence_refs || []).join(" · "))}</p></article>`).join("") || '<p>本次没有需要补充的建议。</p>'}</details>`, "tl-master");
+      traceAppend(e, I18n.html`<details class="secretary-card"><summary>秘书 · ${(d.suggestions || []).length} 条参谋建议</summary>${(d.suggestions || []).map(item => I18n.html`<article><strong>${esc(item.summary)}</strong><p>${esc(item.benefit)}</p><small>不确定性：${esc(item.uncertainty || I18n.t("未说明"))}</small><p class="mono">${esc((item.evidence_refs || []).join(" · "))}</p></article>`).join("") || I18n.html('<p>本次没有需要补充的建议。</p>')}</details>`, "tl-master");
       break;
     case "secretary.decided":
-      traceAppend(e, `<details class="secretary-card"><summary>灵枢 · 已评估秘书建议</summary>${(d.decisions || []).map(item => `<article><strong>${esc(({accepted:"采纳",partial:"部分采纳",rejected:"拒绝",needs_evidence:"待补证"})[item.verdict] || "待评估")}</strong><p>${esc((d.suggestions || []).find(x=>x.id===item.id)?.summary || item.id)}</p><p>${esc(item.reason)}</p></article>`).join("")}</details>`, "tl-master");
+      traceAppend(e, I18n.html`<details class="secretary-card"><summary>灵枢 · 已评估秘书建议</summary>${(d.decisions || []).map(item => `<article><strong>${esc(({accepted:I18n.t("采纳"),partial:I18n.t("部分采纳"),rejected:I18n.t("拒绝"),needs_evidence:I18n.t("待补证")})[item.verdict] || I18n.t("待评估"))}</strong><p>${esc((d.suggestions || []).find(x=>x.id===item.id)?.summary || item.id)}</p><p>${esc(item.reason)}</p></article>`).join("")}</details>`, "tl-master");
       break;
     case "secretary.failed":
-      traceAppend(e, '<div class="m">秘书咨询未完成，灵枢沿用原决策继续。</div>', "tl-sys");
+      traceAppend(e, I18n.html('<div class="m">秘书咨询未完成，灵枢沿用原决策继续。</div>'), "tl-sys");
       break;
     case "ring.steer":
-      traceAppend(e, `<div class="hd"><span class="who">灵枢</span>
+      traceAppend(e, I18n.html`<div class="hd"><span class="who">灵枢</span>
         <span class="k">→ ${esc(agentName(d.agent))}</span></div>
-        <div class="tl-reply">${esc(d.hint || "")}</div>`, "tl-master");
+        <div class="tl-reply md">${mdRender(d.hint || "")}</div>`, "tl-master");
       break;
     case "ring.steer_feedback":
-      traceAppend(e, `<div class="hd"><span class="who">${esc(agentName(e.actor))}</span>
+      traceAppend(e, I18n.html`<div class="hd"><span class="who">${esc(agentName(e.actor))}</span>
         <span class="k">督导回执 · ${esc(STEERING_STATUS_CN[d.status] || d.status || "")}</span></div>
-        <div class="m">${esc(d.detail || "当前指令已送入本任务的模型请求")}</div>`, "tl-master");
+        <div class="tl-reply md">${mdRender(d.detail || I18n.t("当前指令已送入本任务的模型请求"))}</div>`, "tl-master");
       break;
     case "decision.change": {
       if (d.action === "llm_mode_route") {
         const verdict = (d.intent === "dialogue" || d.intent === "rules")
-          ? (d.intent === "dialogue" ? "对话" : "规则")
+          ? (d.intent === "dialogue" ? I18n.t("对话") : I18n.t("规则"))
           : (MODE_CN[d.llm_mode] || d.llm_mode || "?");
-        traceAppend(e, `<div class="hd"><span class="who">灵枢</span>
+        traceAppend(e, I18n.html`<div class="hd"><span class="who">灵枢</span>
           <span class="k">任务模式判定</span></div>
           <div class="ang">→ ${esc(verdict)}${d.rationale ? ` · ${esc(d.rationale)}` : ""}</div>`, "tl-master");
       } else if (d.action === "dispatch_plan" || d.action === "dispatch_plan_skipped") {
-        traceAppend(e, `<div class="m">灵枢已定下发计划（任务复杂度 · 路线预算 · 思考强度）</div>`, "tl-sys");
+        traceAppend(e, I18n.html`<div class="m">灵枢已定下发计划（任务复杂度 · 路线预算 · 思考强度）</div>`, "tl-sys");
       } else if (d.action === "meta_plan") {
         const n = Array.isArray(d.new_nodes) ? d.new_nodes.length : 0;
-        traceAppend(e, `<div class="hd"><span class="who">${esc(actorName(actor))}</span>
-          <span class="k">第 ${esc(d.round ?? "?")} 轮规划${n ? ` · ${n} 个方向节点` : ""}</span></div>
+        traceAppend(e, I18n.html`<div class="hd"><span class="who">${esc(actorName(actor))}</span>
+          <span class="k">第 ${esc(d.round ?? "?")} 轮规划${n ? I18n.t` · ${n} 个方向节点` : ""}</span></div>
           ${d.analysis ? `<div class="ang">${esc(String(d.analysis))}</div>` : ""}`, "tl-master");
       } else if (d.action === "review") {
         // 复盘结论优先显示灵枢自己的话（用户追问的答案也走这里）
         const body = String(d.llm_reason || "").trim()
-          || (d.continue ? "继续迭代" : `收敛：${d.stop_reason || "目标达成"}`);
-        traceAppend(e, `<div class="hd"><span class="who">${esc(actorName(actor))}</span>
+          || (d.continue ? I18n.t("继续迭代") : I18n.t`收敛：${d.stop_reason || I18n.t("目标达成")}`);
+        traceAppend(e, I18n.html`<div class="hd"><span class="who">${esc(actorName(actor))}</span>
           <span class="k">第 ${esc(d.round ?? "?")} 轮复盘</span></div>
           <div class="ang md">${mdRender(body)}</div>`, "tl-master");
       } else if (d.action === "user_feed_consumed") {
-        const cn = { steering: "派发督导", review: "轮末复盘" }[d.channel] || "决策";
-        traceAppend(e, `<div class="tl-reply">已收到你的意见，纳入本轮${cn}。</div>`, "tl-master");
+        const cn = { steering: I18n.t("派发督导"), review: I18n.t("轮末复盘") }[d.channel] || I18n.t("决策");
+        traceAppend(e, I18n.html`<div class="tl-reply">已收到你的意见，纳入本轮${cn}。</div>`, "tl-master");
       }
       break;
     }
     case "agent.reply":
-      traceAppend(e, `<i class="seal" aria-label="${esc(d.name || actorName(actor))}">${esc((d.name || "子").slice(0,1))}</i><div class="bubble"><div class="who">${esc(d.name || actorName(actor))}</div><div class="btxt md">${mdRender(d.text || "")}</div></div>`, "tl-master tl-conv tl-agent-conv");
+      traceAppend(e, `<i class="seal" aria-label="${esc(d.name || actorName(actor))}">${esc((d.name || I18n.t("子")).slice(0,1))}</i><div class="bubble"><div class="who">${esc(d.name || actorName(actor))}</div><div class="btxt md">${mdRender(d.text || "")}</div></div>`, "tl-master tl-conv tl-agent-conv");
       break;
     case "agent.reply_failed":
-      traceAppend(e, `<div class="bubble"><div class="btxt">${esc(d.error || "子 Agent 回复失败，请重试")}</div></div>`, "tl-master tl-conv");
+      traceAppend(e, `<div class="bubble"><div class="btxt">${esc(d.error || I18n.t("子 Agent 回复失败，请重试"))}</div></div>`, "tl-master tl-conv");
       break;
     case "master.reply":
-      // 灵枢↔用户直达子会话的左气泡：名章为身份（无文字标签订），与用户右气泡成对
-      traceAppend(e, `<i class="seal" aria-label="灵枢">灵</i><div class="bubble">
+      // Agent 直达回复采用统一正文，名章与角色名标识来源。
+      traceAppend(e, I18n.html`<i class="seal" aria-label="灵枢">灵</i><div class="bubble">
+        <div class="who">灵枢</div>
         <div class="btxt md">${mdRender(d.text || "")}</div></div>`, "tl-master tl-conv");
       break;
     case "master.reply_failed":
       // 应答通道失败必须可见——否则用户消息像被吞掉
-      traceAppend(e, `<i class="seal" aria-label="灵枢">灵</i><div class="bubble">
-        <div class="btxt">回复失败：${esc(d.error || "未知原因")}。消息已保存，可重试。</div></div>`, "tl-master tl-conv");
+      traceAppend(e, I18n.html`<i class="seal" aria-label="灵枢">灵</i><div class="bubble">
+        <div class="btxt">回复失败：${esc(d.error || I18n.t("未知原因"))}。消息已保存，可重试。</div></div>`, "tl-master tl-conv");
       break;
     case "agent.spawn":
-      traceAppend(e, `<div class="m">🔮 派生分支 · ${esc(d.child || "")}</div>`, "tl-sys");
+      traceAppend(e, I18n.html`<div class="m">🔮 派生分支 · ${esc(d.child || "")}</div>`, "tl-sys");
       break;
     case "agent.spawn_done":
-      traceAppend(e, `<div class="m">🔮 分支 ${esc(d.child || "")} 收尾（Flag ${d.flags || 0}）</div>`, "tl-sys");
+      traceAppend(e, I18n.html`<div class="m">🔮 分支 ${esc(d.child || "")} 收尾（Flag ${d.flags || 0}）</div>`, "tl-sys");
       break;
     case "agent.ask_user":
-      traceAppend(e, `<div class="tl-ask">向你提问 · ${esc(d.question || "")}</div>`, "tl-sys");
+      traceAppend(e, I18n.html`<div class="tl-ask">向你提问 · ${esc(d.question || "")}</div>`, "tl-sys");
       break;
   }
 }
 const traceBox = $("#trace-box");
+traceBox.addEventListener("reader:navigate", traceStopFollowing);
 traceBox.addEventListener("scroll", () => {
+  if (window.TraceViewport) {
+    traceStick = window.TraceViewport.isAtEnd();
+    traceLastScrollTop = traceBox.scrollTop;
+    $("#trace-jump").hidden = traceStick || traceBox.scrollHeight <= traceBox.clientHeight + 2;
+    return;
+  }
   if (SessionHistory.isRendering?.()) return;
   const gap = traceBox.scrollHeight - traceBox.scrollTop - traceBox.clientHeight;
-  traceStick = gap < 24;
+  // 内容增长可能晚于吸底、早于 scroll 事件；不能因此把程序滚动认成上滑。
+  if (traceBox.scrollTop < traceLastScrollTop && gap >= 24) traceStopFollowing();
+  else if (traceBox.scrollTop > traceLastScrollTop && gap < 24) traceStick = true;
+  traceLastScrollTop = traceBox.scrollTop;
   $("#trace-jump").hidden = traceStick || traceBox.scrollHeight <= traceBox.clientHeight + 2;
 }, {passive: true});
+traceBox.addEventListener("keydown", event => {
+  if(event.target.closest("input,textarea,select,[contenteditable]"))return;
+  if(["ArrowUp","PageUp","Home"].includes(event.key) || event.key===" " && event.shiftKey) traceStopFollowing();
+});
 $("#trace-jump").onclick = () => SessionHistory.isPast() ? SessionHistory.latest() : traceScroll(true);
-function renderAuditEvent(e, {observe = true} = {}) {
-  tracePush(e, {observe});
+function renderAuditEvent(e, {observe = true, eventId = null, animate = observe} = {}) {
+  tracePush(e, {observe, eventId, animate});
   if (observe && e.type !== "agent.delta") {
     const box = $("#events");
     box.insertAdjacentHTML("afterbegin", evLine(e));
     while (box.children.length > 250) box.lastChild.remove();
   }
-}
-function startStreams(rebuild = true) {
-  stopStreams();
-  if (!S.cur) return;
-  if (rebuild) { S.evSeen = 0; SessionHistory.open(); return; }
-  S.esTick = Date.now();
-  // 滚动历史与 SSE 共用字节游标，重连直接 seek，不从文件头重扫。
-  const sessionId = S.cur;
-  const es = new EventSource(`/api/sessions/${sessionId}/events`
-    + `?cursor=bytes&offset=${S.evSeen || 0}`);
-  S.es = es;
-  let received = S.evSeen;
-  // 审计帧是具名事件（event: audit），onmessage 收不到——必须按事件名监听
-  es.addEventListener("audit", m => {
-    if (S.cur !== sessionId || S.es !== es) return;
-    S.esTick = Date.now();
-    try {
-      const e = JSON.parse(m.data);
-      // 去重游标用 SSE 事件 id（完整日志行的结尾字节偏移）；
-      // 载荷 seq 是各写入实例各自计数，多写入者会撞车回退，不能用于去重
-      const lid = Number(m.lastEventId) || 0;
-      if (lid) {
-        if (lid <= received) return;
-        received = lid;
-      }
-      SessionHistory.enqueue(e, lid, sessionId);
-      if (/task\.|decision\.|vuln\.|flag\.|platform\.|system\.|model\.call/.test(e.type || "")) scheduleStateRefresh();
-    } catch {}
-  });
-  es.addEventListener("done", async () => {
-    await SessionHistory.drain();
-    if (S.cur !== sessionId || S.es !== es) return;
-    // 终态排空后主动关闭，防止 EventSource 每隔数秒重连并重复刷新状态。
-    stopStreams();
-    refreshState();
-  });
-  es.onerror = () => {};
-  // 断流看门狗：合盖休眠/网络切换后 EventSource 会静默僵死（readyState 不可信），
-  // 会话仍在运行却长时间无帧即判死，增量重连补齐缺口（已渲染行保留）
-  S.esDog = setInterval(() => {
-    if (S.view !== "session" || !S.cur || SessionHistory.isPast()) return;
-    if (TERMINAL.has(S.state?.session?.status)) return;
-    // 暂停态无帧是正常态（智能体已挂起），豁免看门狗避免空转重连
-    if (S.state?.session?.paused) return;
-    const dead = !S.es || S.es.readyState === EventSource.CLOSED;
-    const stale = Date.now() - (S.esTick || 0) > 45000;
-    if (dead || stale) startStreams(false);
-  }, 15000);
-}
-function stopStreams() {
-  SessionHistory.clearLiveQueue();
-  if (S.es) { S.es.close(); S.es = null; }
-  if (S.esDog) { clearInterval(S.esDog); S.esDog = null; }
 }
 // 唤醒即自救：回到前台立刻刷状态，连接不新鲜就增量重连
 document.addEventListener("visibilitychange", () => {
@@ -1760,9 +1617,16 @@ document.addEventListener("visibilitychange", () => {
 /* ================= 报告 ================= */
 async function loadReport() {
   const box = $("#tab-report");
-  box.innerHTML = `<div class="empty-note">加载中…</div>`;
+  box.innerHTML = I18n.html`<div class="empty-note">加载中…</div>`;
   try {
-    const d = await api(`/api/sessions/${S.cur}/report`);
+    const session = S.cur;
+    const d = await api(`/api/sessions/${session}/report`);
+    if(S.cur!==session) return;
+    if(d.status && d.status!=="done" && !d.markdown) {
+      box.innerHTML=`<div class="empty-note">${d.status==="failed" ? I18n.t`报告生成失败：${esc(d.error || I18n.t("未知错误"))}` : I18n.t("答案调查已结束，报告正在后台生成；经验提炼同时进行。")}</div>`;
+      if(d.status!=="failed") setTimeout(()=>{if(S.cur===session && S.tab==="report") loadReport();},2000);
+      return;
+    }
     box.innerHTML = `<div class="card report">${mdRender(d.markdown)}</div>`;
   } catch (e) {
     box.innerHTML = `<div class="empty-note">${esc(e.message)}</div>`;

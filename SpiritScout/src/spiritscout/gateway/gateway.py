@@ -8,25 +8,22 @@ import asyncio
 import contextlib
 import copy
 import json
-import os
 import time
 import uuid
-from dataclasses import dataclass, field
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from spiritscout import __version__
 from spiritscout.config.settings import GatewayConfig, ModelEntry
 from spiritscout.core.audit import AuditLogger, NullAuditLogger
 from spiritscout.core.exceptions import SpiritScoutError
+from spiritscout.core.pause import PauseGate
 from spiritscout.gateway.attempts import AttemptTrace, current_attempt_trace
-
-# LiteLLM 默认会去 GitHub 拉模型价格表：一次调用前先跑三个外网请求，离线/内网
-# 环境里纯属白等（还留下 SDK 连外网的日志）。本地模型和"不出网"测试都要求它闭嘴。
-os.environ.setdefault("LITELLM_LOCAL_MODEL_COST_MAP", "True")
-
 from spiritscout.gateway.backends import (
     ChatBackend,
     DeltaCallback,
+    LiteLLMBackend,
     MockBackend,
     backend_for,
     emit_delta,
@@ -34,76 +31,14 @@ from spiritscout.gateway.backends import (
 )
 from spiritscout.gateway.cache import PrefixTracker, cache_summary
 from spiritscout.gateway.capabilities import EndpointCapabilities
-from spiritscout.gateway.context import DecisionMemory, estimate_input_tokens
+from spiritscout.gateway.context import DecisionMemory
+from spiritscout.gateway.costs import configured_usd
+from spiritscout.gateway.litellm_runtime import load_litellm
 from spiritscout.gateway.pricing import estimate_deepseek_cny
 from spiritscout.gateway.registry import ModelRegistry
+from spiritscout.gateway.retry import recoverable, retry_delay, status_code
+from spiritscout.gateway.session_model import Selector, model_entries_source, selection
 from spiritscout.tools.invocation import ExecutionScope, current_execution_scope
-
-
-class ModelUnavailableError(SpiritScoutError):
-    """端点连续不可用（熔断中）。
-
-    和普通「这一次调用失败了」不同：这条异常的意思是「别再试了，先把端点修好」。
-    上层拿到它必须停止推进本轮循环，而不是当成一次抖动继续下一回合——否则
-    模型挂了之后，规划层会把每一轮都记成「调查了一次」，任务越堆越多，会话
-    永远到不了终态（用户看到的就是"卡住"）。
-    """
-
-
-# 连续多少次「全链失败」就熔断；熔断后多久放一次探活请求
-MODEL_BREAKER_THRESHOLD = 3
-MODEL_BREAKER_COOLDOWN_SECONDS = 30.0
-
-# 瞬时断连就地重试的间隔：远端渠道一次抖动通常瞬时，等 1 秒重发比整轮失败划算
-_TRANSIENT_RETRY_DELAY = 1.0
-
-# 判「这条连接没了，重发就好」的指纹。SDK 把同一种断流包进不同异常类
-# （`litellm.InternalServerError: OpenAIException - Connection error` 就不是 OSError），
-# 所以按类名与消息双重匹配，而不是靠异常类型穷举。
-_TRANSIENT_HINTS = ("connection error", "connection reset", "connection aborted",
-                    "server disconnected", "incompletestream", "timed out", "timeout",
-                    "apiconnectionerror", "remotedisconnected", "temporarily unavailable")
-
-# 工具调用参数没写完（撞到输出上限）时 llama.cpp 的原文。属于「额度不够，不是端点坏了」：
-# 这类错误放大输出预算重发一次，比整轮判失败划算。
-_TOOL_ARGUMENT_TRUNCATION_HINTS = ("failed to parse tool call arguments",
-                                   "tool call arguments as json")
-
-# 「输入装不下窗口」不是抖动：端点已经明确说装不下，重发同一份请求必然再失败一次。
-# 本地端点一次推理常要几十秒，而槽位分片会让这条错误连着出现——实测 LM Studio 以
-# `--parallel 4` 加载 16384 上下文时，每槽只剩 4096，灵枢 5.2k token 的请求连续失败
-# 43 次、白白耗掉二十多分钟。这类错误一律交回上层，不在这里重试。
-_OVERFLOW_HINTS = ("context size has been exceeded", "context_length_exceeded",
-                   "maximum context length", "reduce the length of the messages",
-                   "prompt is too long", "too many tokens", "input is too long")
-
-
-def _is_context_overflow(exc: BaseException) -> bool:
-    """端点明确报「上下文装不下」：该换模型或调窗口，重试没有意义。"""
-    text = str(exc).lower()
-    return any(hint in text for hint in _OVERFLOW_HINTS)
-
-
-def _is_transient(exc: BaseException) -> bool:
-    """判断是否值得就地重试一次：只认连接/超时类，鉴权、额度与超窗都不重试。
-
-    超窗判定放最前面：SDK 把它包进 `APIConnectionError`，按类名会误判成断流。
-    """
-    if _is_context_overflow(exc):
-        return False
-    if isinstance(exc, (ConnectionError, TimeoutError)):
-        return True
-    name = type(exc).__name__.lower()
-    if "connection" in name or "timeout" in name:
-        return True
-    text = str(exc).lower()
-    return any(hint in text for hint in _TRANSIENT_HINTS)
-
-
-def _is_tool_argument_truncation(exc: BaseException) -> bool:
-    """端点说「工具调用参数不是合法 JSON」：多半是参数没写完就撞了输出上限。"""
-    text = str(exc).lower()
-    return any(hint in text for hint in _TOOL_ARGUMENT_TRUNCATION_HINTS)
 
 
 @dataclass
@@ -125,7 +60,7 @@ class ChatResponse:
 
 def output_lost(resp: ChatResponse) -> bool:
     """检查模型正文是否为空或因输出上限截断，供决策重试使用。"""
-    return (not str(resp.content or "").strip()) or resp.finish_reason in ("length", "max_tokens")
+    return (not str(resp.content or "").strip()) or getattr(resp, "finish_reason", "") in ("length", "max_tokens")
 
 
 async def chat_decision(
@@ -135,13 +70,162 @@ async def chat_decision(
     audit=None,
     actor: str = "",
     memory: DecisionMemory | None = None,
+    local_tool_handler: Callable[[Any, Any], Awaitable[dict[str, Any] | None]] | None = None,
     **kwargs: Any,
+) -> ChatResponse:
+    """主 Agent 与 JSON 子 Agent 共用按需技能通道；不额外调用路由模型。"""
+    from spiritscout.blackboard.exchange import (
+        GUIDANCE,
+        NAMES,
+        SCHEMAS,
+        execute,
+        memory_contract,
+        project_rules,
+    )
+    from spiritscout.resources.runtime import (
+        SKILL_GUIDANCE,
+        SKILL_NAMES,
+        SKILL_SCHEMAS,
+        SkillRuntime,
+    )
+    from spiritscout.traffic.tools import NAMES as TRAFFIC_NAMES
+
+    runtime = getattr(gateway, "skill_runtime", None)
+    runtime = runtime if isinstance(runtime, SkillRuntime) else None
+    bb = getattr(memory, "blackboard", None)
+    if (runtime is None and bb is None) or kwargs.get("response_format") != "json":
+        return await _chat_decision_once(gateway, messages, audit=audit, actor=actor,
+                                         memory=memory, **kwargs)
+    memory = memory if memory is not None else DecisionMemory()
+    shared_memory = (getattr(memory, 'shared_memory_enabled', False)
+                     and not getattr(getattr(gateway, 'config', None), 'lightweight_local', False))
+    original = copy.deepcopy(messages)
+    schemas = (SKILL_SCHEMAS if runtime else []) + (SCHEMAS if bb is not None else [])
+    if memory.history_lookup is not None:
+        from spiritscout.tools.history import SCHEMA as HISTORY_SCHEMA
+
+        schemas.append(HISTORY_SCHEMA)
+    if getattr(memory.agent_type, "value", "") == "report":
+        schemas = [schema for schema in schemas if schema["function"]["name"] not in {"blackboard_write", "exploration_write", "asset_link"}]
+    legacy_systems = []
+    for message in original:
+        if message.get("role") == "system":
+            guidance = [text for enabled, text in ((runtime is not None, SKILL_GUIDANCE), (bb is not None, GUIDANCE))
+                        if enabled]
+            contract = ('\n需要读取资料或共享事实时，只返回 {"skill_requests":[{"name":"工具名",'
+                '"arguments":{}}]}；结果回灌后继续原 JSON 任务。统一工具契约：'
+                + json.dumps(schemas, ensure_ascii=False, separators=(",", ":")))
+            legacy_systems.append((message, message['content'] + '\n' + ''.join(guidance) + contract))
+            missing = ''.join(text for text in guidance if text not in message['content'])
+            message['content'] += ('\n' + missing if missing else '') + contract
+        elif message.get("role") == "user" and bb is not None:
+            message["content"] = json.dumps(project_rules(bb, json.loads(message["content"])), ensure_ascii=False)
+    if memory.messages and '\n'.join(text for _, text in legacy_systems) == memory.system:
+        # 已提交检查点的契约保持逐字不变；新阶段才使用去重后的短契约。
+        for message, text in legacy_systems:
+            message['content'] = text
+    observations: list[dict[str, Any]] = []
+    while True:
+        if runtime is not None and runtime.pause_gate is not None:
+            await runtime.pause_gate.wait()
+        prepared = copy.deepcopy(original)
+        payload = {"skill_context": memory.skills.get("context", {})}
+        if shared_memory:
+            # 扩展契约作为增量现场字段，不替换已缓存的 system 工具契约。
+            payload['shared_memory_contract'] = memory_contract(
+                readonly=getattr(memory.agent_type, 'value', '') in ('report', 'verifier'))
+        if runtime:
+            payload["available_skills"] = runtime.discovery()
+        if observations:
+            payload["skill_observations"] = observations
+        prepared.append({"role": "user", "content": json.dumps(payload, ensure_ascii=False)})
+        response = await _chat_decision_once(gateway, prepared, audit=audit, actor=actor,
+                                             memory=memory, **kwargs)
+        try:
+            data = extract_json(response.content)
+        except ValueError:
+            data = None
+        requests = data.get("skill_requests") if isinstance(data, dict) else None
+        if not isinstance(requests, list) or not requests:
+            return response
+        for request in requests:
+            name = request.get("name", "") if isinstance(request, dict) else ""
+            arguments = request.get("arguments", {}) if isinstance(request, dict) else {}
+            scope = current_execution_scope.get() or ExecutionScope()
+            call_id = uuid.uuid4().hex
+            detail = {"task_id": scope.task_id, "route_id": scope.route_id}
+            if audit is not None:
+                audit.log("agent.tool_call", actor, {**detail, "calls": [
+                    {"id": call_id, "name": name if isinstance(name, str) and name in SKILL_NAMES | NAMES | TRAFFIC_NAMES else "resource_request", "arguments": arguments}]})
+            local_result = None
+            if local_tool_handler is not None:
+                token = current_execution_scope.set(replace(scope, agent_id=actor,
+                    tool_call_id=call_id, tool_name=name))
+                try:
+                    local_result = await local_tool_handler(name, arguments)
+                finally:
+                    current_execution_scope.reset(token)
+            if name == "history_lookup" and memory.history_lookup is not None and local_result is None:
+                if not isinstance(arguments, dict):
+                    local_result = {"ok": False, "error": "history_lookup 参数必须是对象"}
+                else:
+                    token = current_execution_scope.set(replace(scope, agent_id=actor,
+                        tool_call_id=call_id, tool_name=name))
+                    try:
+                        local_result = await memory.history_lookup(arguments)
+                    finally:
+                        current_execution_scope.reset(token)
+            if local_result is not None:
+                result = local_result
+                observations.append({"name": name, **result})
+            elif isinstance(name, str) and name in NAMES:
+                token = current_execution_scope.set(replace(scope, agent_id=actor,
+                    step_id=scope.step_id or memory.checkpoint_key, tool_call_id=call_id, tool_name=name))
+                try:
+                    result = execute(bb, name, arguments, actor=actor,
+                                     agent_type=memory.agent_type, source=detail, memory_enabled=shared_memory)
+                finally:
+                    current_execution_scope.reset(token)
+                observations.append({"name": name, **result})
+            else:
+                result = (runtime.execute(name, arguments, memory.skills,
+                                          seen=set(memory.skills.get("context", {})))
+                          if runtime else {"ok": False, "error": "未装配技能工具"})
+                if result.get("content") is not None and result.get("ok"):
+                    memory.skills.setdefault("context", {})[result["ref"]] = result
+                observations.append({"name": name, **{k:v for k,v in result.items() if k != "content"}})
+            brief = {k: v for k, v in result.items() if k != "content"}
+            if audit is not None:
+                audit.log("agent.tool_result", actor, {**detail, "id": call_id, "name": name,
+                    "ok": result["ok"], "note": result.get("note", ""),
+                    "result": json.dumps(brief, ensure_ascii=False), "skill": brief})
+                if isinstance(name, str) and name in SKILL_NAMES and result.get("ok") and "content" in result:
+                    audit.log("skill.loaded" if name == "skill_open" else "skill.file_read", actor,
+                              {**detail, **brief})
+        memory.persist()
+
+
+async def _chat_decision_once(
+    gateway: ModelGateway, messages: list[dict[str, Any]], *, audit=None,
+    actor: str = "", memory: DecisionMemory | None = None, **kwargs: Any,
 ) -> ChatResponse:
     """决策 JSON 通道：输出为空或被端点截断时加大输出余量重试一次。
 
     思考型模型可能把输出额度耗在思考上，正文为空或只剩半截 JSON——解析
     失败会被上层当成决策缺席走规则回退，一次重试远比误判便宜。重试失败
     沿用原响应交由上层解析兜底，不掩盖原始结果。"""
+    if not getattr(getattr(gateway, 'config', None), 'lightweight_local', False):
+        from spiritscout.gateway.context import (
+            EVIDENCE_REUSE_GUIDANCE,
+            EXECUTION_DATA_GUIDANCE,
+            FAILURE_ATTRIBUTION_GUIDANCE,
+        )
+
+        # 约束随 snapshot 首次发送，已有检查点只追加 add 补丁；不改 system/旧前缀。
+        messages = [*messages, {'role': 'user', 'content': json.dumps(
+            {'execution_data_rules': EXECUTION_DATA_GUIDANCE,
+             'failure_attribution_rules': FAILURE_ATTRIBUTION_GUIDANCE,
+             'evidence_reuse_rules': EVIDENCE_REUSE_GUIDANCE}, ensure_ascii=False)}]
     if memory is not None:
         budget_for = getattr(gateway, "context_budget", None)
         budget = budget_for(**kwargs) if callable(budget_for) else None
@@ -152,34 +236,68 @@ async def chat_decision(
         kwargs["preserve_context"] = True
         if audit is not None and memory.segment_changed:
             audit.log("context.decision_segment", actor, memory.segment_info)
-    resp = await gateway.chat(messages, **kwargs)
+        if memory.pending_compaction:
+            from spiritscout.gateway.manual_context import record_result
+
+            record_result(memory.blackboard, memory.pending_compaction,
+                f"decision:{memory.checkpoint_key or actor}",
+                memory.segment_info["estimated_tokens_before"], memory.segment_info["estimated_tokens_after"],
+                audit=audit, actor=actor)
+    async def chat(options: dict[str, Any]) -> ChatResponse:
+        # 主控决策不一定处于工具执行上下文；身份仍须传到网关才能启用
+        # 角色流式输出，并保留已有任务、路由和身份边界。
+        scope = current_execution_scope.get() or ExecutionScope()
+        token = current_execution_scope.set(replace(scope, agent_id=actor or scope.agent_id))
+        try:
+            return await gateway.chat(messages, **options)
+        finally:
+            current_execution_scope.reset(token)
+
+    resp = await chat(kwargs)
     if output_lost(resp):
         if audit is not None:
             audit.log("llm.output_retry", actor, {
                 "task_type": kwargs.get("task_type", ""),
                 "finish_reason": resp.finish_reason,
-                "content_chars": len(resp.content or ""),
-                # 思考型模型把额度全花在 reasoning_content 上时正文为空：这条
-                # 字段就是判断「是模型想太多还是端点没回」的唯一线索
-                "reasoning_chars": len(resp.reasoning or "")})
+                "content_chars": len(resp.content or "")})
         try:
             retry_kwargs = {**kwargs, "max_tokens": max(32768, (kwargs.get("max_tokens") or 0) * 2)}
-            retried = await gateway.chat(messages, **retry_kwargs)
+            retried = await chat(retry_kwargs)
             if not output_lost(retried):
                 resp = retried
         except Exception:  # noqa: BLE001, S110 —— 重试失败沿用原响应，解析端兜底
             pass
-    if memory is not None and not output_lost(resp):
-        # 正文不是 JSON（弱模型常无视 response_format/json 直接回散文）只是
-        # 「这条不写回决策记忆」——不能在决策通道上抛出去，否则蒸馏、秘书、
-        # 意图路由这些本来能各自降级的上层会一起拿不到响应。
+    parsed: Any = None
+    if (kwargs.get("response_format") == "json" or memory is not None) and not output_lost(resp):
+        # 决策 JSON 缺席即质量事件：上层会当决策缺席走规则回退，此处留痕
+        # 让每次降级可观测（extract_json 未命中抛错，回退策略仍由调用方决定）
         try:
-            rememberable = isinstance(extract_json(resp.content), dict)
+            parsed = extract_json(resp.content)
         except ValueError:
-            rememberable = False
-        if rememberable:
-            memory.commit(resp.content or "",
-                          reasoning=getattr(resp, "reasoning", "") or "")
+            parsed = None
+        if not isinstance(parsed, dict):
+            # 正文完整却不成 JSON（散文式回答）偶有发生，原样重试一次常可
+            # 恢复；重试失败沿用原响应，解析兜底交给调用方。
+            try:
+                retried = await chat(kwargs)
+                try:
+                    candidate = extract_json(retried.content)
+                except ValueError:
+                    candidate = None
+                if isinstance(candidate, dict):
+                    resp, parsed = retried, candidate
+            except Exception:  # noqa: BLE001, S110 —— 重试失败沿用原响应，解析端兜底
+                pass
+            if audit is not None and not isinstance(parsed, dict):
+                audit.log("llm.json_miss", actor, {
+                    "task_type": kwargs.get("task_type", ""),
+                    "finish_reason": resp.finish_reason,
+                    "preview": (resp.content or "")[:200]})
+    if memory is not None and not output_lost(resp) and isinstance(parsed, dict):
+        memory.commit(resp.content or "", reasoning=getattr(resp, "reasoning", "") or "")
+    from spiritscout.gateway.progress import publish_progress
+
+    publish_progress(audit, actor, resp.content or "")
     return resp
 
 
@@ -269,6 +387,7 @@ class ModelGateway:
         config: GatewayConfig | None = None,
         audit: AuditLogger | None = None,
         mock_backend: MockBackend | None = None,
+        pause_gate: PauseGate | None = None,
     ):
         self.prefix_tracker = PrefixTracker()
         self.registry = registry
@@ -281,64 +400,44 @@ class ModelGateway:
         )
         self._mock = mock_backend or MockBackend()
         self._rate_state: dict[str, list[float]] = {}
-        # 会话级模型选择：str = 固定；callable = 每次调用现取（会话页改选择即时生效）
-        self._session_model: Any = ""
-        # 失效的会话选择只记一次审计（每条调用都记会淹没审计流）
-        self._missing_logged: set[str] = set()
-        # 端点并发闸：按端点（base_url 优先）复用信号量，避免把十几个任务同时
-        # 砸到一个单槽本地模型上——那样每个请求都在排队里耗到硬超时。
-        self._gates: dict[str, asyncio.Semaphore] = {}
-        # 端点熔断状态：连续全链失败计数 + 熔断到期时间 + 最后一次错误
-        self._breaker_failures = 0
-        self._breaker_open_until = 0.0
-        self._breaker_last_error = ""
+        self.skill_runtime: Any = None
+        self.pause_gate = pause_gate
+        self._session_model: Selector = selection()
+        self._missing_selection = ""
+        self._entries_source = model_entries_source()
+        self._entries_version: list | None = None
+        from spiritscout.gateway.official_prices import price_catalog
+        self.pricing = price_catalog()
 
-    def set_session_model(self, model: Any) -> None:
-        """设置本会话优先使用的模型（空 = 跟随设置页的优先级链）。
+    def _refresh_selection_registry(self) -> None:
+        entries = self._entries_source() if self._entries_source else None
+        if entries and entries is not self._entries_version:
+            self.registry = ModelRegistry(entries)
+            self._entries_version = entries
 
-        传字符串就是快照，传 callable 则每次调用现取——Web 端传
-        `lambda: session.model`，用户在会话页换了模型，下一批调用立刻改道，
-        不用重启会话。取不到（会话已删）时按空处理，即回到全局优先级。
-        """
-        self._session_model = model or ""
+    def set_session_model(self, selector: Selector) -> None:
+        self._session_model = selector
+        self._missing_selection = ""
 
-    def _preferred(self) -> str:
-        """本会话当前选的模型（callable 现取；异常/空值一律视为未选）。"""
-        source = self._session_model
-        if callable(source):
-            try:
-                source = source()
-            except Exception:  # noqa: BLE001 —— 取不到就是没选，不能让路由陪葬
-                return ""
-        return str(source or "").strip()
+    def selected_model(self) -> str:
+        self._refresh_selection_registry()
+        selector = self._session_model
+        ref = str(selector() if callable(selector) else selector).strip()
+        if not ref:
+            return ""
+        if self.registry.has(ref):
+            self._missing_selection = ""
+            return self.registry.get(ref).key
+        if ref != self._missing_selection:
+            self.audit.log("model.override_missing", "gateway", {"model": ref})
+            self._missing_selection = ref
+        return ""
 
-    def session_model(self) -> str:
-        """当前会话选定的模型（空串 = 跟随设置页优先级链）。"""
-        return self._preferred()
-
-    def resolve_model(self, task_type: str = "execution", *,
-                      model: str | None = None) -> str:
-        """此刻这条调用会落到哪个模型（不改任何状态，供界面提示与自检）。"""
-        return self._route(task_type, model=model).model
-
-    def _route(self, task_type: str, *, model: str | None,
-               required_capability: str | None = None) -> ModelEntry:
-        """路由入口：显式绑定 > 会话选定 > 设置页优先级链。
-
-        会话选的模型若已被停用/改名（注册表里没了），退回优先级链而不是让
-        整轮调用报「未注册的模型」——用户已经把这个模型删了，会话不该因此停摆。
-        """
-        prefer = (model or "").strip() or self._preferred()
-        if prefer and not self.registry.has(prefer):
-            if prefer not in self._missing_logged:
-                self._missing_logged.add(prefer)
-                self.audit.log("model.override_missing", "gateway", {
-                    "model": prefer, "task_type": task_type})
-            prefer = ""
-        return self.registry.route(
-            task_type, prefer_model=prefer or None,
-            required_capability=required_capability,
-        )
+    def resolve_model(self, *, model: str | None = None, task_type: str = "execution",
+                      required_capability: str | None = None) -> ModelEntry:
+        self._refresh_selection_registry()
+        return self.registry.route(task_type, prefer_model=model or self.selected_model(),
+                                   required_capability=required_capability)
 
     def set_mode(self, mode: str) -> None:
         """设置当前运行模式（src/ctf/competition）：按模式分开计量用量。"""
@@ -358,7 +457,7 @@ class ModelGateway:
         response_format: str | None = None,
         timeout_seconds: int | None = None,
         tools: list[dict[str, Any]] | None = None,
-        tool_choice: str | None = None,
+        tool_choice: str | dict[str, Any] | None = None,
         on_delta: DeltaCallback | None = None,
         reasoning_effort: str = "",
         preserve_context: bool = False,
@@ -366,7 +465,7 @@ class ModelGateway:
     ) -> ChatResponse:
         """统一对话入口：路由 → 限流 → 调用（主备切换）→ 计量 → 审计。
 
-        timeout_seconds：单次后端调用硬超时；缺省用网关配置。重推理角色
+        timeout_seconds：每个候选模型的硬超时，包含重试和退避；缺省用网关配置。重推理角色
         （如解题环）可放宽，避免长链推理被全局默认值中途掐死。
         tools/on_delta：原生工具调用与流式增量（主备切换时若已吐出增量，
         切换前投递 reset 让消费端清屏，避免两次尝试的文本叠加）。
@@ -376,20 +475,15 @@ class ModelGateway:
         由模型档案声明（ModelEntry.max_output_tokens）或端点自定；上限只影响
         生成在哪停，设小了思考型模型会把额度耗在思考上、正文被截成半截。
         小通道（路由/连通性探测）可传定值收紧。"""
-        now = time.monotonic()
-        if now < self._breaker_open_until:
-            # 熔断中：立刻失败，不再排队、不再等 300s 硬超时。上层据此停止本轮循环。
-            self.audit.log("model.breaker_open", "gateway", {
-                "remaining_seconds": round(self._breaker_open_until - now, 1),
-                "failures": self._breaker_failures,
-                "last_error": self._breaker_last_error[:200]})
-            raise ModelUnavailableError(
-                f"模型端点连续不可用（已熔断 {round(self._breaker_open_until - now, 1)}s，"
-                f"期间不再重试）：{self._breaker_last_error[:200]}")
-        entry = self._route(
-            task_type, model=model, required_capability=required_capability,
+        broker = getattr(self, "questions", None)
+        scope = current_execution_scope.get()
+        if broker is not None and scope is not None:
+            await broker.wait_for_task(scope.task_id)
+        entry = self.resolve_model(
+            task_type=task_type, model=model,
+            required_capability=required_capability,
         )
-        chain = [entry, *self.registry.fallback_of(entry.model)]
+        chain = [entry, *self.registry.fallback_of(entry.key)]
 
         # 流式增量与主备切换的衔接：已吐出的增量在切换前用 reset 清屏
         emitted = False
@@ -406,7 +500,7 @@ class ModelGateway:
                 if idx > 0 and emitted:
                     await emit_delta(on_delta, "reset", "")
                     emitted = False
-                resp = await self._invoke_with_retry(
+                resp = await self._invoke(
                     candidate, messages,
                     temperature=temperature, max_tokens=max_tokens,
                     response_format=response_format,
@@ -415,13 +509,10 @@ class ModelGateway:
                     on_delta=_relay if on_delta is not None else None,
                     # 思考强度按每个候选模型各自声明的档位把关（主备档位可能不同）
                     reasoning_effort=self._resolve_effort(candidate, reasoning_effort),
+                    requested_reasoning_effort=reasoning_effort,
                     task_type=task_type,
                     preserve_context=preserve_context, preserve_tool_order=preserve_tool_order,
                 )
-                # 成功一次就把熔断状态清干净：抖动恢复后不该还背着历史失败
-                self._breaker_failures = 0
-                self._breaker_open_until = 0.0
-                self._breaker_last_error = ""
                 if idx > 0:
                     resp.fallback_used = True
                     self.audit.log(
@@ -432,64 +523,7 @@ class ModelGateway:
             except Exception as exc:  # noqa: BLE001 —— 主备切换语义（4.9.3-5）
                 last_exc = exc
                 continue
-        # 全链失败时把「为什么」也说出来：最常见的是渠道没配密钥，
-        # 原始 LiteLLM 文案（Missing credentials）对用户没有指向性。
-        hint = ""
-        if last_exc is not None and "Missing credentials" in str(last_exc):
-            hint = ("；这条渠道没有可用密钥：去「模型」页给对应供应商填 API Key，"
-                    "或把它从优先级链里移掉（本机端点会自动用占位密钥，不需要填）")
-        elif last_exc is not None and _is_context_overflow(last_exc):
-            # 这句话要能直接指到动作上：换模型，或去端点把窗口调大。槽位分片是最常见
-            # 的坑——界面显示 16384，按 4 路并行就只有 4096 可用，看着够实际不够。
-            hint = ("；模型窗口装不下本轮输入：换上下文更大的模型，或把端点的窗口调大"
-                    "（并行槽数会把总窗口按槽平分，单槽只有 1/N）")
-        self._breaker_failures += 1
-        self._breaker_last_error = f"{type(last_exc).__name__}: {last_exc}"
-        if self._breaker_failures >= MODEL_BREAKER_THRESHOLD:
-            self._breaker_open_until = time.monotonic() + MODEL_BREAKER_COOLDOWN_SECONDS
-            self.audit.log("model.breaker_tripped", "gateway", {
-                "failures": self._breaker_failures,
-                "cooldown_seconds": MODEL_BREAKER_COOLDOWN_SECONDS,
-                "last_error": self._breaker_last_error[:200]})
-            raise ModelUnavailableError(
-                f"模型端点连续 {self._breaker_failures} 次不可用，熔断 "
-                f"{int(MODEL_BREAKER_COOLDOWN_SECONDS)}s 后放探活：{last_exc}{hint}") from last_exc
-        raise SpiritScoutError(f"模型调用全链失败（主备均不可用）: {last_exc}{hint}")
-
-    async def _invoke_with_retry(self, entry: ModelEntry, *args: Any, **kwargs: Any) -> ChatResponse:
-        """瞬时断连/超时就地重试一次，别把整轮耗在等一个已经不回来的流上。
-
-        远端渠道的 `Connection error` 属于「这条连接没了，换一条就好」：不重试的话
-        上层要么被一次抖动拖到硬超时上限，要么直接判失败白跑一轮。只重试瞬时类错误
-        （连接中断、读超时），鉴权/参数/额度错误立即上抛，不做无意义重试。
-
-        工具调用参数被截断（llama.cpp 报 `Failed to parse tool call arguments as JSON`）
-        单独再试一次，并把输出预算翻倍：那不是端点坏了，是模型想写的参数比给它的
-        额度长，翻倍后同一份请求大多能一次写完。
-        """
-        try:
-            return await self._invoke(entry, *args, **kwargs)
-        except Exception as exc:
-            if isinstance(exc, asyncio.CancelledError):
-                raise
-            if _is_tool_argument_truncation(exc) and kwargs.get("max_tokens"):
-                bigger = min(int(kwargs["max_tokens"]) * 2,
-                             entry.max_output_tokens or int(kwargs["max_tokens"]) * 2)
-                if bigger > int(kwargs["max_tokens"]):
-                    self.audit.log("model.retry", "gateway",
-                                   {"model": entry.model,
-                                    "reason": "tool_arguments_truncated",
-                                    "error": str(exc)[:160],
-                                    "max_tokens": [int(kwargs["max_tokens"]), bigger]})
-                    kwargs["max_tokens"] = bigger
-                    return await self._invoke(entry, *args, **kwargs)
-            if not _is_transient(exc):
-                raise
-            self.audit.log("model.retry", "gateway",
-                           {"model": entry.model, "reason": str(exc)[:200],
-                            "wait_ms": int(_TRANSIENT_RETRY_DELAY * 1000)})
-            await asyncio.sleep(_TRANSIENT_RETRY_DELAY)
-            return await self._invoke(entry, *args, **kwargs)
+        raise SpiritScoutError(f"模型调用全链失败（主备均不可用）: {last_exc}")
 
     def context_budget(self, *, task_type: str = "execution", model: str | None = None,
                        required_capability: str | None = None,
@@ -497,34 +531,18 @@ class ModelGateway:
         """和 chat 使用同一路由，向对话所有者暴露输入整理阈值。"""
         from spiritscout.gateway.context import input_window_budget
 
-        entry = self._route(task_type, model=model,
-                            required_capability=required_capability)
+        entry = self.resolve_model(task_type=task_type, model=model,
+                                   required_capability=required_capability)
         return input_window_budget(entry.context_window, max_tokens or entry.max_output_tokens)
 
     # ------------------------------------------------------------ 内部
 
     def context_identity(self, *, model: str | None = None, task_type: str = "execution") -> dict[str, str]:
         """对话协议身份；不包含密钥，供显式接力核对模型与端点。"""
-        entry = self._route(task_type, model=model)
+        entry = self.resolve_model(task_type=task_type, model=model)
         return {"model": entry.model, "provider": entry.provider,
-                "base_url": entry.base_url, "api_format": entry.api_format}
-
-    def _gate(self, entry: ModelEntry) -> asyncio.Semaphore | None:
-        """端点并发闸（`max_concurrency`）：0/未声明 = 不限，返回 None。
-
-        同一端点上不同模型共享一把闸——限制来自端点本身的槽位，不是模型 ID。
-        信号量按需创建并复用，排队时间不计入单次调用硬超时（超时只管真正在飞的
-        那一次），所以慢端点只会变慢，不会因为并发而集体超时失败。
-        """
-        limit = int(getattr(entry, "max_concurrency", 0) or 0)
-        if limit <= 0:
-            return None
-        key = entry.base_url or entry.provider_ref or entry.model
-        gate = self._gates.get(key)
-        if gate is None:
-            gate = asyncio.Semaphore(limit)
-            self._gates[key] = gate
-        return gate
+                "base_url": entry.base_url, "api_format": entry.api_format,
+                **({"model_key": entry.key, "provider_ref": entry.provider_ref} if entry.provider_ref else {})}
 
     def _resolve_effort(self, entry: ModelEntry, requested: str) -> str:
         """思考强度把关：只下发该模型自己声明过的取值。
@@ -556,51 +574,42 @@ class ModelGateway:
         response_format: str | None,
         timeout_seconds: int | None = None,
         tools: list[dict[str, Any]] | None = None,
-        tool_choice: str | None = None,
+        tool_choice: str | dict[str, Any] | None = None,
         on_delta: DeltaCallback | None = None,
         reasoning_effort: str = "",
+        requested_reasoning_effort: str = "",
         task_type: str = "execution",
         preserve_context: bool = False,
         preserve_tool_order: bool = False,
     ) -> ChatResponse:
+        if entry.auth_method == 'kimi_oauth':
+            from spiritscout.web.provider_auth import access_token
+            entry = entry.model_copy(update={'api_key': await access_token(entry)})
         backend: ChatBackend = backend_for(entry, self._mock, capabilities=self.endpoint_capabilities)
         messages = copy.deepcopy(messages)
-        # 引入必须无条件执行：决策通道传 preserve_context=True 时不进下面的压缩分支，
-        # 把 import 写在分支里会让后面的 clamp 直接 UnboundLocalError。
-        from spiritscout.gateway.context import clamp_output_tokens
-
         if entry.context_window and not preserve_context:
             from spiritscout.gateway.context import (
                 compact_history_tokens,
                 input_window_budget,
-                shrink_history_to_window,
             )
 
             budget = input_window_budget(entry.context_window, max_tokens or entry.max_output_tokens)
             if budget is not None:
                 compact_history_tokens(messages, budget, tools=tools)
-                # 节选压不进窗口时丢掉最早的几组工具往返：小窗口模型跑到几十回合
-                # 后输入仍超窗，端点 400，整条路线报废；丢旧观察比丢整轮划算。
-                dropped = shrink_history_to_window(
-                    messages, entry.context_window, tools=tools,
-                    reserve=max_tokens or entry.max_output_tokens)
-                if dropped:
-                    self.audit.log("model.history_trimmed", "gateway", {
-                        "model": entry.model, "context_window": entry.context_window,
-                        "dropped_messages": dropped,
-                        "estimated_input_tokens": estimate_input_tokens(messages, tools)})
         if tools:
             tools = copy.deepcopy(tools)
             if not preserve_tool_order:
                 tools = sorted(tools, key=lambda t: str(t.get("function", {}).get("name", t.get("name", ""))))
-            tools = json.loads(json.dumps(tools, ensure_ascii=False, sort_keys=True))
+                tools = json.loads(json.dumps(tools, ensure_ascii=False, sort_keys=True))
+            # 保留工具契约时也保留字段顺序。约束解码端点会按 properties 顺序生成参数；
+            # 将 search/replace 排成 replace/search 会让小模型先生成新文、再选择要替换的原文。
         # 输出上限落点：调用点显式给定值优先（小通道定值）；否则按模型档案
         # 声明下发；档案也没声明就 None（请求不带该字段，端点自定）
         if max_tokens is None and entry.max_output_tokens > 0:
             max_tokens = entry.max_output_tokens
-        # 输出上限不能把窗口撑破：窗口小的模型（本地 4k/8k）输入 + 输出越界时端点
-        # 直接 400，上层只能看到「模型调用全链失败」。按估算输入把余量收回窗口内。
-        max_tokens = clamp_output_tokens(messages, tools, entry.context_window or 0, max_tokens)
+        from spiritscout.gateway.billing import quote_for
+
+        pricing_snapshot = await quote_for(entry, self.pricing)
         started = time.perf_counter()
         wall = time.time()                      # 记账用墙钟（时序图按日聚合）
         scope = current_execution_scope.get() or ExecutionScope()
@@ -608,73 +617,107 @@ class ModelGateway:
         role = next((line[6:].strip() for m in messages if m.get("role") == "system"
                      for line in str(m.get("content") or "").splitlines() if line.startswith("ROLE: ")), "")
         prefix = self.prefix_tracker.observe(
-            (entry.provider, entry.base_url or "", entry.model, actor, scope.task_id or "", scope.route_id or "", task_type, role),
-            messages, tools)
-        # provider_ref 是用户眼里的「渠道」（供应商名），模型页/子 Agent 页都按它显示；
-        # base_url 跟着一起记，排查「打到了哪个端点」时不用再翻配置。
-        call = {"call_id": f"model-{uuid.uuid4().hex}", "model": entry.model, "runtime_version": __version__,
-                "provider_ref": entry.provider_ref, "base_url": entry.base_url or "",
+            (entry.key, entry.provider, entry.base_url or "", entry.model, actor, scope.task_id or "", scope.route_id or "", task_type, role),
+            messages, tools,
+            conversation_key=(actor, scope.task_id or '', scope.route_id or '', task_type),
+            model_identity=(entry.key, entry.provider, entry.base_url or '', entry.model),
+            request_options={'api_format': entry.api_format, 'reasoning_effort': reasoning_effort,
+                'temperature': temperature, 'max_tokens': max_tokens, 'tool_choice': tool_choice,
+                'response_format': response_format, 'prompt_caching': entry.prompt_caching})
+        call = {"call_id": f"model-{uuid.uuid4().hex}", "model": entry.model, "model_key": entry.key, "provider_ref": entry.provider_ref, "runtime_version": __version__,
+                "pricing_snapshot": pricing_snapshot,
+                "api_format": entry.api_format, "configured_context_window": entry.context_window,
+                "requested_reasoning_effort": requested_reasoning_effort,
+                "sent_reasoning_effort": reasoning_effort,
+                "response_format": response_format or "",
                 "task_type": task_type, "task_id": scope.task_id, "route_id": scope.route_id, "cache_scope": role or task_type, **prefix}
         self.audit.log("model.started", actor, call)
         stream = None
-        if (on_delta is None and scope.agent_id
-                and getattr(entry, "streaming", True)):
+        if on_delta is None and scope.agent_id:
             from spiritscout.gateway.streaming import AuditStream
 
             stream = AuditStream(self.audit, actor, call)
             on_delta = stream
+        from spiritscout.gateway.streaming import ModelWait
+
+        waiting = ModelWait(self.audit, actor, call) if on_delta is None else None
         attempts = AttemptTrace(self.audit, actor, call)
         attempt_token = current_attempt_trace.set(attempts)
-        hard_timeout = timeout_seconds or self.config.request_timeout_seconds
-        # 端点并发闸：本地单槽端点（parallel=1）一次只能算一份请求，十几个任务
-        # 同时打上去的结果是每个都在队列里耗到硬超时。排队放在硬超时外面——
-        # 等得久只是慢，不会因为等太久被判失败。
-        gate = self._gate(entry)
-        gate_waited_ms = 0.0
-        if gate is not None:
-            gate_wait_started = time.perf_counter()
-            await gate.acquire()
-            gate_waited_ms = round((time.perf_counter() - gate_wait_started) * 1000, 1)
-            if gate_waited_ms >= 1000:
-                self.audit.log("model.queued", actor,
-                               {**call, "wait_ms": gate_waited_ms,
-                                "limit": int(entry.max_concurrency)})
+        timeout = timeout_seconds or self.config.request_timeout_seconds
+        deadline = asyncio.timeout(None)
+        retry_index = 0
+        emitted_attempt = False
+        deliver = on_delta
+
+        def relay(kind: str, text: str) -> Any:
+            nonlocal emitted_attempt
+            if text and kind in {"reasoning", "text", "tool_call"}:
+                deadline.reschedule(asyncio.get_running_loop().time() + timeout)
+            if kind == "reset":
+                emitted_attempt = False
+            elif text:
+                emitted_attempt = True
+            return deliver(kind, text) if deliver is not None else None
+
         try:
-            # 硬墙：交给 SDK 的 timeout 只管单次读写，流式响应可以长时间不吐字也不报错
-            # （实测远端渠道挂 17 分钟才回 Connection error）。这里到点必断，让上层
-            # 立刻走重试或主备切换，而不是整轮陪着一条死连接等。
-            async with asyncio.timeout(hard_timeout):
-                raw = await backend.complete(
-                    entry, messages,
-                    temperature=temperature, max_tokens=max_tokens,
-                    timeout=hard_timeout,
-                    response_format=response_format,
-                    tools=tools, tool_choice=tool_choice, on_delta=on_delta,
-                    reasoning_effort=reasoning_effort,
-                )
-        except TimeoutError as exc:
-            attempts.finish("failed")
-            if stream is not None:
-                stream.flush()
-            self.audit.log("model.timeout", actor,
-                           {**call, "limit_seconds": hard_timeout,
-                            "latency_ms": round((time.perf_counter() - started) * 1000, 1)})
-            raise TimeoutError(
-                f"模型单次调用超过 {hard_timeout}s 硬超时（{entry.model}）") from exc
+            if isinstance(backend, LiteLLMBackend):
+                # 启动预热尚未完成时，等待本地 SDK 不消耗远端输出的超时窗口。
+                await load_litellm()
+            deadline = asyncio.timeout(timeout)
+            backend_options = ({"_lightweight_local": self.config.lightweight_local}
+                               if entry.provider == "ollama" else {})
+            # 首次输出和后续增量共用空闲窗口；只有实际内容能延长等待。
+            # 重试退避和本地等待提示不会刷新计时。
+            async with deadline:
+                while True:
+                    try:
+                        raw = await backend.complete(
+                            entry, messages,
+                            temperature=temperature, max_tokens=max_tokens,
+                            timeout=timeout,
+                            response_format=response_format,
+                            tools=tools, tool_choice=tool_choice,
+                            on_delta=relay if deliver is not None else None,
+                            reasoning_effort=reasoning_effort, **backend_options,
+                        )
+                        break
+                    except Exception as exc:
+                        if (not recoverable(exc) or self.config.max_retries is not None
+                                and retry_index >= self.config.max_retries):
+                            raise
+                        attempts.finish("failed")
+                        delay = retry_delay(exc, retry_index, self.config)
+                        retry_index += 1
+                        self.audit.log("model.retry_scheduled", actor, {
+                            **call, "retry_index": retry_index, "delay_seconds": delay,
+                            "retry_at": time.time() + delay, "status_code": status_code(exc),
+                            "error": str(exc)[:300]})
+                        if emitted_attempt:
+                            await emit_delta(relay, "reset", "")
+                        await asyncio.sleep(delay)
+                        await self._rate_limit(entry)
+                        if self.pause_gate is not None:
+                            await self.pause_gate.wait()
+                        self.audit.log("model.retrying", actor, {**call, "retry_index": retry_index})
         except BaseException as exc:
+            expired = isinstance(exc, TimeoutError) and deadline.expired()
+            error = f"模型连续超过 {timeout} 秒没有新输出，已取消本次请求" if expired else str(exc)
             attempts.finish("cancelled" if isinstance(exc, asyncio.CancelledError) else "failed")
+            self._record_usage(entry, attempts.accounted_usage(), attempts, call, actor, wall,
+                               "cancelled" if isinstance(exc, asyncio.CancelledError) else "failed")
             if stream is not None:
                 stream.flush()
             self.audit.log("model.cancelled" if isinstance(exc, asyncio.CancelledError)
                            else "model.failed", actor,
-                           {**call, "error": str(exc)[:300],
+                           {**call, "error": error[:300],
                             "latency_ms": round((time.perf_counter() - started) * 1000, 1)})
+            if expired:
+                raise TimeoutError(error) from exc
             raise
         finally:
+            if waiting is not None:
+                waiting.close()
             current_attempt_trace.reset(attempt_token)
-            # 无论成败都要还槽，否则一次超时就把端点永久占住。
-            if gate is not None:
-                gate.release()
         if stream is not None:
             # 不支持流式的端点至少回放实际返回正文，不能伪造生成中的分析。
             if not stream.emitted and not stream.parts:
@@ -682,30 +725,13 @@ class ModelGateway:
                 stream("text", raw.get("content", ""))
             stream.flush()
         latency = (time.perf_counter() - started) * 1000
-        metrics = {key: raw.get(key) for key in ("cached_input_tokens", "cache_write_tokens", "first_delta_ms")}
-        metrics.update(runtime_version=__version__, **attempts.metrics())
-        metrics["patch_optimization_enabled"] = self.config.compact_decision_patches
-        metrics.update(estimate_deepseek_cny(entry, wall, raw["prompt_tokens"],
-                                             raw.get("cached_input_tokens"), raw["completion_tokens"]))
-        metrics.update(cache_scope=role or task_type, task_id=scope.task_id, route_id=scope.route_id)
-        metrics.update(input_tokens=raw["prompt_tokens"], output_tokens=raw["completion_tokens"],
-                       task_type=task_type, actor=actor, call_id=call["call_id"], **prefix)
-        total_tokens = raw["prompt_tokens"] + raw["completion_tokens"]
-        cost = (
-            raw["prompt_tokens"] / 1e6 * entry.cost_input_per_mtok
-            + raw["completion_tokens"] / 1e6 * entry.cost_output_per_mtok
-        )
-        read = raw.get("cached_input_tokens")
-        write = raw.get("cache_write_tokens")
-        if read is not None and entry.cost_cached_input_per_mtok is not None:
-            cost += min(read, raw["prompt_tokens"]) / 1e6 * (entry.cost_cached_input_per_mtok - entry.cost_input_per_mtok)
-        if write is not None and entry.cost_cache_write_per_mtok is not None:
-            cost += min(write, max(0, raw["prompt_tokens"] - (read or 0))) / 1e6 * (entry.cost_cache_write_per_mtok - entry.cost_input_per_mtok)
-        self.budget.record(entry.model, total_tokens, cost, ts=wall, **metrics)
+        accounted = attempts.accounted_usage(raw)
+        metrics, total_tokens, cost = self._record_usage(entry, {**raw, **accounted}, attempts, call, actor, wall, "completed")
         self.audit.log(
             "model.call", actor,
             {**call, "tokens": total_tokens,
-             "input_tokens": raw["prompt_tokens"], "output_tokens": raw["completion_tokens"],
+             "input_tokens": accounted.get("prompt_tokens", raw["prompt_tokens"]),
+             "output_tokens": accounted.get("completion_tokens", raw["completion_tokens"]),
              "cost_usd": round(cost, 6), "latency_ms": round(latency, 1),
              "effort": reasoning_effort, **metrics,
              "tool_calls": [c.get("name") for c in raw.get("tool_calls", [])]},
@@ -725,10 +751,49 @@ class ModelGateway:
             finish_reason=str(raw.get("finish_reason", "") or ""),
         )
 
+    def _record_usage(self, entry: ModelEntry, raw: dict[str, Any], attempts: AttemptTrace,
+                      call: dict[str, Any], actor: str, wall: float, status: str) -> tuple[dict[str, Any], int, float]:
+        """一次逻辑调用入账一次，含已报告的重试、失败和取消用量。"""
+        metrics = {key: raw.get(key) for key in ("cached_input_tokens", "cache_write_tokens", "first_delta_ms")}
+        metrics.update(runtime_version=__version__, usage_status=raw.get("usage_status", "unknown"),
+                       call_status=status, **attempts.metrics())
+        metrics.update(configured_usd(entry, raw))
+        metrics.update({key: call[key] for key in (
+            "model_key", "provider_ref", "api_format", "configured_context_window",
+            "requested_reasoning_effort", "sent_reasoning_effort")})
+        metrics.update({key: raw[key] for key in ('queue_duration_ms', 'load_duration_ms',
+                        'prompt_eval_duration_ms', 'eval_duration_ms', 'eval_tokens_per_second') if key in raw})
+        metrics["patch_optimization_enabled"] = self.config.compact_decision_patches
+        if entry.billing_scheme == 'manual':
+            metrics.update(estimate_deepseek_cny(entry, wall, raw["prompt_tokens"],
+                                                 raw.get("cached_input_tokens"), raw["completion_tokens"]))
+        else:
+            from spiritscout.gateway.billing import estimate
+            metrics.update(estimate(entry, call['pricing_snapshot'], wall, raw))
+        metrics.update({key: call[key] for key in ("cache_scope", "task_id", "route_id")})
+        metrics.update(input_tokens=raw["prompt_tokens"], output_tokens=raw["completion_tokens"],
+                       task_type=call["task_type"], actor=actor, call_id=call["call_id"])
+        metrics.update({key: call[key] for key in ("request_bytes", "reused_prefix_bytes", "new_suffix_bytes", "context_parts", "cache_diagnostics")})
+        total_tokens = raw["prompt_tokens"] + raw["completion_tokens"]
+        cost = (
+            raw["prompt_tokens"] / 1e6 * entry.cost_input_per_mtok
+            + raw["completion_tokens"] / 1e6 * entry.cost_output_per_mtok
+        )
+        read = raw.get("cached_input_tokens")
+        write = raw.get("cache_write_tokens")
+        if read is not None and entry.cost_cached_input_per_mtok is not None:
+            cost += min(read, raw["prompt_tokens"]) / 1e6 * (entry.cost_cached_input_per_mtok - entry.cost_input_per_mtok)
+        if write is not None and entry.cost_cache_write_per_mtok is not None:
+            cost += min(write, max(0, raw["prompt_tokens"] - (read or 0))) / 1e6 * (entry.cost_cache_write_per_mtok - entry.cost_input_per_mtok)
+        if entry.billing_scheme != 'manual':
+            cost = 0.0  # 旧 USD 累加器不能混入人民币参考价或订阅费；新费用视图使用覆盖率。
+        self.budget.record(entry.key, total_tokens, cost, ts=wall, **metrics)
+        return metrics, total_tokens, cost
+
     async def _rate_limit(self, entry: ModelEntry) -> None:
         """按模型 RPM 限流（注册表 rate_limit_rpm）。"""
         rpm = max(entry.rate_limit_rpm, 1)
-        window = self._rate_state.setdefault(entry.model, [])
+        window = self._rate_state.setdefault(entry.key, [])
         now = time.monotonic()
         while True:
             window[:] = [t for t in window if now - t < 60.0]
@@ -755,50 +820,37 @@ class ModelGateway:
 class AgentBoundGateway:
     """按 Agent 绑定模型的网关包装（Web 编队页分配）。
 
-    chat 未显式给 model 时注入该 Agent 被指派的模型；模型为空 = 不干预
+    chat 未显式给 model 时优先采用会话统一选择，再采用该 Agent 被指派的模型；模型为空 = 不干预
     （维持档位路由现状）。其余属性（budget/usage_report/...）全部透传内层网关，
     预算计量、限流、主备切换、降级语义不变——本包装只改「谁来答」，不改治理。
-
-    session_first=True 用于**主 Agent 车道**：会话页选的模型优先于编队里给
-    灵枢的指派（用户当场改的选择压过全局配置），每次调用现取，改造即生效。
     """
 
     def __init__(self, inner: ModelGateway, model: str = "", *,
-                 session_first: bool = False) -> None:
+                 prefer_session: bool = False) -> None:
         self._inner = inner
         self._model = model
-        self._session_first = session_first
+        self._prefer_session = prefer_session
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._inner, name)
 
-    def _bound(self) -> str:
-        if self._session_first:
-            current = self._inner.session_model()
-            if current:
-                return current
-        return self._model
+    def _bound_kwargs(self, kwargs: dict[str, Any]) -> dict[str, Any]:
+        if not kwargs.get("model"):
+            selected = self._inner.selected_model()
+            if selected or self._model:
+                kwargs["model"] = selected or self._model
+        return kwargs
+
+    def resolve_model(self, **kwargs: Any) -> ModelEntry:
+        return self._inner.resolve_model(**self._bound_kwargs(kwargs))
 
     async def chat(self, messages: list[dict[str, str]], **kwargs: Any) -> ChatResponse:
-        bound = self._bound()
-        if bound and not kwargs.get("model"):
-            kwargs["model"] = bound
-        return await self._inner.chat(messages, **kwargs)
+        return await self._inner.chat(messages, **self._bound_kwargs(kwargs))
 
     def context_budget(self, **kwargs: Any) -> int | None:
         """容量查询也必须遵从编队绑定，不能错用注册表第一个模型。"""
-        bound = self._bound()
-        if bound and not kwargs.get("model"):
-            kwargs["model"] = bound
-        return self._inner.context_budget(**kwargs)
-
-    def resolve_model(self, task_type: str = "execution", *,
-                      model: str | None = None) -> str:
-        """预览时也要带上绑定：否则界面显示的模型与真正调用的不一致。"""
-        bound = self._bound()
-        return self._inner.resolve_model(task_type, model=model or bound or None)
+        budget_for = getattr(self._inner, "context_budget", None)
+        return budget_for(**self._bound_kwargs(kwargs)) if callable(budget_for) else None
 
     def context_identity(self, **kwargs: Any) -> dict[str, str]:
-        if self._model and not kwargs.get("model"):
-            kwargs["model"] = self._model
-        return self._inner.context_identity(**kwargs)
+        return self._inner.context_identity(**self._bound_kwargs(kwargs))

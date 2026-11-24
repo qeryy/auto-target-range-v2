@@ -6,12 +6,13 @@ const ProjectsPage = (() => {
   let current = null;                 // null=总览；""=未分类；"*"=全部；否则项目 ID
   let tab = "assets";                 // assets | findings | sessions
   let detail = { gen: 0, q: "", items: [], shown: 0, total: 0, more: false };
+  let findingCategory = "";
   let poll = null;
 
   const root = () => $("#view-projects");
-  const time = t => t ? new Date(t * 1000).toLocaleString("zh-CN", {hour12: false}) : "未记录";
-  const KIND_CN = {endpoint: "接口", app: "应用页面", url: "网址", domain: "域名",
-                   host: "主机", ip: "IP", service: "服务端口", finding: "历史发现"};
+  const time = t => t ? new Date(t * 1000).toLocaleString(I18n.dateLocale, {hour12: false}) : I18n.t("未记录");
+  const KIND_CN = {endpoint: I18n.t("接口"), app: I18n.t("应用页面"), url: I18n.t("网址"), domain: I18n.t("域名"),
+                   host: I18n.t("主机"), ip: "IP", service: I18n.t("服务端口"), finding: I18n.t("历史发现")};
 
   function folder(id) {
     if (id === ALL) return (catalog && catalog.all) || null;
@@ -22,25 +23,25 @@ const ProjectsPage = (() => {
   /* 纯渲染函数（项目页与 tests/test_project_folders.js 共用）：
      项目卡片 + 恒在的未分类与全部；不读取 DOM，不绑定事件。 */
   function projectCardsHtml(cat, active) {
-    const clock = t => t ? new Date(t * 1000).toLocaleString("zh-CN", {hour12: false}) : "未记录";
+    const clock = t => t ? new Date(t * 1000).toLocaleString(I18n.dateLocale, {hour12: false}) : I18n.t("未记录");
     const icon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 7.5A2.5 2.5 0 0 1 5.5 5h3.4l2 2h7.6A2.5 2.5 0 0 1 21 9.5v7A2.5 2.5 0 0 1 18.5 19h-13A2.5 2.5 0 0 1 3 16.5z"/></svg>';
     const card = (p, id, extra) => {
       const selected = active !== null && active !== undefined && String(active) === String(id);
-      const name = p.name || (id === "" ? "未分类" : "全部");
+      const name = id === "" ? I18n.t("未分类") : id === ALL ? I18n.t("全部") : p.name;
       const raw = p.description || (id === ALL
-        ? "所有项目与未分类的汇总"
-        : id === "" ? "未加入项目的会话与资产会自动归到这里" : "尚无说明");
+        ? I18n.t("所有项目与未分类的汇总")
+        : id === "" ? I18n.t("未加入项目的会话与资产会自动归到这里") : I18n.t("尚无说明"));
       const desc = raw.length > 140 ? raw.slice(0, 140).trimEnd() + "…" : raw;
       const badge = p.read_only
-        ? `<span class="pf-ro">${id === ALL ? "只读总览" : "自动归档"}</span>` : "";
-      const counts = `${Number(p.session_count || 0)} 会话 · `
-        + `${Number(p.asset_count || 0)} 资产 · ${Number(p.finding_count || 0)} 发现`;
+        ? `<span class="pf-ro">${id === ALL ? I18n.t("只读总览") : I18n.t("自动归档")}</span>` : "";
+      const counts = I18n.t`${Number(p.session_count || 0)} 会话 · `
+        + I18n.t`${Number(p.asset_count || 0)} 资产 · ${Number(p.finding_count || 0)} 发现`;
       return `<button type="button" class="pfolder${extra || ""}${selected ? " on" : ""}" data-folder="${esc(id)}">`
         + `<span class="pf-top">${icon}${badge}</span>`
         + `<b class="pf-name">${esc(name)}</b>`
         + `<span class="pf-desc">${esc(desc)}</span>`
         + `<span class="pf-count">${counts}</span>`
-        + `<span class="pf-time">最近活动 ${esc(clock(p.last_seen))}</span></button>`;
+        + I18n.html`<span class="pf-time">最近活动 ${esc(clock(p.last_seen))}</span></button>`;
     };
     const cards = ((cat && cat.projects) || []).map(p => card(p, p.project_id || ""));
     if (cat && cat.unclassified) cards.push(card(cat.unclassified, "", " dashed"));
@@ -49,17 +50,17 @@ const ProjectsPage = (() => {
   }
 
   function statsHtml(f) {
-    return `<span><b>${Number(f.session_count || 0)}</b> 会话</span>`
-      + `<span><b>${Number(f.asset_count || 0)}</b> 资产</span>`
-      + `<span><b>${Number(f.finding_count || 0)}</b> 发现</span>`
-      + `<span>最近活动 ${esc(time(f.last_seen))}</span>`;
+    return I18n.html`<span><b>${Number(f.session_count || 0)}</b> 会话</span>`
+      + I18n.html`<span><b>${Number(f.asset_count || 0)}</b> 资产</span>`
+      + I18n.html`<span><b>${Number(f.finding_count || 0)}</b> 发现</span>`
+      + I18n.html`<span>最近活动 ${esc(time(f.last_seen))}</span>`;
   }
 
   function shell() {
     const el = root();
     if (!el || el.dataset.ready) return;
     el.dataset.ready = "yes";
-    el.innerHTML = `<header class="resource-head projects-head">
+    el.innerHTML = I18n.html`<header class="resource-head projects-head">
       <div><h2>项目</h2>
         <p>按项目归档会话、资产与发现。同项目会话可查阅历史记录，使用前需复核。</p></div>
       <div class="resource-head-actions">
@@ -87,6 +88,7 @@ const ProjectsPage = (() => {
   function openFolder(id) {
     current = id;
     tab = "assets";
+    findingCategory = "";
     detail = {gen: detail.gen + 1, q: "", items: [], shown: 0, total: 0, more: false};
     renderGrid();
     renderDetail();
@@ -104,18 +106,18 @@ const ProjectsPage = (() => {
       current = null; renderGrid(); return;
     }
     const readonly = !!f.read_only;
-    const kicker = current === ALL ? "全库汇总" : current === "" ? "未分类" : "项目分区";
+    const kicker = current === ALL ? I18n.t("全库汇总") : current === "" ? I18n.t("未分类") : I18n.t("项目分区");
     const desc = f.description || (current === ALL
-      ? "跨项目的只读总览；每个项目只展示自己的最新观测，互不覆盖。"
-      : current === "" ? "没有加入项目的会话与资产会自动归到这里。"
-      : "尚无说明。点击「编辑」写入本项目的测试规则，后续同项目会话会直接读到。");
-    box.innerHTML = `<div class="pd-head">
+      ? I18n.t("跨项目的只读总览；每个项目只展示自己的最新观测，互不覆盖。")
+      : current === "" ? I18n.t("没有加入项目的会话与资产会自动归到这里。")
+      : I18n.t("尚无说明。点击「编辑」写入本项目的测试规则，后续同项目会话会直接读到。"));
+    box.innerHTML = I18n.html`<div class="pd-head">
       <button class="btn sm" type="button" data-back>← 项目总览</button>
       <div class="pd-title">
-        <div><span class="resource-eyebrow">${kicker}</span><h3>${esc(f.name || "未分类")}</h3>
+        <div><span class="resource-eyebrow">${kicker}</span><h3>${esc((["", ALL].includes(current) ? I18n.t(f.name) : f.name) || I18n.t("未分类"))}</h3>
           <p class="pd-desc">${esc(desc)}</p></div>
         <div class="pd-ops">${readonly ? "" :
-          `<button class="btn sm" type="button" data-rename>重命名</button>
+          I18n.html`<button class="btn sm" type="button" data-rename>重命名</button>
            <button class="btn sm" type="button" data-edit-desc title="修改项目说明与测试规则">编辑说明</button>
            <button class="btn sm danger" type="button" data-delete>删除</button>`}</div>
       </div>
@@ -123,7 +125,7 @@ const ProjectsPage = (() => {
     </div>
     <div class="pd-toolbar">
       <div class="pd-tabs" role="tablist" aria-label="项目内容">
-        ${[["assets", "资产"], ["findings", "发现"], ["sessions", "会话"]].map(([key, name]) =>
+        ${[["assets", I18n.t("资产")], ["findings", I18n.t("发现")], ["sessions", I18n.t("会话")]].map(([key, name]) =>
           `<button type="button" role="tab" aria-selected="${tab === key}" data-ptab="${key}" class="${tab === key ? "on" : ""}">${name}</button>`).join("")}
       </div>
       <label class="pd-search"><span class="sr-only">检索</span>
@@ -131,11 +133,40 @@ const ProjectsPage = (() => {
       <span class="pd-count" data-pcount role="status"></span>
       <button class="btn sm" type="button" data-refresh>刷新</button>
     </div>
+    ${tab === "findings" ? `<div class="finding-categories" role="group" aria-label="${I18n.t("漏洞分类")}" data-finding-categories></div>` : ""}
     <p class="pd-note">历史记录需复核后使用。点击条目查看来源；项目归属不改变任务授权。</p>
+    ${readonly ? "" : `<section class="pd-campaigns" data-campaigns><div class="resource-empty">正在读取资产收集任务…</div></section>`}
     <div class="pd-body" data-body><div class="resource-empty">正在读取…</div></div>
     <button class="btn resource-more" type="button" data-more hidden>加载更多</button>`;
     bindDetail();
+    if (!readonly) loadCampaigns();
     loadList();
+  }
+
+  async function loadCampaigns() {
+    const box = document.querySelector("#project-detail [data-campaigns]");
+    if (!box || !current || current === ALL) return;
+    try {
+      const data = await api(`/api/projects/${encodeURIComponent(current)}/asset-campaigns`);
+      const rows = data.campaigns || [];
+      box.innerHTML = `<div class="pd-campaign-head"><b>资产收集任务</b><span>${rows.length} 个任务</span></div>`
+        + (rows.length ? `<div class="pd-campaign-list">${rows.map(c => {
+          const s = c.stats || {}, total = Number(s.targets || c.targets?.length || 0), done = Number(s.completed || 0);
+          const progress = total ? Math.min(100, Math.round(done / total * 100)) : 0;
+          const action = c.status === "running" ? `<button class="btn sm" data-campaign-pause="${esc(c.campaign_id)}">暂停</button>`
+            : c.status === "paused" ? `<button class="btn sm" data-campaign-resume="${esc(c.campaign_id)}">恢复</button>`
+            : ["queued", "stopped"].includes(c.status) ? `<button class="btn sm" data-campaign-resume="${esc(c.campaign_id)}">启动</button>` : "";
+          return `<article class="pd-campaign"><div><b>${esc(c.campaign_id)}</b><span>${esc(c.status)} · ${done}/${total} 根目标 · ${Number(s.candidates || 0)} 个候选</span></div><div class="pd-campaign-bar"><i style="width:${progress}%"></i></div><div class="pd-campaign-actions">${action}${["running", "paused"].includes(c.status) ? `<button class="btn sm danger" data-campaign-stop="${esc(c.campaign_id)}">停止</button>` : ""}</div></article>`;
+        }).join("")}</div>` : `<p class="muted">尚未创建资产收集任务。</p>`);
+      box.querySelectorAll("[data-campaign-pause]").forEach(b => b.onclick = () => campaignAction(b.dataset.campaignPause, "pause"));
+      box.querySelectorAll("[data-campaign-resume]").forEach(b => b.onclick = () => campaignAction(b.dataset.campaignResume, "resume"));
+      box.querySelectorAll("[data-campaign-stop]").forEach(b => b.onclick = () => campaignAction(b.dataset.campaignStop, "stop"));
+    } catch (e) { box.textContent = e.message; }
+  }
+
+  async function campaignAction(id, action) {
+    try { await api(`/api/asset-campaigns/${encodeURIComponent(id)}/${action}`, {method: "POST"}); loadCampaigns(); }
+    catch (e) { toast(e.message, true); }
   }
 
   function bindDetail() {
@@ -168,6 +199,36 @@ const ProjectsPage = (() => {
     if (remove) remove.onclick = () => deleteDialog(folder(current));
   }
 
+  function assetCampaignDialog(project) {
+    const dlg = document.createElement("dialog");
+    dlg.className = "project-dlg";
+    dlg.innerHTML = I18n.html`<h3 style="margin:0">项目资产收集</h3>
+      <p class="muted" style="font-size:12px;line-height:1.7;margin:10px 0">任务在后台运行，结果会持续写入本项目资产库。禁打列表只用于收集阶段过滤，后续测试任务仍会再次读取并遵守。</p>
+      <div class="dlg-grid">
+        <label class="wide"><span>根域名或目标（每行一个）</span><textarea data-targets rows="4" placeholder="example.com"></textarea></label>
+        <label class="wide"><span>OneForAll 路径</span><input data-of-path placeholder="/home/.../OneForAll"></label>
+        <label class="wide"><span>禁打资产（每行一个，可用子域/通配）</span><textarea data-excluded rows="3" placeholder="admin.example.com"></textarea></label>
+        <label><input type="checkbox" data-brute> 启用子域爆破</label>
+      </div><div class="pj-error" role="alert"></div>
+      <div class="dlg-ops"><button type="button" class="btn" data-cancel>取消</button><button type="button" class="btn primary" data-ok>开始后台收集</button></div>`;
+    document.body.append(dlg);
+    const close = () => { dlg.close(); dlg.remove(); };
+    dlg.querySelector("[data-cancel]").onclick = close;
+    dlg.addEventListener("cancel", close);
+    dlg.querySelector("[data-ok]").onclick = async () => {
+      const targets = dlg.querySelector("[data-targets]").value.split(/\n|,/) .map(x => x.trim()).filter(Boolean);
+      const excluded = dlg.querySelector("[data-excluded]").value.split(/\n|,/) .map(x => x.trim()).filter(Boolean);
+      if (!targets.length) { dlg.querySelector("[data-targets]").focus(); return; }
+      const button = dlg.querySelector("[data-ok]"); button.disabled = true;
+      try {
+        const campaign = await api(`/api/projects/${encodeURIComponent(project.project_id)}/asset-campaigns`, {method: "POST", body: JSON.stringify({targets, excluded_assets: excluded, oneforall_path: dlg.querySelector("[data-of-path]").value.trim(), brute: dlg.querySelector("[data-brute]").checked})});
+        await api(`/api/asset-campaigns/${encodeURIComponent(campaign.campaign_id)}/start`, {method: "POST"});
+        close(); toast("资产收集已在后台启动");
+      } catch (e) { dlg.querySelector(".pj-error").textContent = e.message; button.disabled = false; }
+    };
+    dlg.showModal(); dlg.querySelector("[data-targets]").focus();
+  }
+
   function updateCount() {
     const el = $("#project-detail [data-pcount]");
     if (!el) return;
@@ -185,12 +246,15 @@ const ProjectsPage = (() => {
     }
     if (!append) {
       detail.items = []; detail.shown = 0; detail.total = 0; detail.more = false;
-      body.innerHTML = '<div class="resource-empty">正在读取…</div>';
+      const more = $("#project-detail [data-more]");
+      if (more) more.hidden = true;
+      body.innerHTML = I18n.html('<div class="resource-empty">正在读取…</div>');
       updateCount();
     }
     const params = new URLSearchParams({
       q: detail.q, offset: String(append ? detail.items.length : 0), limit: "40",
       kind: tab === "findings" ? "finding" : "asset"});
+    if (tab === "findings" && findingCategory) params.set("category", findingCategory);
     if (current === "") params.set("unclassified", "1");
     else if (current !== ALL) params.set("project", current);
     try {
@@ -199,11 +263,32 @@ const ProjectsPage = (() => {
       detail.items = append ? [...detail.items, ...(data.items || [])] : (data.items || []);
       detail.total = Number(data.total ?? detail.items.length);
       detail.more = !!data.has_more;
+      renderFindingCategories(data.category_counts || []);
       renderList();
     } catch (e) {
       if (generation !== detail.gen) return;
-      body.innerHTML = `<div class="resource-empty">读取失败：${esc(e.message)}</div>`;
+      body.innerHTML = I18n.html`<div class="resource-empty">读取失败：${esc(e.message)}</div>`;
     }
+  }
+
+  function renderFindingCategories(counts) {
+    const group = $("#project-detail [data-finding-categories]");
+    if (!group) return;
+    const html = findingCategoryButtons(counts, findingCategory);
+    if (group._content === html) return;
+    const focused = group.contains(document.activeElement) ? document.activeElement.dataset.findingCategory : null;
+    group._content = html;
+    group.innerHTML = html;
+    group.querySelectorAll("[data-finding-category]").forEach(button => {
+      button.onclick = () => {
+        const category = button.dataset.findingCategory;
+        if (category === findingCategory) return;
+        findingCategory = category;
+        renderFindingCategories(counts);
+        loadList();
+      };
+      if (focused === button.dataset.findingCategory) button.focus({preventScroll: true});
+    });
   }
 
   function assetRow(item, index) {
@@ -212,10 +297,11 @@ const ProjectsPage = (() => {
     const fp = d.fingerprint || {};
     const title = finding ? (fp.title || d.value || item.identity) : (d.value || item.identity);
     const label = finding
-      ? [fp.vuln_type, fp.severity && `危害 ${fp.severity}`].filter(Boolean).join(" · ") || "历史发现"
-      : (KIND_CN[d.asset_type] || KIND_CN[item.kind] || item.kind || "资产");
-    const badge = item.changed ? "观测有变化" : item.freshness === "recent" ? "近期观测" : "建议复核";
-    return `<button type="button" class="pd-row" data-asset="${index}">
+      ? [item.taxonomy_id === "unclassified" ? fp.vuln_type : findingCategoryLabel(item) || fp.vuln_type,
+        fp.severity && I18n.t`危害 ${fp.severity_status !== "assessed" ? I18n.t("待定级") : (SEV_CN[fp.severity]?.[0] || fp.severity)}`].filter(Boolean).join(" · ") || I18n.t("历史发现")
+      : (KIND_CN[d.asset_type] || KIND_CN[item.kind] || item.kind || I18n.t("资产"));
+    const badge = item.changed ? I18n.t("观测有变化") : item.freshness === "recent" ? I18n.t("近期观测") : I18n.t("建议复核");
+    return I18n.html`<button type="button" class="pd-row" data-asset="${index}">
       <span class="pd-row-top"><b>${esc(title || "")}</b>
         <span class="resource-badge ${item.changed ? "changed" : ""}">${esc(badge)}</span></span>
       <span class="pd-row-sub">${esc(label)} · ${Number(item.observations || 0)} 次观测 · ${esc(time(item.last_seen))}</span>
@@ -227,8 +313,8 @@ const ProjectsPage = (() => {
     if (!body) return;
     detail.shown = detail.items.length;
     if (!detail.items.length) {
-      body.innerHTML = `<div class="resource-empty">${detail.q ? "没有匹配记录" : "这里还没有记录"}`
-        + `<p>${tab === "findings" ? "只有通过复核并确认收录的发现才会进入共享目录。" : "运行会归入此项目的会话后，记录会自动出现。"}</p></div>`;
+      body.innerHTML = `<div class="resource-empty">${detail.q || (tab === "findings" && findingCategory) ? I18n.t("没有匹配记录") : I18n.t("这里还没有记录")}`
+        + `<p>${tab === "findings" ? I18n.t("只有通过复核并确认收录的发现才会进入共享目录。") : I18n.t("运行会归入此项目的会话后，记录会自动出现。")}</p></div>`;
     } else {
       body.innerHTML = `<div class="pd-list">${detail.items.map(assetRow).join("")}</div>`;
       body.querySelectorAll("[data-asset]").forEach(button =>
@@ -257,8 +343,8 @@ const ProjectsPage = (() => {
         .toLowerCase().includes(q));
     detail.shown = list.length; detail.total = list.length;
     if (!list.length) {
-      body.innerHTML = `<div class="resource-empty">${q ? "没有匹配的会话" : "这个分区还没有会话"}`
-        + `<p>在任务页下达任务时选择此项目，会话就会归到这里。</p></div>`;
+      body.innerHTML = `<div class="resource-empty">${q ? I18n.t("没有匹配的会话") : I18n.t("这个分区还没有会话")}`
+        + I18n.html`<p>在任务页下达任务时选择此项目，会话就会归到这里。</p></div>`;
     } else {
       body.innerHTML = `<div class="pd-list">${list.map(session => `
         <button type="button" class="pd-row" data-session="${esc(session.session_id)}">
@@ -278,13 +364,13 @@ const ProjectsPage = (() => {
     const body = $("#project-detail [data-body]");
     if (!body) return;
     const generation = ++detail.gen;
-    body.innerHTML = '<div class="resource-empty">正在读取观测历史…</div>';
+    body.innerHTML = I18n.html('<div class="resource-empty">正在读取观测历史…</div>');
     try {
       const data = await api(`/api/assets/${encodeURIComponent(item.id)}/history`);
       if (generation !== detail.gen || current === null) return;
       const d = item.data || {}, fp = d.fingerprint || {};
       const title = (d.asset_type === "finding" ? (fp.title || d.value) : d.value) || item.identity || "";
-      body.innerHTML = `<div class="pd-history">
+      body.innerHTML = I18n.html`<div class="pd-history">
         <button class="btn sm" type="button" data-backlist>← 返回列表</button>
         <div class="pd-hist-head"><span class="resource-eyebrow">观测档案</span>
           <h3>${esc(title)}</h3>
@@ -292,24 +378,24 @@ const ProjectsPage = (() => {
           <p class="resource-history-note">这些是历史记录。资产、账号权限和内容可能变化，不能视为本次已验证；也不构成授权。</p>
           <button class="btn" type="button" data-recheck>用新会话复核此资产</button></div>
         <div class="asset-observations">${(data.items || []).map((entry, index) => `
-          <article><span class="asset-time">${esc(time(entry.observed_at))}${index === 0 ? " · 最近观测" : ""}
+          <article><span class="asset-time">${esc(time(entry.observed_at))}${index === 0 ? I18n.t(" · 最近观测") : ""}
             · ${esc(projectName(entry.project_id))}</span>
             <small>${esc(entry.source)}</small>
             <pre>${esc(JSON.stringify(entry.data, null, 2))}</pre></article>`).join("")
-          || '<div class="resource-empty">暂无观测记录</div>'}</div>
-        ${data.has_more ? '<p class="muted">当前显示最近 30 条观测。</p>' : ""}
+          || I18n.html('<div class="resource-empty">暂无观测记录</div>')}</div>
+        ${data.has_more ? I18n.html('<p class="muted">当前显示最近 30 条观测。</p>') : ""}
       </div>`;
       body.querySelector("[data-backlist]").onclick = () => renderDetail();
       body.querySelector("[data-recheck]").onclick = () => {
         const project = current === ALL ? "" : current;
         fillSelect($("#c-project"), project);
         show("home");
-        $("#c-mission").value = `复核 ${title} 的当前状态。先读取已有资产观测，对比变化；历史结果仅供参考。请依据本次提供的授权开展。`;
+        $("#c-mission").value = I18n.t`复核 ${title} 的当前状态。先读取已有资产观测，对比变化；历史结果仅供参考。请依据本次提供的授权开展。`;
         if (typeof homeSync === "function") homeSync();
         $("#c-mission").focus();
       };
     } catch (e) {
-      if (generation === detail.gen) body.innerHTML = `<div class="resource-empty">历史读取失败：${esc(e.message)}</div>`;
+      if (generation === detail.gen) body.innerHTML = I18n.html`<div class="resource-empty">历史读取失败：${esc(e.message)}</div>`;
     }
   }
 
@@ -321,18 +407,19 @@ const ProjectsPage = (() => {
     const signature = projects.map(p => p.project_id + "\u0000" + p.name).join("\u0001");
     if (select.dataset.pjSignature !== signature) {
       select.dataset.pjSignature = signature;
-      select.innerHTML = '<option value="">未分类</option>'
+      select.innerHTML = I18n.html('<option value="">未分类</option>')
         + projects.map(p => `<option value="${esc(p.project_id)}">${esc(p.name)}</option>`).join("");
     }
     select.value = projects.some(p => p.project_id === selected) ? selected : "";
     if (select.closest(".selx")) { selxRebuild(select); selxSync(select); }
+    if (typeof syncAssetPickerVisibility === "function") syncAssetPickerVisibility();
   }
 
   function editDialog(project, focus = "name") {
     const creating = !project;
     const dlg = document.createElement("dialog");
     dlg.className = "project-dlg";
-    dlg.innerHTML = `<h3 style="margin:0">${creating ? "新建项目" : "编辑项目"}</h3>
+    dlg.innerHTML = I18n.html`<h3 style="margin:0">${creating ? I18n.t("新建项目") : I18n.t("编辑项目")}</h3>
       <p class="muted" style="font-size:12px;margin:10px 0 0;line-height:1.75">
         项目是会话与资产记忆的分区，不是授权边界。说明可以写完整的测试规则
         （平台限制、禁测项、提交要求、已知坑等），同项目的后续会话会直接读到；
@@ -346,7 +433,7 @@ const ProjectsPage = (() => {
       </div>
       <div class="pj-error" role="alert"></div>
       <div class="dlg-ops"><button type="button" class="btn" data-cancel>取消</button>
-        <button type="button" class="btn primary" data-ok>${creating ? "创建" : "保存"}</button></div>`;
+        <button type="button" class="btn primary" data-ok>${creating ? I18n.t("创建") : I18n.t("保存")}</button></div>`;
     document.body.append(dlg);
     dlg.querySelector("[data-pj-name]").value = project?.name || "";
     dlg.querySelector("[data-pj-desc]").value = project?.description || "";
@@ -365,7 +452,7 @@ const ProjectsPage = (() => {
           : await api(`/api/projects/${encodeURIComponent(project.project_id)}`,
               {method: "PATCH", body: JSON.stringify({name, description})});
         close();
-        toast(creating ? "项目已创建" : "项目已更新");
+        toast(creating ? I18n.t("项目已创建") : I18n.t("项目已更新"));
         await loadCatalog(true);
         if (creating) {
           fillSelect($("#c-project"), saved.project_id);
@@ -389,7 +476,7 @@ const ProjectsPage = (() => {
   function deleteDialog(project) {
     const dlg = document.createElement("dialog");
     dlg.className = "project-dlg";
-    dlg.innerHTML = `<h3 style="margin:0">删除项目「${esc(project.name)}」</h3>
+    dlg.innerHTML = I18n.html`<h3 style="margin:0">删除项目「${esc(project.name)}」</h3>
       <p style="font-size:12.5px;line-height:1.85;margin:12px 0 0">
         只解除分区关系，<b>不会删除任何资产、观测或发现</b>：项目内的资产与发现转为未分类，
         项目内的 ${Number(project.session_count || 0)} 个会话移出项目。</p>
@@ -407,10 +494,10 @@ const ProjectsPage = (() => {
         const result = await api(`/api/projects/${encodeURIComponent(project.project_id)}?confirm=true`,
           {method: "DELETE"});
         close();
-        toast(`项目已删除：${Number(result.detached_sessions || 0)} 个会话、`
-          + `${Number(result.detached_observations || 0)} 条观测转为未分类`);
+        toast(I18n.t`项目已删除：${Number(result.detached_sessions || 0)} 个会话、`
+          + I18n.t`${Number(result.detached_observations || 0)} 条观测转为未分类`);
         if ((result.failed_sessions || []).length) {
-          toast(`${result.failed_sessions.length} 个会话未能移出，请到会话列表手动移动`, true);
+          toast(I18n.t`${result.failed_sessions.length} 个会话未能移出，请到会话列表手动移动`, true);
         }
         backToGrid();
         await loadCatalog(true);
@@ -452,7 +539,8 @@ const ProjectsPage = (() => {
           const stats = $("#project-detail .pd-stats");
           if (stats) stats.innerHTML = statsHtml(f);
           const title = $("#project-detail .pd-title h3");
-          if (title) title.textContent = f.name || "未分类";
+          if (title) title.textContent = (["", ALL].includes(current) ? I18n.t(f.name) : f.name) || I18n.t("未分类");
+          if (!f.read_only) loadCampaigns().catch(() => {});
         }
       }
     }
@@ -470,6 +558,7 @@ const ProjectsPage = (() => {
       loadCatalog(true).catch(() => {});
     }, 6000);
   }
+
 
   function close() {
     if (poll) { clearInterval(poll); poll = null; }
@@ -490,7 +579,7 @@ const ProjectsPage = (() => {
       await api(`/api/sessions/${encodeURIComponent(sessionId)}`,
         {method: "PATCH", body: JSON.stringify({project_id: projectId})});
       dlg.close();
-      toast("会话已移动；后续观测归入新项目，已注入的项目记忆不会即时重载");
+      toast(I18n.t("会话已移动；后续观测归入新项目，已注入的项目记忆不会即时重载"));
       await refreshSessions();
       if (S.cur === sessionId) refreshState();
       loadCatalog(true).catch(() => {});

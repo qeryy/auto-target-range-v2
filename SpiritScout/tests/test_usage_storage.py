@@ -8,7 +8,6 @@ import sqlite3
 import tempfile
 import unittest
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import closing
 from pathlib import Path
 from unittest.mock import patch
 
@@ -22,7 +21,7 @@ from spiritscout.resources.store import ResourceStore
 
 class UsageStorageTests(unittest.TestCase):
     def test_migrate_once_preserve_history_and_append_without_full_snapshot(self) -> None:
-        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as directory:
+        with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "usage.json"
             baseline = {"used_tokens": 100, "used_usd": .1, "per_model_tokens": {"old": 100},
                         "calls": 1, "call_series": [{"ts": 1, "tokens": 100, "model": "old",
@@ -49,7 +48,7 @@ class UsageStorageTests(unittest.TestCase):
             self.assertEqual(resumed.budget.used_tokens, 2100)
 
     def test_read_cache_is_invalidated_by_atomic_replacement_and_is_not_mutable(self) -> None:
-        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as directory:
+        with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "usage.json"
             path.write_text('{"used_tokens":100}')
             original_reader = Path.read_bytes
@@ -66,7 +65,7 @@ class UsageStorageTests(unittest.TestCase):
             self.assertEqual(read_usage(path)["used_tokens"], 900, "同长度、同 mtime 替换也必须失效")
 
     def test_cache_retains_only_latest_snapshot_for_each_file(self) -> None:
-        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as directory:
+        with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "usage.json"
             cache = _file_cache(str(path.resolve()), False)
             for tokens in range(30):
@@ -79,9 +78,9 @@ class UsageStorageTests(unittest.TestCase):
             self.assertEqual(cache.snapshot["used_tokens"], 29)
 
     def test_transactions_survive_reopen_and_do_not_expose_uncommitted_calls(self) -> None:
-        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as directory:
+        with tempfile.TemporaryDirectory() as directory:
             ledger = UsageLedger(Path(directory) / "usage.db")
-            with closing(sqlite3.connect(ledger.path)) as writer:
+            with sqlite3.connect(ledger.path) as writer:
                 writer.execute("BEGIN IMMEDIATE")
                 writer.execute("INSERT INTO calls(call_id,data) VALUES(?,?)",
                                ("pending", json.dumps({"call_id": "pending", "ts": 1, "model": "m", "tokens": 42})))
@@ -91,7 +90,7 @@ class UsageStorageTests(unittest.TestCase):
             self.assertEqual(UsageLedger(ledger.path).read()["used_tokens"], 42)
 
     def test_multiple_writers_and_duplicate_deliveries_keep_exact_totals(self) -> None:
-        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as directory:
+        with tempfile.TemporaryDirectory() as directory:
             ledger = UsageLedger(Path(directory) / "usage.db")
             def append(index: int) -> None:
                 ledger.append({"call_id": str(index % 20), "ts": index + 1, "tokens": 7, "model": "m"})
@@ -100,10 +99,44 @@ class UsageStorageTests(unittest.TestCase):
             self.assertEqual(ledger.read()["used_tokens"], 140)
             self.assertEqual(ledger.read()["calls"], 20)
 
+    def test_summary_matches_full_snapshot_and_keeps_history_private(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "usage.json"
+            legacy = json.dumps({"used_tokens": 12, "calls": 1, "call_series": [
+                {"ts": 1, "model": "fixture", "tokens": 12, "input_tokens": 10,
+                 "output_tokens": 2, "cached_input_tokens": 8}]})
+            for use_ledger in (False, True):
+                with self.subTest(ledger=use_ledger):
+                    path.write_text(legacy)
+                    ledger = UsageLedger(path.with_suffix('.db'), path) if use_ledger else None
+                    full = read_usage(path)
+                    selected = frozenset({"tokens", "context_parts"})
+                    projected = read_usage(path, call_fields=selected)
+                    self.assertEqual(projected, {**full, 'call_series': [
+                        {k: v for k, v in row.items() if k in selected} for row in full['call_series']]})
+                    projected['call_series'][0]['context_parts']['changed'] = 1
+                    self.assertEqual(read_usage(path), full, '投影不能改写底层调用缓存')
+                    summary = read_usage(path, include_calls=False)
+                    self.assertEqual(summary, {k: v for k, v in full.items() if k != 'call_series'})
+                    self.assertEqual(summary['cache']['hit_rate'], .8)
+                    summary['cache']['groups'].clear()
+                    summary['per_model_tokens']['fixture'] = 999
+                    self.assertEqual(read_usage(path), full, '摘要调用方不能改写缓存或明细')
+                    if ledger:
+                        ledger.append({"call_id": "new", "ts": 2, "model": "fixture", "tokens": 5,
+                                       "input_tokens": 4, "output_tokens": 1, "cached_input_tokens": 2})
+                    else:
+                        replacement = path.with_suffix('.tmp')
+                        replacement.write_text('{"used_tokens":99}')
+                        replacement.replace(path)
+                    updated = read_usage(path)
+                    self.assertEqual(read_usage(path, include_calls=False),
+                                     {k: v for k, v in updated.items() if k != 'call_series'})
+
 
 class ResourceImportPerformanceTests(unittest.TestCase):
     def test_unchanged_import_is_empty_then_reads_only_new_versions_and_full_repair(self) -> None:
-        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as directory:
+        with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             workspace = root / "sess-fixture"
             workspace.mkdir()
@@ -126,7 +159,7 @@ class ResourceImportPerformanceTests(unittest.TestCase):
                 bb.close()
 
     def test_failed_import_replays_and_history_truncation_resets_cursor(self) -> None:
-        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as directory:
+        with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             workspace = root / "sess-fixture"
             workspace.mkdir()
@@ -141,16 +174,15 @@ class ResourceImportPerformanceTests(unittest.TestCase):
                         store.import_session(workspace)
                 self.assertGreater(store.import_session(workspace), 0)
                 self.assertEqual(store.import_session(workspace), 0)
-                with closing(sqlite3.connect(workspace / "bb.db")) as writer:
+                with sqlite3.connect(workspace / "bb.db") as writer:
                     writer.execute("DELETE FROM bb_record_history")
-                    writer.commit()
                 self.assertGreater(store.import_session(workspace), 0)
                 self.assertEqual(store.import_session(workspace), 0, "游标回退后不能永远重复全扫")
             finally:
                 bb.close()
 
     def test_batch_settings_only_reads_encryption_key_once(self) -> None:
-        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as directory:
+        with tempfile.TemporaryDirectory() as directory:
             store = ResourceStore(directory)
             for index in range(3):
                 store.save("skill", str(index), {"body": "fixture"}, 0)

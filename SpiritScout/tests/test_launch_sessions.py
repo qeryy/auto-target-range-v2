@@ -16,9 +16,9 @@ from spiritscout.blackboard import Blackboard
 from spiritscout.config.settings import ModelEntry, SystemConfig, WorkspaceConfig
 from spiritscout.core.audit import AuditLogger
 from spiritscout.core.models import AgentType, BlackboardLayer, RunMode
-from spiritscout.launch import LaunchRequest, prepare_launch
-from spiritscout.web.app import create_app
-from spiritscout.web.routes.session_detail import _read_state
+from spiritscout.launch import LaunchRequest, extract_targets, prepare_launch
+from spiritscout.policy.scope import ScopeGuard
+from spiritscout.web.app import _read_state, create_app
 from spiritscout.web.sessions import (
     Session,
     SessionManager,
@@ -40,6 +40,44 @@ class LaunchRoutingTests(unittest.TestCase):
         self.assertTrue(plan.mode_auto)
         self.assertTrue(plan.needs_mode_routing)
         self.assertEqual(len(plan.challenges), 1)
+
+    def test_explicit_ctf_without_url_builds_shell_challenge(self) -> None:
+        """CTF 不强制 URL/清单：纯描述（本地题、靶机 IP）合成题目壳开工。"""
+        plan = prepare_launch(LaunchRequest(
+            mode=RunMode.CTF, mission="靶机 192.168.38.12:8080，拿到 flag"))
+
+        self.assertEqual(plan.authorization.mode, RunMode.CTF)
+        self.assertEqual(len(plan.challenges), 1)
+        self.assertEqual(plan.challenges[0]["id"], "mission-1")
+        self.assertIn("192.168.38.12", plan.challenges[0]["description"])
+
+    def test_explicit_ctf_with_https_target_is_not_bound_as_challenge_url(self) -> None:
+        """目标 URL 不写死捆绑为题目地址：原文进描述，授权范围仍覆盖。"""
+        plan = prepare_launch(LaunchRequest(
+            mode=RunMode.CTF, mission="", target="http://10.0.0.8:8888"))
+
+        self.assertEqual(len(plan.challenges), 1)
+        self.assertNotIn("url", plan.challenges[0])
+        self.assertIn("http://10.0.0.8:8888", plan.challenges[0]["description"])
+        self.assertIn("http://10.0.0.8:8888", plan.authorization.scope.allowed_urls)
+
+    def test_mission_urls_are_not_bound_as_challenge_entries(self) -> None:
+        """任务里的 URL 可能只是平台地址：不按 URL 拆题、不捆绑题目地址。"""
+        mission = ("平台 https://ctf.example.com/login，靶机 http://10.0.0.8:8888，"
+                   "附件已上传，拿 flag。" + "背景说明。" * 200)
+        plan = prepare_launch(LaunchRequest(mode=RunMode.CTF, mission=mission))
+
+        self.assertEqual(len(plan.challenges), 1)
+        self.assertNotIn("url", plan.challenges[0])
+        self.assertEqual(plan.challenges[0]["description"], mission)
+        self.assertIn("http://10.0.0.8:8888", plan.authorization.scope.allowed_urls)
+        self.assertIn("https://ctf.example.com/login", plan.authorization.scope.allowed_urls)
+
+    def test_explicit_ctf_with_nothing_at_all_still_errors(self) -> None:
+        from spiritscout.core.exceptions import SpiritScoutError
+
+        with self.assertRaises(SpiritScoutError):
+            prepare_launch(LaunchRequest(mode=RunMode.CTF))
 
     def test_competition_raw_rules_reach_model_context_not_denied_gate(self) -> None:
         """赛方规则全文保留，不编译成后端目标拦截表。"""
@@ -81,6 +119,16 @@ class LaunchRoutingTests(unittest.TestCase):
         self.assertEqual(plan.authorization.mode, RunMode.COMPETITION)
         self.assertEqual(plan.rules.contest_type.value, "jeopardy")
 
+    def test_src_mission_without_url_or_uploads_can_launch(self) -> None:
+        mission = "审计本地项目的登录逻辑，先梳理认证流程"
+        plan = prepare_launch(LaunchRequest(mode=RunMode.SRC, mission=mission))
+        self.assertEqual(plan.authorization.mode, RunMode.SRC)
+        self.assertFalse(plan.needs_mode_routing)
+        self.assertEqual(plan.target, "")
+        self.assertEqual(plan.mission, mission)
+        self.assertFalse(plan.authorization.scope.allowed_urls)
+        self.assertFalse(plan.authorization.scope.allowed_domains)
+
     def test_src_target_falls_back_to_authorized_scope(self) -> None:
         """续传合并进 extra_scope 的授权目标要成为工作入口，不能是 CTF 占位符。"""
         plan = prepare_launch(LaunchRequest(
@@ -97,6 +145,42 @@ class LaunchRoutingTests(unittest.TestCase):
             mission="测试 web 资产", extra_scope=["www.example.test"]))
 
         self.assertEqual(plan.target, "https://www.example.test")
+
+    def test_src_wildcard_mission_preserves_subdomain_scope_and_uses_apex_entry(self) -> None:
+        plan = prepare_launch(LaunchRequest(
+            mode=RunMode.SRC, mission="开始对 *.vulbox.com 所有子域进行只读测试"))
+
+        self.assertEqual(plan.target, "https://vulbox.com")
+        self.assertIn("*.vulbox.com", plan.authorization.scope.allowed_domains)
+        guard = ScopeGuard(plan.authorization.scope)
+        self.assertFalse(guard.is_allowed("https://vulbox.com/"))
+        self.assertTrue(guard.is_allowed("https://www.vulbox.com/"))
+
+    def test_src_wildcard_url_is_normalized_to_subdomain_only_scope(self) -> None:
+        plan = prepare_launch(LaunchRequest(
+            mode=RunMode.SRC, target="https://*.example.test"))
+
+        self.assertEqual(plan.target, "https://example.test")
+        self.assertEqual(plan.authorization.scope.allowed_urls, [])
+        self.assertEqual(plan.authorization.scope.allowed_domains, ["*.example.test"])
+
+    def test_excluded_domains_in_mission_do_not_become_authorized_scope(self) -> None:
+        plan = prepare_launch(LaunchRequest(
+            mode=RunMode.SRC,
+            mission=("测试 *.vulbox.com 所有子域，3001.net 相关域名漏洞不收取，"
+                     "不要测试 https://legacy.example.net/admin"),
+        ))
+
+        self.assertEqual(plan.authorization.scope.allowed_domains, ["*.vulbox.com"])
+        self.assertNotIn("https://legacy.example.net/admin",
+                         plan.authorization.scope.allowed_urls)
+
+    def test_target_extraction_keeps_multiple_positive_mentions(self) -> None:
+        urls, domains = extract_targets(
+            "测试 https://shop.example.test 和 api.example.test；排除 old.example.test")
+
+        self.assertEqual(urls, ["https://shop.example.test"])
+        self.assertEqual(domains, ["api.example.test"])
 
     def test_plan_node_target_beats_session_target(self) -> None:
         node = SimpleNamespace(meta={"target": "hg.example.test"})
@@ -131,7 +215,7 @@ class ModeRouterPromptTests(unittest.IsolatedAsyncioTestCase):
                 "contest_type": "jeopardy",
                 "rationale": "智能体靶场测试是多题竞赛"},
                 ensure_ascii=False))
-            with patch("spiritscout.web.sessions._conversation_gateway",
+            with patch("spiritscout.web.session_assistant._conversation_gateway",
                        return_value=gateway):
                 mode, intent, contest_type = await _llm_route_mode(
                     cfg, models, "智能体靶场测试，多题拿分",
@@ -148,6 +232,42 @@ class ModeRouterPromptTests(unittest.IsolatedAsyncioTestCase):
 
 
 class SessionLifecycleTests(unittest.IsolatedAsyncioTestCase):
+    async def test_failed_delete_restores_metadata_and_can_be_retried(self) -> None:
+        from spiritscout.core.exceptions import SpiritScoutError
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = SystemConfig(workspace=WorkspaceConfig(root=tmp))
+            manager = SessionManager(cfg, [])
+            workspace = manager.root / "sess-delete-retry"
+            workspace.mkdir()
+            session = Session(session_id=workspace.name, mode="ctf", target="local",
+                              workspace=workspace, status="completed", title="保留的会话")
+            manager._sessions[session.session_id] = session
+            manager._persist(session)
+            evidence = workspace / "evidence.txt"
+            evidence.write_text("private evidence")
+            resources = manager._resources()
+
+            def partial_delete(path):
+                self.assertEqual(path, workspace)
+                session.meta_path.unlink()
+                raise PermissionError("evidence is read-only")
+
+            with patch.object(resources, "remove_session", wraps=resources.remove_session) as remove:
+                with patch("spiritscout.web.sessions.shutil.rmtree", side_effect=partial_delete):
+                    with self.assertRaisesRegex(SpiritScoutError, "工作区未完成"):
+                        await manager.delete(session.session_id, confirm=True)
+                self.assertIs(manager.get(session.session_id), session)
+                self.assertTrue(evidence.is_file())
+                remove.assert_not_called()
+                restored = SessionManager(cfg, []).get(session.session_id)
+                self.assertIsNotNone(restored, "部分删除后仍能重启并重试")
+                self.assertEqual(restored.title, session.title)
+                self.assertIs(await manager.delete(session.session_id, confirm=True), session)
+                remove.assert_called_once_with(session.session_id)
+            self.assertIsNone(manager.get(session.session_id))
+            self.assertFalse(workspace.exists())
+
     async def test_pre_runtime_error_cannot_leave_session_running(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -226,6 +346,37 @@ class SessionLifecycleTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(state["tasks"][0]["routes"][0]["route_id"], "r1")
             self.assertEqual(state["findings"][0]["finding_id"], "f1")
             self.assertEqual(state["findings"][0]["task_id"], "t1")
+
+    async def test_state_rebuilds_ranked_opportunities_from_persisted_blackboard(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            session = Session(session_id="sess-opportunities", mode="src",
+                              target="https://a.test", workspace=Path(tmp), status="completed")
+            bb = Blackboard(session.bb_path)
+            bb.write(BlackboardLayer.TOPOLOGY, "lead-api", {
+                "kind": "lead_card", "lead_id": "lead-api",
+                "subject": "https://a.test/api/orders", "status": "actionable",
+                "origins": ["page_network"], "origin_class": "target_observation",
+                "evidence_state": "verified", "unknowns": ["是否存在对象权限边界"],
+                "next_minimal_experiment": "比较两个授权账号读取同一对象",
+                "observation_count": 1,
+            })
+            bb.write(BlackboardLayer.TASK_STATE, "task-empty", {
+                "task": {"status": "done", "payload": {}},
+                "summary": {"status": "done", "findings": [], "handoff": {
+                    "established_facts": [], "resolved_unknowns": [],
+                    "remaining_unknowns": ["尚未形成有效结论"]}},
+            })
+            bb.close()
+
+            state = _read_state(session)
+
+            pool = state["testing_opportunities"]
+            self.assertEqual(pool["total"], 1)
+            self.assertEqual(pool["prioritized"][0]["subject"],
+                             "https://a.test/api/orders")
+            self.assertEqual(pool["prioritized"][0]["recommended_work"],
+                             "evidence_followup")
+            self.assertEqual(pool["action_yield"]["empty_completion_count"], 1)
 
     async def test_resume_cancels_stale_running_tasks(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -353,7 +504,7 @@ class PlatformExtractionTests(unittest.IsolatedAsyncioTestCase):
             plan = prepare_launch(LaunchRequest(
                 mode=RunMode.CTF, mission=mission))
             gateway = _FakeChatGateway(reply)
-            with patch("spiritscout.web.sessions._conversation_gateway",
+            with patch("spiritscout.web.session_assistant._conversation_gateway",
                        return_value=gateway), patch(
                     "spiritscout.runtime.run_ctf_engagement",
                     new=AsyncMock(return_value=SimpleNamespace(
@@ -417,7 +568,7 @@ class PlatformExtractionTests(unittest.IsolatedAsyncioTestCase):
                 mode=RunMode.COMPETITION, mission=PLATFORM_DOC_MISSION,
                 rules_yaml="contest_type: jeopardy\n"))
             gateway = _FakeChatGateway(_EXTRACTED_PROFILE)
-            with patch("spiritscout.web.sessions._conversation_gateway",
+            with patch("spiritscout.web.session_assistant._conversation_gateway",
                        return_value=gateway), patch(
                     "spiritscout.runtime.run_competition_engagement",
                     new=AsyncMock(return_value=SimpleNamespace(
@@ -430,6 +581,87 @@ class PlatformExtractionTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(profile["base_url"], "http://10.0.100.58")
             # 平台宿主并入授权域（纯托管题任务也能通过启动门）
             self.assertIn("10.0.100.58", plan.authorization.scope.allowed_domains)
+
+    async def test_competition_discovers_platform_from_entry_evidence(self) -> None:
+        mission = "智能体渗透赛入口 https://arena.test/contest，请自主完成并提交答案"
+        discovered = json.dumps({
+            "platform": {
+                "name": "arena", "base_url": "https://arena.test",
+                "ops": {
+                    "list": {"method": "GET", "path": "/api/challenges",
+                             "items_field": "data.items"},
+                    "submit": {"method": "POST",
+                               "path": "/api/challenges/{challenge}/submit",
+                               "body": {"answer": "{flag}"},
+                               "accepted_field": "correct"},
+                },
+                "challenge_fields": {"id": "id"},
+                "evidence": {
+                    "list": {
+                        "source_url": "https://arena.test/openapi.json",
+                        "excerpt": ('"/api/challenges":{"get":'
+                                    '{"data":{"items":[{"id":{}}]}}')},
+                    "submit": {
+                        "source_url": "https://arena.test/openapi.json",
+                        "excerpt": ('"/api/challenges/{id}/submit":'
+                                    '{"post":{"answer":{},"correct":{}}}')},
+                },
+            }}, ensure_ascii=False)
+        documents = [{
+            "url": "https://arena.test/openapi.json", "status": 200,
+            "content_type": "application/json",
+            "text": ('{"paths":{"/api/challenges":{"get":'
+                     '{"data":{"items":[{"id":{}}]}},'
+                     '"/api/challenges/{id}/submit":'
+                     '{"post":{"answer":{},"correct":{}}}}}'),
+        }]
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cfg = SystemConfig(workspace=WorkspaceConfig(root=str(root)))
+            models = [ModelEntry(model="test-model")]
+            manager = SessionManager(cfg, models)
+            workspace = root / "sessions" / "sess-discovery"
+            workspace.mkdir(parents=True)
+            session = Session(session_id="sess-discovery", mode="competition",
+                              target="https://arena.test/contest", workspace=workspace)
+            session.launch_request = {"mission": mission, "mode": "competition"}
+            cfg.audit_log_path = str(session.audit_path)
+            plan = prepare_launch(LaunchRequest(
+                mode=RunMode.COMPETITION, mission=mission,
+                rules_yaml="contest_type: jeopardy\n"))
+            gateway = _FakeChatGateway(json.dumps({
+                "platform": {
+                    "name": "guessed", "base_url": "https://arena.test",
+                    "ops": {
+                        "list": {"method": "GET", "path": "/guessed/list"},
+                        "submit": {"method": "POST", "path": "/guessed/submit",
+                                   "body": {"flag": "{flag}"}},
+                    },
+                    "challenge_fields": {"id": "id"},
+                }}), discovered)
+            with patch("spiritscout.web.session_assistant._conversation_gateway",
+                       return_value=gateway), patch(
+                    "spiritscout.ctf.platform_discovery.discover_platform_documents",
+                    new=AsyncMock(return_value=documents)) as discover_mock, patch(
+                    "spiritscout.runtime.run_competition_engagement",
+                    new=AsyncMock(return_value=SimpleNamespace(
+                        run_summary={}, verify_stats={}, flag_stats={},
+                        report_path=str(workspace / "report.md")))) as run_mock:
+                await manager._run(session, cfg, plan, False, models)
+
+            profile = run_mock.call_args.kwargs["platform_profile"]
+            self.assertEqual(profile["ops"]["list"]["path"], "/api/challenges")
+            self.assertEqual(profile["ops"]["submit"]["body"], {"answer": "{flag}"})
+            self.assertIn("arena", session.launch_request["platform_yaml"])
+            discover_mock.assert_awaited_once_with(
+                ["https://arena.test/contest"], audit=unittest.mock.ANY)
+
+    async def test_ctf_does_not_probe_entry_when_platform_doc_is_missing(self) -> None:
+        with patch("spiritscout.web.session_execution._llm_discover_platform",
+                   new=AsyncMock()) as discover_mock:
+            await self._run(PLAIN_CTF_MISSION, json.dumps({"platform": None}))
+
+        discover_mock.assert_not_awaited()
 
     async def test_model_routed_competition_rebuild_does_not_fall_back_to_ctf(self) -> None:
         """回归 sess-289f9346：模型已判竞赛，不能因缺用户规则 YAML 留在 CTF。"""
@@ -455,7 +687,7 @@ class PlatformExtractionTests(unittest.IsolatedAsyncioTestCase):
                             "contest_type": "jeopardy",
                             "rationale": "多题计分评测"}, ensure_ascii=False),
                 json.dumps({"platform": None}))
-            with patch("spiritscout.web.sessions._conversation_gateway",
+            with patch("spiritscout.web.session_assistant._conversation_gateway",
                        return_value=gateway), patch(
                     "spiritscout.runtime.run_competition_engagement",
                     new=AsyncMock(return_value=SimpleNamespace(
@@ -503,7 +735,7 @@ class SessionUsageTests(unittest.IsolatedAsyncioTestCase):
             plan = prepare_launch(LaunchRequest(
                 mode=RunMode.SRC, mission="你好",
                 target="https://example.com"))
-            with patch("spiritscout.web.sessions._conversation_gateway",
+            with patch("spiritscout.web.session_assistant._conversation_gateway",
                        fake_gateway):
                 session = await manager.create(
                     {"mode": "src", "mission": "你好",
@@ -556,8 +788,8 @@ class SessionNamingTests(unittest.IsolatedAsyncioTestCase):
     """小模型自动命名：解析、失败静默、按用户候选链降级。"""
 
     def _cfg(self, root: Path) -> SystemConfig:
-        # 配置路径显式指向临时目录：模型注册表只能写进 tmp，
-        # 默认值 "configs/models.yaml" 是仓库真实文件（相对 CWD）。
+        # 配置路径显式指向临时目录：模型注册表只能写进 tmp；
+        # 默认值 "configs/models.yaml" 可能由启动流程在 CWD 下创建。
         cfg = SystemConfig(
             workspace=WorkspaceConfig(root=str(root)),
             models_config_path=str(root / "models.yaml"),
@@ -578,7 +810,7 @@ class SessionNamingTests(unittest.IsolatedAsyncioTestCase):
             models = [ModelEntry(model="mini", api_key="k")]
             gateway = _FakeChatGateway(json.dumps({
                 "name": "BiliBili 越权测试", "campaign": "bilibili src"}))
-            with patch("spiritscout.web.sessions._conversation_gateway",
+            with patch("spiritscout.web.session_assistant._conversation_gateway",
                        lambda *args: gateway):
                 result = await web_sessions._llm_name(
                     cfg, models, AuditLogger(cfg.audit_log_path),
@@ -614,7 +846,7 @@ class SessionNamingTests(unittest.IsolatedAsyncioTestCase):
             agentcfg.set_naming_chain(
                 cfg.agent_models_path, ["mini", "backup"], {"mini", "backup"})
             gateway = _Picky()
-            with patch("spiritscout.web.sessions._conversation_gateway",
+            with patch("spiritscout.web.session_assistant._conversation_gateway",
                        lambda *args: gateway):
                 result = await web_sessions._llm_name(
                     cfg, [ModelEntry(model="mini", api_key="k"),
@@ -651,7 +883,7 @@ class SessionNamingTests(unittest.IsolatedAsyncioTestCase):
             cfg = self._cfg(Path(tmp))
             agentcfg.set_naming_chain(cfg.agent_models_path, ["mini"], {"mini"})
             gateway = _Thinking()
-            with patch("spiritscout.web.sessions._conversation_gateway",
+            with patch("spiritscout.web.session_assistant._conversation_gateway",
                        lambda *args: gateway):
                 result = await web_sessions._llm_name(
                     cfg, [ModelEntry(model="mini", api_key="k")],
@@ -675,7 +907,7 @@ class SessionNamingTests(unittest.IsolatedAsyncioTestCase):
             cfg = self._cfg(Path(tmp))
             agentcfg.set_assignment(cfg.agent_models_path, "master", "big", {"big"})
             gateway = _FakeChatGateway(json.dumps({"name": "跟随指派"}))
-            with patch("spiritscout.web.sessions._conversation_gateway",
+            with patch("spiritscout.web.session_assistant._conversation_gateway",
                        lambda *args: gateway):
                 await web_sessions._llm_name(
                     cfg, [ModelEntry(model="big", api_key="k"),
@@ -694,7 +926,7 @@ class SessionNamingTests(unittest.IsolatedAsyncioTestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             cfg = self._cfg(Path(tmp))
-            with patch("spiritscout.web.sessions._conversation_gateway",
+            with patch("spiritscout.web.session_assistant._conversation_gateway",
                        lambda *args: _Down()):
                 result = await web_sessions._llm_name(
                     cfg, [ModelEntry(model="mini", api_key="k")],
@@ -795,13 +1027,13 @@ class SessionNamingTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(store.history(row["id"])["items"][0]["project_id"],
                              beta_id)
             self.assertEqual(
-                json.loads((workspace / "meta.json").read_text(encoding="utf-8"))[
+                json.loads((workspace / "meta.json").read_text())[
                     "project_id"], beta_id)
 
             manager.set_project("sess-move", "")
             self.assertEqual(store.project_for_session("sess-move"), "")
             self.assertEqual(
-                json.loads((workspace / "meta.json").read_text(encoding="utf-8"))["project_id"],
+                json.loads((workspace / "meta.json").read_text())["project_id"],
                 "")
             self.assertEqual(moved.brief()["project_id"], "")
 
@@ -811,7 +1043,7 @@ class SessionNamingTests(unittest.IsolatedAsyncioTestCase):
             reloaded = SessionManager(cfg, [], resources=store)
             self.assertEqual(reloaded.get("sess-move").project_id, "")
             self.assertEqual(
-                json.loads((workspace / "meta.json").read_text(encoding="utf-8"))["project_id"],
+                json.loads((workspace / "meta.json").read_text())["project_id"],
                 "")
             # 无成员行的旧会话才按 meta 补登记
             store.remove_session("sess-move")
@@ -849,7 +1081,7 @@ class SessionNamingTests(unittest.IsolatedAsyncioTestCase):
                 target="https://bilibili.com"))
             gateway = _FakeChatGateway(json.dumps({
                 "name": "BiliBili 越权测试"}))
-            with patch("spiritscout.web.sessions._conversation_gateway",
+            with patch("spiritscout.web.session_assistant._conversation_gateway",
                        lambda *args: gateway):
                 session = await manager.create({
                     "mode": "src", "mission": "对 bilibili 做登录越权测试",
@@ -897,7 +1129,7 @@ class SessionNamingTests(unittest.IsolatedAsyncioTestCase):
                 mode=RunMode.SRC, mission="对 bilibili 做登录越权测试",
                 target="https://bilibili.com"))
             gateway = _Gated()
-            with patch("spiritscout.web.sessions._conversation_gateway",
+            with patch("spiritscout.web.session_assistant._conversation_gateway",
                        lambda *args: gateway):
                 session = await manager.create({
                     "mode": "src", "mission": "对 bilibili 做登录越权测试",
