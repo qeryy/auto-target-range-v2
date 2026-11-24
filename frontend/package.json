@@ -1,0 +1,28 @@
+{
+  "name": "spiritscout-frontend",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "build": "tsc --project tsconfig.json && vite build && npm run clean:build",
+    "clean:build": "node scripts/clean-build-output.mjs",
+    "typecheck": "tsc --project jsconfig.json && tsc --project tsconfig.json",
+    "test:frontend": "node --experimental-strip-types --test session/reader.test.ts",
+    "test:scroll": "node --test session/viewport.browser.test.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "26.6.6",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "@vitejs/plugin-react": "6.3.0",
+    "playwright": "1.61.1",
+    "typescript": "5.9.3",
+    "vite": "8.3.8"
+  },
+  "dependencies": {
+    "@radix-ui/themes": "3.3.0",
+    "@tanstack/virtual-core": "3.19.11",
+    "react": "19.3.1",
+    "react-dom": "19.3.1"
+  }
+}

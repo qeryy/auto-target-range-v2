@@ -11,4 +11,4 @@
   PowerShell 重跑。
 - Bash 误调用产生的结果不得计作项目验证、测试或排障证据。
 
-产品子目录仍须遵守 [SpiritScout/AGENTS.md](SpiritScout/AGENTS.md) 中的工程约束。
+产品工程约束见 [docs/AGENTS-upstream.md](docs/AGENTS-upstream.md)。

@@ -2,7 +2,7 @@ name: 打包并发布
 
 # 打 tag 就自动出包：wheel + sdist + 整仓 zip + 原生桌面包 + SHA256SUMS，附到同名 Release 上。
 # 三种源码包都带做题经验：wheel/sdist 里是 knowledge/data/experience.json(+md)，
-# 包根另有 EXPERIENCE.md 摘要；zip 是整仓（含 experience-export/ 与 EXPERIENCE.md）。
+# 包根另有 docs/workspace/EXPERIENCE.md 摘要；zip 是整仓。
 # 原生桌面包必须在 Windows 上编（JDK 21 jpackage + Gradle），所以拆成
 # package（Linux）→ native-desktop（Windows）→ release（汇总分发）三段。
 # 也可以在 Actions 页面手动触发（填一个已存在的 tag，或留空按代码版本号推导）。
@@ -46,24 +46,24 @@ jobs:
           set -euo pipefail
           # 摘要要进 wheel / sdist / zip，所以先生成：仓库根一份、包目录各一份。
           # 直接按文件路径跑：打包环境还没装本项目依赖，走 `-m` 会连带拉起 yaml/litellm。
-          python SpiritScout/src/spiritscout/knowledge/digest.py \
-            --repo . --package SpiritScout --limit 60
-          head -20 EXPERIENCE.md
+          python src/spiritscout/knowledge/digest.py \
+            --repo . --package . --limit 60
+          head -20 docs/workspace/EXPERIENCE.md
 
       - name: 构建 wheel 与 sdist
         run: |
           set -euo pipefail
           python -m pip install --upgrade build
-          python -m build --outdir dist/python SpiritScout
+          python -m build --outdir dist/python .
           ls -lh dist/python
 
-      - name: 打整仓 zip（附 EXPERIENCE.md）
+      - name: 打整仓 zip（附经验摘要）
         shell: bash
         run: |
           set -euo pipefail
           version=$(python - <<'PY'
           import pathlib, re
-          text = pathlib.Path("SpiritScout/src/spiritscout/__init__.py").read_text(encoding="utf-8")
+          text = pathlib.Path("src/spiritscout/__init__.py").read_text(encoding="utf-8")
           print(re.search(r'__version__\s*=\s*"([^"]+)"', text).group(1))
           PY
           )
@@ -75,11 +75,11 @@ jobs:
           import sys, zipfile
           archive, prefix = sys.argv[1], sys.argv[2]
           with zipfile.ZipFile(archive, "a", zipfile.ZIP_DEFLATED) as zf:
-              zf.write("EXPERIENCE.md", prefix + "EXPERIENCE.md")
+              zf.write("docs/workspace/EXPERIENCE.md", prefix + "docs/workspace/EXPERIENCE.md")
           with zipfile.ZipFile(archive) as zf:
               names = zf.namelist()
-          assert prefix + "EXPERIENCE.md" in names, "zip 里没塞进经验摘要"
-          assert any(n.startswith(prefix + "experience-export/") for n in names), "zip 里没有经验清单"
+          assert prefix + "docs/workspace/EXPERIENCE.md" in names, "zip 里没塞进经验摘要"
+          assert any(n.startswith(prefix + "tools/experience-export/") for n in names), "zip 里没有经验清单"
           print(f"zip 条目 {len(names)} 个，经验已就位")
           PY
           ls -lh "$zip"
@@ -144,7 +144,7 @@ jobs:
           $wheel = Get-ChildItem downloaded -Recurse -Filter 'spiritscout-*.whl' | Select-Object -First 1
           if (-not $wheel) { throw '没有找到 wheel 产物' }
           Copy-Item $wheel.FullName dist\python -Force
-          ./SpiritScout/packaging/windows/build-desktop.ps1 -OutputDir dist\windows\desktop
+          ./packaging/windows/build-desktop.ps1 -OutputDir dist\windows\desktop
 
       - name: 核对产物
         shell: pwsh
@@ -179,7 +179,7 @@ jobs:
           set -euo pipefail
           version=$(python - <<'PY'
           import pathlib, re
-          text = pathlib.Path("SpiritScout/src/spiritscout/__init__.py").read_text(encoding="utf-8")
+          text = pathlib.Path("src/spiritscout/__init__.py").read_text(encoding="utf-8")
           print(re.search(r'__version__\s*=\s*"([^"]+)"', text).group(1))
           PY
           )

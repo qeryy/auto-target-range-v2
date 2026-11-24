@@ -3,7 +3,7 @@
 # 作用：自检环境与依赖 → 导出执行后端与模型网关 key → 启动灵枢 Web 控制台。
 # 缺运行依赖（含本体没装进 venv）由本脚本自己 pip 装；缺虚拟环境、缺 pip 或
 # 解释器版本不够只报命令不动手——重建 venv 的影响面比装几个包大得多。
-# 依赖：Python 3.11+（SpiritScout\.venv）、Git for Windows 的 bash。
+# 依赖：Python 3.11+（.venv）、Git for Windows 的 bash。
 #
 #   powershell -ExecutionPolicy Bypass -File .\start-local.ps1
 #   powershell -ExecutionPolicy Bypass -File .\start-local.ps1 -Port 8010
@@ -14,9 +14,9 @@
 # 换源：-PipIndex <url>，或环境变量 SPIRITSCOUT_PIP_INDEX；`-PipIndex official` 强制官方源。
 # 只看当前解析出的源不动手：-ShowPipIndex。
 #
-# -Port 以 `--port` 传给 CLI，**覆盖** SpiritScout\configs\system.yaml 里的 web.port
+# -Port 以 `--port` 传给 CLI，**覆盖** configs\system.yaml 里的 web.port
 # （配置里写的是 8000）；双击入口「启动服务.cmd」固定 8010，两个数字不一样是正常的。
-# 跑的是 SpiritScout\src 下的当前代码（editable 安装），下面的版本号与
+# 跑的是 src 下的当前代码（editable 安装），下面的版本号与
 # `python -m spiritscout --version`、控制台横幅同源。
 param(
     [int]$Port = 8010,
@@ -29,8 +29,8 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $root = $PSScriptRoot
-$venvPy = Join-Path $root 'SpiritScout\.venv\Scripts\python.exe'
-$depsProbe = Join-Path $root 'SpiritScout\scripts\probe_deps.py'
+$venvPy = Join-Path $root '.venv\Scripts\python.exe'
+$depsProbe = Join-Path $root 'scripts\probe_deps.py'
 $minPython = [version]'3.11'
 
 # 依赖源：国内镜像优先。默认清华 TUNA——PyPI 官方站在国内经常几十 KB/s 甚至超时，
@@ -72,8 +72,8 @@ if ($ShowPipIndex) {
 
 
 # 提示与自装共用同一份命令文本，免得两处写歪
-$cmdCore = "SpiritScout\.venv\Scripts\python.exe -m pip install --index-url $script:pipIndex -e `"SpiritScout`""
-$cmdToolkit = "SpiritScout\.venv\Scripts\python.exe -m pip install --index-url $script:pipIndex -e `"SpiritScout[toolkit]`""
+$cmdCore = ".venv\Scripts\python.exe -m pip install --index-url $script:pipIndex -e `".`""
+$cmdToolkit = ".venv\Scripts\python.exe -m pip install --index-url $script:pipIndex -e `".[toolkit]`""
 
 function Find-HostPython {
     # 本机 py 启动器里可用的 3.11+。取版本号最低的那个：工具包里的 gmpy2 / z3-solver
@@ -137,11 +137,11 @@ function Invoke-PipInstall {
 # 1) 环境自检。venv 在不在、解释器跑不跑得起来、版本够不够——这几样缺任何
 #    一样都没法「自动补」，只能给精确命令。
 if (-not (Test-Path $venvPy)) {
-    Write-Host "[x] 缺虚拟环境：SpiritScout\.venv" -ForegroundColor Red
+    Write-Host "[x] 缺虚拟环境：.venv" -ForegroundColor Red
     $hostPy = Find-HostPython
     if ($hostPy) {
         Write-Host "[i] 本机有 Python $hostPy，建一个（装在哪由你定，启动器不代劳）：" -ForegroundColor Yellow
-        Write-Host "        py -$hostPy -m venv SpiritScout\.venv"
+        Write-Host "        py -$hostPy -m venv .venv"
         Write-Host "    建完再跑一次本脚本，缺的运行依赖它会自己 pip 装齐。"
     } else {
         Write-Host "[x] 而且本机 py 启动器里没有 3.11 或更高的解释器，先装 Python：" -ForegroundColor Red
@@ -156,17 +156,17 @@ try {
     $pyVersion = & $venvPy -X utf8 -c "import sys; print(str(sys.version_info[0]) + '.' + str(sys.version_info[1]))" 2>$null
 } catch { }
 if (-not $pyVersion) {
-    Write-Host "[x] SpiritScout\.venv 里的 python.exe 跑不起来" -ForegroundColor Red
+    Write-Host "[x] .venv 里的 python.exe 跑不起来" -ForegroundColor Red
     Write-Host "    通常是整个目录被移动过，或底下的解释器被卸载/升级了。删掉重建："
-    Write-Host "        Remove-Item -Recurse -Force SpiritScout\.venv"
-    Write-Host "        py -3.11 -m venv SpiritScout\.venv"
+    Write-Host "        Remove-Item -Recurse -Force .venv"
+    Write-Host "        py -3.11 -m venv .venv"
     exit 1
 }
 if ([version]$pyVersion -lt $minPython) {
     Write-Host "[x] 虚拟环境是 Python $pyVersion，灵枢需要 3.11 或更高" -ForegroundColor Red
     Write-Host "    旧 venv 换不了底层解释器，删掉重建："
-    Write-Host "        Remove-Item -Recurse -Force SpiritScout\.venv"
-    Write-Host "        py -3.11 -m venv SpiritScout\.venv"
+        Write-Host "        Remove-Item -Recurse -Force .venv"
+        Write-Host "        py -3.11 -m venv .venv"
     exit 1
 }
 
@@ -175,7 +175,7 @@ if ([version]$pyVersion -lt $minPython) {
 $deps = Get-Deps
 if (-not $deps) {
     # 旧版本仓库没有探针脚本，或它跑挂了：只核对过 Python 版本，其余交给运行时去报错
-    Write-Host "[!] 依赖探针没给出结论（SpiritScout\scripts\probe_deps.py 缺失或执行失败），跳过依赖自检" -ForegroundColor Yellow
+    Write-Host "[!] 依赖探针没给出结论（scripts\probe_deps.py 缺失或执行失败），跳过依赖自检" -ForegroundColor Yellow
     $missing = @()
     $missingToolkit = @()
 } else {
@@ -186,7 +186,7 @@ if (-not $deps) {
     # .dist-info 是当初 pip 打的快照，源码升版本后它还写着旧号，所以两者不一致时
     # 再单独提一句（只提示，不拦启动；重装一次即可对齐）。
     if ($deps.source_version) {
-        Write-Host "[i] 源码版本：灵枢 v$($deps.source_version)（SpiritScout\src 当前代码）" -ForegroundColor DarkGray
+        Write-Host "[i] 源码版本：灵枢 v$($deps.source_version)（src 当前代码）" -ForegroundColor DarkGray
     }
     $srcLabel = Get-IndexLabel $script:pipIndex
     Write-Host "[i] 依赖源：$srcLabel（$script:pipIndex；换源用 -PipIndex <url> 或环境变量 SPIRITSCOUT_PIP_INDEX）" -ForegroundColor DarkGray
@@ -198,8 +198,8 @@ if (-not $deps) {
 
     if (-not $deps.pip) {
         Write-Host "[x] 这个 venv 里没有 pip，自动补装无从谈起。先修它：" -ForegroundColor Red
-        Write-Host "        SpiritScout\.venv\Scripts\python.exe -m ensurepip --upgrade"
-        Write-Host "    修不好就删了重建：Remove-Item -Recurse -Force SpiritScout\.venv"
+        Write-Host "        .venv\Scripts\python.exe -m ensurepip --upgrade"
+        Write-Host "    修不好就删了重建：Remove-Item -Recurse -Force .venv"
         exit 1
     }
 
@@ -232,7 +232,7 @@ if (-not $deps) {
             $still = '未知（探针读不出结果）'
             if ($deps) { $still = ($missing -join ', ') }
             Write-Host "[x] 装完仍不可用，还缺：$still" -ForegroundColor Red
-            Write-Host "    确认装进了这个 venv：SpiritScout\.venv\Scripts\python.exe -m pip list | Select-String spiritscout"
+            Write-Host "    确认装进了这个 venv：.venv\Scripts\python.exe -m pip list | Select-String spiritscout"
             exit 1
         }
         Write-Host "[+] 运行依赖已装好（灵枢 $($deps.self_version)）" -ForegroundColor Green
@@ -259,10 +259,10 @@ if (-not $deps) {
     }
 }
 
-$systemCfg = Join-Path $root 'SpiritScout\configs\system.yaml'
+$systemCfg = Join-Path $root 'configs\system.yaml'
 if (-not (Test-Path $systemCfg)) {
-    Write-Host "[x] 缺配置文件：SpiritScout\configs\system.yaml" -ForegroundColor Red
-    Write-Host "    copy SpiritScout\configs\system.example.yaml SpiritScout\configs\system.yaml"
+    Write-Host "[x] 缺配置文件：configs\system.yaml" -ForegroundColor Red
+    Write-Host "    copy configs\system.example.yaml configs\system.yaml"
     exit 1
 }
 
@@ -314,7 +314,7 @@ $env:PYTHONUNBUFFERED = '1'
 if ($Debug) { $env:SPIRITSCOUT_LOG_LEVEL = 'DEBUG' }
 
 Write-Host "[+] 执行后端 host（工作目录锁定 + 运行期 ACL 收口 + 环境白名单 + 超时杀进程树；仍无读隔离）"
-Push-Location (Join-Path $root 'SpiritScout')
+Push-Location $root
 # 3) 管理员账号：首次启动让本人当场设密码，只把 scrypt 哈希写进工作区 admin.db。
 #    已有账号就跳过；不是交互终端（脚本/CI 调用）时同样跳过，绝不卡住启动。
 Write-Host "[>] 管理员账号：首次启动在这里设置密码（明文只在设完后显示一次，不落盘，只存哈希）"
@@ -322,7 +322,7 @@ Write-Host "    长度不限；不想设就回车两次跳过（本机回环访�
 & $venvPy -X utf8 -m spiritscout --set-admin-password --if-missing --config configs\system.yaml
 if ($LASTEXITCODE -ne 0) {
     Write-Host "    [!] 没设置管理员密码：控制台仍只在回环地址可用；" -ForegroundColor Yellow
-    Write-Host "        之后可手动补：SpiritScout\.venv\Scripts\python.exe -m spiritscout --set-admin-password" -ForegroundColor Yellow
+    Write-Host "        之后可手动补：.venv\Scripts\python.exe -m spiritscout --set-admin-password" -ForegroundColor Yellow
 }
 
 Write-Host "[>] 控制台：http://127.0.0.1:$Port"

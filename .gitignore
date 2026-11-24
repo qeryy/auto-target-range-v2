@@ -4,8 +4,38 @@ tmp*/
 corrupt_data/
 # Python
 __pycache__/
-*.pyc
+*.py[cod]
+*.egg-info/
+build/
+dist/
 .venv/
+.venv-build/
+venv/
+.tools/
+
+# 工具缓存
+.ruff_cache/
+.pytest_cache/
+.mypy_cache/
+packaging/windows/.cache/
+desktop/.kotlin/
+
+# 运行时数据：会话工作区 / 审计日志 / 报告（本地私有，不入库）
+.spiritscout/
+.spiritscout-ollama/
+.spiritscout-llama
+.spiritscout-light/
+.spiritscout-light-config/
+.spiritscout-updates/
+.playwright-mcp/
+execution.key
+.execution-locks/
+
+# 本地生成的按 Agent 模型指派表
+configs/agent_models.yaml
+
+# 本机配置的供应商与模型清单
+configs/models.yaml
 
 # 编辑器 / 系统
 .vs/
@@ -21,8 +51,8 @@ shots_usage_tmp_*/
 u1[0-9]*/
 sh[0-9]*_*/
 
-# 技能库数据（204MB / 4850 文件，是运行时下载的技能包，不是源码）
-SpiritScout/skills/
+# 技能库运行时下载数据
+skills/
 
 # 备份文件（改脚本时留的 .bak-时间戳）
 *.bak-*
@@ -30,4 +60,39 @@ SpiritScout/skills/
 
 # 根目录的构建产物 / 打包结果
 /logs/
-/dist/
+
+# 本地部署凭据
+.env
+.env.*
+!.env.example
+
+# 本地修复分析和一次性审计材料
+/audits/
+/COMPETITION_STRATEGY_OPTIMIZATION_2026-10-22.md
+/BROWSER_CLICK_FIX_2026-10-16.md
+/BUG_AUDIT_2026-10-15.md
+/BUG_RECHECK_2026-10-15.md
+/BUG_REVIEW_2026-10-15.md
+/IMPLEMENTATION_PLAN_2026-10-15.md
+/MCP_NAVIGATION_FIX_2026-10-16.md
+/OPTIMIZATION_PROGRESS_2026-10-15.md
+/SESSION_ARCHIVE_2026-10-16.md
+/SESSION_VISIBILITY_2026-10-16.md
+/TOOL_FAILURE_FIX_2026-10-16.md
+/TOOL_PARAMETERS_2026-10-16.md
+
+# 本地抓取的目标页面和登录快照
+/home.html
+/login_sms.yml
+/login_snapshot.yml
+/guide_snapshot.yml
+/checkpoints_all.json
+/cscene_instances_full.json
+
+# 维护者本机的独立 Docker 验证项目
+/ctfy-docker/
+/tsecbench-docker/
+
+# 前端开发依赖
+/node_modules/
+frontend/node_modules/
