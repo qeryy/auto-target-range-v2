@@ -106,5 +106,5 @@ python tools/experience-export/export_experience.py --import             # 真�
 
 手工往 `inbox/` 丢一个符合格式的 JSON 同样算一次提交，可以走网页或 PR。
 格式见本目录 `experience-insights.json`（老清单格式）或
-`src/spiritscout/knowledge/sync.py` 的 `FORMAT = "spiritscout.experience/v1"`；
+`src/spiritscout/knowledge/digest.py` 的 `FORMAT = "spiritscout.experience/v1"`；
 两种格式「拉取」都认。脱敏规则与钩子一致（URL / IP:端口 / 密钥 / flag 字面量一律替换）。

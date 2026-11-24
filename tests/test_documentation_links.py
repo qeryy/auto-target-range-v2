@@ -45,6 +45,31 @@ class DocumentationLinkTests(unittest.TestCase):
                     )
         self.assertEqual(broken, [], "\n".join(broken))
 
+    def test_known_legacy_source_paths_are_not_documented(self) -> None:
+        stale = (
+            "tools/builtin.py",
+            "tools/chrome_mcp.py",
+            "tools/executor.py",
+            "tools/http_transport.py",
+            "tools/journal.py",
+            "tools/mcp_client.py",
+            "tools/registry.py",
+            "tools/run_lock.py",
+            "tools/sandbox.py",
+            "tools/spec.py",
+            "src/spiritscout/knowledge/sync.py",
+            "tests/process_budget.py",
+        )
+        problems: list[str] = []
+        for document in markdown_files():
+            if document.name == "CHANGELOG.md":
+                continue
+            text = document.read_text(encoding="utf-8-sig")
+            for path in stale:
+                if re.search(rf"(?<!src/spiritscout/){re.escape(path)}", text):
+                    problems.append(f"{document.relative_to(ROOT)} -> {path}")
+        self.assertEqual(problems, [], "\n".join(problems))
+
 
 if __name__ == "__main__":
     unittest.main()
