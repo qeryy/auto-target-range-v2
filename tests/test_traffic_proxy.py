@@ -61,7 +61,10 @@ class ProxyExecutableTests(unittest.TestCase):
             python.touch()
             proxy.touch()
             with patch("spiritscout.traffic.proxy.sys.executable", str(python)):
-                self.assertIn(proxy, _candidate_paths())
+                self.assertIn(
+                    proxy.resolve(),
+                    {path.resolve() for path in _candidate_paths()},
+                )
 
 
 def tls_fixture(root: Path) -> Path:
