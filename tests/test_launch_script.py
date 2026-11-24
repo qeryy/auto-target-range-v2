@@ -112,6 +112,7 @@ class StartupDisplayTests(unittest.TestCase):
 
 
 @unittest.skipUnless(shutil.which('bash'), '需要 Bash')
+@unittest.skipIf(sys.platform == "win32", "validates the POSIX launch.sh script")
 class LaunchScriptTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory(prefix='spiritscout launch ')
