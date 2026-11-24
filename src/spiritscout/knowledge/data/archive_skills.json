@@ -86,7 +86,7 @@
   {
     "skill_id": "browser-automation",
     "domain": "automation",
-    "description": null,
+    "description": "统一自动化入口，覆盖 Playwright 浏览器操作与 Windows 桌面应用自动化，包括网页交互、截图、登录、IDA/x64dbg GUI 操作和 UI Automation。",
     "severity": null,
     "cwe": null,
     "tools": null,
@@ -828,7 +828,7 @@
   {
     "skill_id": "docs-generator",
     "domain": "utility",
-    "description": null,
+    "description": "Create task-oriented README, API, architecture, and Markdown documentation, including formal reports for reverse-engineering, penetration-testing, CTF, and security-analysis work.",
     "severity": null,
     "cwe": null,
     "tools": null,
@@ -940,7 +940,7 @@
   {
     "skill_id": "js-reverse",
     "domain": "web",
-    "description": null,
+    "description": "在前端 JavaScript 逆向中使用：定位签名与加密参数、观察请求和脚本链路、运行时取证、补环境复现与 AST 去混淆，并可按需联动 jshookmcp。",
     "severity": null,
     "cwe": null,
     "tools": null,

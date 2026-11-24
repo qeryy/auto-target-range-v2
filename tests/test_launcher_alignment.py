@@ -8,13 +8,15 @@
 
 from __future__ import annotations
 
+import io
 import re
 import tomllib
 import unittest
 from pathlib import Path
 
 from spiritscout import __version__
-from spiritscout.__main__ import _banner, build_parser
+from spiritscout.__main__ import build_parser
+from spiritscout.startup import StartupDisplay
 
 ROOT = Path(__file__).resolve().parents[1]        # repository root
 
@@ -100,10 +102,13 @@ class LauncherAlignmentTests(unittest.TestCase):
 
     def test_banner_prints_source_version(self) -> None:
         """启动横幅带版本：一眼确认接的是当前源码，而不是旧 venv 或旧包。"""
-        text = _banner("127.0.0.1", 8010, "登录已关闭，本机直接进入（auth_mode=none）", 4)
+        stream = io.StringIO()
+        display = StartupDisplay(stream)
+        display.start()
+        display.ready("127.0.0.1", 8010, auth_enabled=False)
+        text = stream.getvalue()
         self.assertIn(f"v{__version__}", text)
         self.assertIn("http://127.0.0.1:8010", text)
-        self.assertIn("并发上限 4", text)
 
     def test_local_launcher_reports_source_version(self) -> None:
         """启动器要把源码版本打出来（探针读 __init__.py，与 --version 同源）。"""
@@ -115,7 +120,12 @@ class LauncherAlignmentTests(unittest.TestCase):
         """文档里贴的横幅示例也得跟着版本走，别再留一份旧号的输出。"""
         for name in ("README.md", "README_EN.md"):
             with self.subTest(file=name):
-                self.assertIn(f"灵枢 Web 控制台 v{__version__}:", read(ROOT / name))
+                expected = (
+                    f"灵枢 Web 控制台 v{__version__}:"
+                    if name == "README.md"
+                    else f"SpiritScout Web console v{__version__}:"
+                )
+                self.assertIn(expected, read(ROOT / name))
 
 
 if __name__ == "__main__":       # pragma: no cover
