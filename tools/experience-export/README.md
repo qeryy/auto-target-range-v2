@@ -7,12 +7,6 @@
 `experience-insights.json` —— 可复用的解题洞察，每条含 `insight` 结论、`context` 适用场景、`tags` 标签、`source_model`、`captured_at`。
 条数以文件里的 `total` 为准（每次提交都会刷新，别在这里写死数字）。
 
-`legacy-state-0.12.9.json` —— 0.12.9 世代（2026-10-27~28）那份运行期状态根的**脱敏清点记录**：
-只记条数、层级分布、时间范围、有多少条记录里出现过 flag 字面量，不落任何原文。
-那份状态根本身（`blackboard.db` 11.9M + `usage.db` + `probe-audit.jsonl`）是早期以仓库根为
-工作目录跑出来的游离数据——配置认的当前状态根是 `.spiritscout`（启动器
-`cwd = 仓库根`），两边从来不是同一个落点。它已移出工作区，本文件是它留下的唯一痕迹。
-
 ## 每次提交自动带上
 
 `git-hooks/pre-commit` 是本仓库的提交前钩子，做三件事：读运行库 → 与已提交的快照
@@ -43,7 +37,7 @@ python tools/experience-export/export_experience.py --self-test # 自检：脱�
 - **运行库读不到就放行**：没跑过灵枢、或 db 正被控制台占用读不了时，钩子只往 stderr
   提示一句、保留上次快照，不会卡住提交。
 - 要临时跳过：`git commit --no-verify`。
-- 钩子与导出脚本在 [`.gitattributes`](../.gitattributes) 里固定为 LF——`core.autocrlf=true`
+- 钩子与导出脚本在 [`.gitattributes`](../../.gitattributes) 里固定为 LF——`core.autocrlf=true`
   的机器若把 `#!/bin/sh` 转成 CRLF，钩子会直接 bad interpreter 跑不起来。
 
 ## 来源

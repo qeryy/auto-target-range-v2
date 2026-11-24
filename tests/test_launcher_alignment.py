@@ -17,7 +17,6 @@ from spiritscout import __version__
 from spiritscout.__main__ import _banner, build_parser
 
 ROOT = Path(__file__).resolve().parents[1]        # repository root
-REPO = ROOT.parent                                # 仓库根：启动脚本与 README 在这层
 
 
 def read(path: Path) -> str:
@@ -28,7 +27,7 @@ def read(path: Path) -> str:
 def cli_flags(text: str) -> set[str]:
     """脚本里**显式**传给 `-m spiritscout` 的参数名。
 
-    只看含 `-m spiritscout` 的行：启动器自己的开关（launch.sh 的 `--force`、
+    只看含 `-m spiritscout` 的行：启动器自己的开关（`launch.sh` 的 `--force`、
     `-h` 之类）不算，`"$@"` / `%*` 透传的东西静态看不出来，也跳过。
     """
     flags: set[str] = set()
@@ -51,7 +50,8 @@ class LauncherAlignmentTests(unittest.TestCase):
         self.known = {opt for action in parser._actions for opt in action.option_strings}
 
     def test_launchers_only_pass_known_flags(self) -> None:
-        for name in ("launch.cmd", "launch.sh"):
+        for name in ("scripts/windows/start-console.cmd",
+                     "scripts/linux/launch.sh"):
             with self.subTest(script=name):
                 flags = cli_flags(read(ROOT / name))
                 self.assertTrue(flags, f"{name} 里应当有传给 -m spiritscout 的参数")
@@ -60,19 +60,25 @@ class LauncherAlignmentTests(unittest.TestCase):
 
     def test_local_launcher_still_sets_password_then_serves(self) -> None:
         """根启动器两步都要在：先 --set-admin-password --if-missing，再带 --port 起服务。"""
-        flags = cli_flags(read(REPO / "start-local.ps1"))
+        launcher = ROOT / "scripts/windows/start-web.ps1"
+        flags = cli_flags(read(launcher))
         self.assertLessEqual({"--config", "--port", "--set-admin-password", "--if-missing"}, flags)
         self.assertFalse(flags - self.known)
-        self.assertIn("--port $Port", read(REPO / "start-local.ps1"))
+        self.assertIn("--port $Port", read(launcher))
 
     def test_double_click_entry_and_docs_agree_on_port(self) -> None:
-        entry = read(REPO / "启动服务.cmd")
-        self.assertIn("start-local.ps1", entry)
+        root_entry = read(ROOT / "Start-SpiritScout.cmd")
+        self.assertIn(r"scripts\windows\start-web.cmd", root_entry)
+        entry = read(ROOT / "scripts/windows/start-web.cmd")
+        self.assertIn("start-web.ps1", entry)
         self.assertIn("-Port 8010", entry)
-        self.assertRegex(read(REPO / "start-local.ps1"), r"\[int\]\$Port\s*=\s*8010")
-        readme = read(REPO / "README.md")
+        self.assertRegex(
+            read(ROOT / "scripts/windows/start-web.ps1"),
+            r"\[int\]\$Port\s*=\s*8010",
+        )
+        readme = read(ROOT / "README.md")
         self.assertIn("127.0.0.1:8010", readme)
-        # 配置里那个 8000 是给不带参的 launch.cmd/launch.sh 用的，别让文档说岔
+        # 配置里的 8000 是给不带参的 start-console 用的，别让文档说岔
         self.assertIn("8000", readme)
 
     def test_dependency_probe_covers_pyproject(self) -> None:
@@ -101,7 +107,7 @@ class LauncherAlignmentTests(unittest.TestCase):
 
     def test_local_launcher_reports_source_version(self) -> None:
         """启动器要把源码版本打出来（探针读 __init__.py，与 --version 同源）。"""
-        text = read(REPO / "start-local.ps1")
+        text = read(ROOT / "scripts/windows/start-web.ps1")
         self.assertIn("deps.source_version", text)
         self.assertIn("源码版本", text)
 

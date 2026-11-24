@@ -202,7 +202,7 @@ class SessionProxy:
         try:
             binary = executable()
             if binary is None:
-                raise ValueError("未构建 Linux 录制代理，请运行 scripts/build-traffic-proxy.sh")
+                raise ValueError("未构建 Linux 录制代理，请运行 scripts/linux/build-traffic-proxy.sh")
             env = {key: value for key, value in os.environ.items() if key in {"PATH", "SSL_CERT_FILE", "SSL_CERT_DIR", "LANG"}}
             env["HOME"] = str(self.root)
             self.proc = await asyncio.create_subprocess_exec(binary, stdin=asyncio.subprocess.PIPE,
@@ -337,7 +337,7 @@ class ProxyManager:
         if session_id in self.sessions:
             return self.sessions[session_id].status()
         return {"available": bool(executable()), "status": "stopped", "address": "", "records": 0,
-                "error": "" if executable() else "未构建代理：运行 scripts/build-traffic-proxy.sh"}
+                "error": "" if executable() else "未构建代理：运行 scripts/linux/build-traffic-proxy.sh"}
 
     async def start(self, session_id: str, upstream: str = "") -> dict[str, Any]:
         session = self.manager.get(session_id)

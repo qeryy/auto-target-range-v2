@@ -118,10 +118,12 @@ class LaunchScriptTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
         source = Path(__file__).resolve().parents[1]
-        shutil.copy2(source / 'launch.sh', self.root / 'launch.sh')
-        (self.root / 'scripts').mkdir()
-        shutil.copy2(source / 'scripts/run_ollama_light.sh',
-                     self.root / 'scripts/run_ollama_light.sh')
+        launcher_dir = self.root / 'scripts/linux'
+        launcher_dir.mkdir(parents=True)
+        shutil.copy2(source / 'scripts/linux/launch.sh',
+                     launcher_dir / 'launch.sh')
+        shutil.copy2(source / 'scripts/linux/run_ollama_light.sh',
+                     launcher_dir / 'run_ollama_light.sh')
         python = self.root / '.venv/bin/python'
         python.parent.mkdir(parents=True)
         python.write_text(f'#!{sys.executable}\n' + textwrap.dedent('''\
@@ -153,7 +155,7 @@ class LaunchScriptTests(unittest.TestCase):
 
     def launch(self, *args: str) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
-            ['bash', str(self.root / 'launch.sh'), *args],
+            ['bash', str(self.root / 'scripts/linux/launch.sh'), *args],
             cwd=self.root.parent, env=self.env, capture_output=True, text=True,
             timeout=10, check=False,
         )

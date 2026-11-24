@@ -65,7 +65,7 @@ def tls_fixture(root: Path) -> Path:
     return root / "origin-ca.pem"
 
 
-@unittest.skipUnless(executable(), "需要先运行 scripts/build-traffic-proxy.sh，验证真实 Go 代理")
+@unittest.skipUnless(executable(), "需要先运行 scripts/linux/build-traffic-proxy.sh，验证真实 Go 代理")
 class ProxyTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.temp = tempfile.TemporaryDirectory()

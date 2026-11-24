@@ -21,7 +21,7 @@ uv run python -m spiritscout --help
 
 多个 extras 需在同一条 `uv sync` 命令中组合；单独执行后一次会按当前参数同步环境。
 
-`uv sync` 按 `uv.lock` 创建项目根 `.venv`，`launch.ps1` 和下列检查命令
+`uv sync` 按 `uv.lock` 创建项目根 `.venv`，`scripts/windows/start-console.ps1` 和下列检查命令
 可直接使用该环境。修改依赖后执行 `uv lock` 并一并提交锁文件。
 
 **不使用 uv 时仍可使用 pip**
@@ -40,7 +40,8 @@ py -3 -m venv .venv
 
 各系统使用自己的虚拟环境。Windows 完整工具执行优先在 WSL2 内源码部署，Linux
 优先源码部署；沙箱需要 bubblewrap 和命名空间权限。Docker 保留为可选方式。
-WSL2 用户在 Linux 文件系统中创建仓库和虚拟环境，具体检查见 [Agent 安装指南](AGENTINSTALL.md)。
+WSL2 用户在 Linux 文件系统中创建仓库和虚拟环境，具体检查见
+[部署与配置](docs/部署与配置.md)。
 测试密钥使用明确标记的夹具值，真实密钥通过控制台配置。
 
 ## 分支与 PR

@@ -13,6 +13,10 @@ artifacts use separate names so a file path always identifies its layer.
 two scripts build reusable backend layers for packaging, diagnostics, and
 compatibility.
 
+Python embeddable archives prefer Huawei Cloud, npmmirror, and TUNA before
+falling back to python.org. Dependency installation prefers the TUNA PyPI
+mirror and retries official PyPI when needed.
+
 The old WebView portable archive is not built by the current scripts and is not
 the complete desktop release.
 

@@ -23,16 +23,18 @@
 
 ## 项目结构与根目录
 
-仓库根固定为 `D:\Projects\spiritscout`。不再保留 `SpiritScout\` 子目录。
+仓库使用单一根目录，不再保留额外的 `SpiritScout\` 嵌套层。
 
 | 路径 | 作用 |
 | --- | --- |
 | `src/` | Python 后端、Agent、Web API 与静态前端 |
 | `desktop/` | Kotlin Compose + SaltUI 原生 Windows 桌面端 |
-| `frontend/` | 会话阅读器等独立 Web 前端组件 |
+| `frontend/` | React 会话阅读器源码；构建产物写入 Web 静态资源目录 |
 | `traffic-proxy/` | Go 流量录制代理 |
 | `packaging/windows/` | 完整桌面版、后端运行时和后端控制台打包入口 |
-| `scripts/` | 安装、体检、评估和运维脚本 |
+| `scripts/windows/` | Windows 调试控制台启动入口 |
+| `scripts/linux/` | Linux/macOS 兼容启动与安装入口 |
+| `scripts/` | 环境体检、评估、初始化和维护脚本 |
 | `tests/` | Python 与浏览器脚本回归测试 |
 | `configs/` | 系统、模型和 Skill 配置模板 |
 | `deploy/` | Docker、浏览器和 CyberChef 部署文件 |
@@ -41,8 +43,8 @@
 
 根目录其余文件都是标准入口或构建元数据：`pyproject.toml` / `uv.lock` 管 Python，
 `frontend/package.json` / `frontend/vite.config.mts` 管前端构建，`deploy.py`、Dockerfile 和 Compose
-文件负责容器部署，`launch.*`、`install.sh`、`start-local.ps1`、`启动服务.cmd`
-是本机启动入口。`LICENSE`、`CHANGELOG.md`、`CONTRIBUTING.md`、`SECURITY.md`、
+文件负责容器部署，唯一的 Windows 双击入口是 `Start-SpiritScout.cmd`。
+`LICENSE`、`CHANGELOG.md`、`CONTRIBUTING.md`、`SECURITY.md`、
 `CODE_OF_CONDUCT.md` 保持根目录标准位置。
 
 ## 它是什么
@@ -180,7 +182,7 @@ docker compose up -d --build --wait
 需要 Python 3.11+。原生浏览器工具另需 Node.js 22+ 和 Chromium/Chrome，也可用 `SPIRITSCOUT_CHROME_EXECUTABLE` 指定路径。
 
 装依赖国内建议加镜像：`-i https://pypi.tuna.tsinghua.edu.cn/simple`（清华 TUNA，也可以用
-`https://mirrors.aliyun.com/pypi/simple/`）。仓库根那套 `start-local.ps1` 已经把镜像当默认
+`https://mirrors.aliyun.com/pypi/simple/`）。`scripts\windows\start-web.ps1` 已经把镜像当默认
 ——它自检到缺依赖就会用镜像装，镜像不可用时自动退官方源重试。
 
 **Linux**
@@ -189,7 +191,7 @@ docker compose up -d --build --wait
 python3 -m venv .venv
 .venv/bin/python -m pip install -e . -i https://pypi.tuna.tsinghua.edu.cn/simple
 sudo apt install bubblewrap   # Debian / Ubuntu；Fedora 用 sudo dnf install bubblewrap
-./launch.sh
+./scripts/linux/launch.sh
 ```
 
 **Windows（cmd）**
@@ -197,10 +199,12 @@ sudo apt install bubblewrap   # Debian / Ubuntu；Fedora 用 sudo dnf install bu
 ```bat
 py -3 -m venv .venv
 .venv\Scripts\python.exe -m pip install -e . -i https://pypi.tuna.tsinghua.edu.cn/simple
-launch.cmd
+.\scripts\windows\start-console.cmd
 ```
 
-访问 <http://127.0.0.1:8000>，`Ctrl+C` 停止。改端口：`./launch.sh --port 10010` 或 `launch.cmd --port 10010`。
+访问 <http://127.0.0.1:8000>，`Ctrl+C` 停止。改端口：
+`./scripts/linux/launch.sh --port 10010` 或
+`.\scripts\windows\start-console.cmd --port 10010`。
 
 **Windows 原生桌面版（SaltUI）**
 
@@ -232,14 +236,15 @@ python scripts/bootstrap.py --fix      # 一键补齐（清华 → 阿里 → �
 python scripts/bootstrap.py --json     # 给脚本/GUI 消费
 ```
 
-**本机默认不强制登录**：未配置管理员时控制台直接进入。`launch.cmd` / `launch.sh`
+**本机默认不强制登录**：未配置管理员时控制台直接进入。
+`scripts/windows/start-console.cmd` / `scripts/linux/launch.sh`
 不会逼你设密码（它们不碰管理员账号），库里以前留下的账号也不会把界面重新锁上；
-仓库根那套本机启动器（`启动服务.cmd` → `start-local.ps1`）首次启动会问一次，回车两次
+双击入口（`Start-SpiritScout.cmd` → `scripts/windows/start-web.ps1`）首次启动会问一次，回车两次
 跳过即可，不设也能直接进。想开登录：
 
 ```bat
 .venv\Scripts\python.exe -m spiritscout --set-admin-password
-launch.cmd --auth password
+.\scripts\windows\start-console.cmd --auth password
 ```
 
 想彻底清掉凭据：`.venv\Scripts\python.exe -m spiritscout --clear-admin-password`。
@@ -282,7 +287,7 @@ shell / Python 沙箱需要 Linux + bubblewrap；Windows 与 macOS 原生控制�
 `SpiritScout.exe`、精简 JRE、Python embeddable 运行时和配置模板放在同一目录：
 
 ```powershell
-python -m build --outdir dist\python .
+uv build --wheel --outdir dist\python .
 powershell -ExecutionPolicy Bypass -File packaging\windows\build-desktop.ps1
 ```
 
@@ -299,10 +304,10 @@ powershell -ExecutionPolicy Bypass -File packaging\windows\build-desktop.ps1
 | 附件 | 带什么 |
 | --- | --- |
 | `spiritscout-1.3.0-py3-none-any.whl` | `pip install` 用：前端静态页面、知识库种子、报告模板、内置安全技能与经验摘要 |
-| `spiritscout-1.3.0.tar.gz` | sdist：整份源码 + 技能文本素材 + 配置模板 + 经验 |
-| `SpiritScout-1.3.0-source.zip` | 整仓源码：代码、`skills/`、`configs/`、`tools/experience-export/`、`docs/workspace/EXPERIENCE.md` |
+| `spiritscout-1.3.0.tar.gz` | sdist：源码、前端、桌面端、测试、脚本、配置模板与经验 |
+| `SpiritScout-1.3.0-source.zip` | 整仓源码：代码、`configs/`、`tools/experience-export/`、`docs/workspace/EXPERIENCE.md` |
 | `SpiritScout-1.3.0-windows-x64.zip` | **Windows 原生桌面完整版**：SaltUI/Compose Desktop，内嵌 JRE 与 Python 运行时 |
-| `SpiritScout-1.3.0-windows-x64-backend.zip` | 纯 Python/Web 后端兼容包 |
+| `SpiritScout-1.3.0-windows-x64-backend.zip` | 可选的后端兼容包；只在本地显式构建，不进入正式桌面发布链 |
 | `SHA256SUMS` | 上面几个包的校验和，装前先对一遍 |
 
 ```bash
