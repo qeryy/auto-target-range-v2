@@ -8,7 +8,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from pathlib import Path
 from unittest.mock import patch
 
@@ -142,7 +142,7 @@ class AdminStoreTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             store = auth.AdminStore(tmp)
             store.upsert("admin", "stable")
-            with sqlite3.connect(Path(tmp) / "admin.db") as conn:
+            with closing(sqlite3.connect(Path(tmp) / "admin.db")) as conn:
                 before = conn.execute(
                     "SELECT updated_at FROM admins WHERE username='admin'"
                 ).fetchone()[0]
@@ -151,7 +151,7 @@ class AdminStoreTests(unittest.TestCase):
                 store.sync_from_env("SPIRITSCOUT_SERVER_PASSWORD",
                                     "SPIRITSCOUT_ADMIN_USERNAME",
                                     "SPIRITSCOUT_ADMIN_PASSWORD")
-            with sqlite3.connect(Path(tmp) / "admin.db") as conn:
+            with closing(sqlite3.connect(Path(tmp) / "admin.db")) as conn:
                 after = conn.execute(
                     "SELECT updated_at FROM admins WHERE username='admin'"
                 ).fetchone()[0]
