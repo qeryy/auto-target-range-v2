@@ -35,6 +35,17 @@ class WindowsPackagingTests(unittest.TestCase):
         )
         self.assertTrue((PACKAGE / "packaging" / "windows" / "icon.ico").is_file())
 
+    def test_gradle_uses_domestic_mirrors_with_official_fallbacks(self) -> None:
+        settings = (PACKAGE / "desktop" / "settings.gradle.kts").read_text(encoding="utf-8")
+        for mirror in (
+            "https://maven.aliyun.com/repository/gradle-plugin",
+            "https://maven.aliyun.com/repository/google",
+            "https://maven.aliyun.com/repository/public",
+        ):
+            self.assertIn(mirror, settings)
+        for fallback in ("google()", "mavenCentral()", "gradlePluginPortal()"):
+            self.assertIn(fallback, settings)
+
     def test_desktop_runtime_includes_websocket_support(self) -> None:
         project = tomllib.loads((PACKAGE / "pyproject.toml").read_text(encoding="utf-8"))
         dependencies = project["project"]["dependencies"]
