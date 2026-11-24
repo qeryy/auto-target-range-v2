@@ -1,46 +1,28 @@
-"""Run one unittest module with Windows-safe temporary-directory cleanup."""
+"""Run one unittest target with Windows-safe temporary-directory cleanup."""
 
 from __future__ import annotations
 
-import gc
-import sqlite3
 import sys
 import tempfile
-import time
 import unittest
 
-_original_cleanup = tempfile.TemporaryDirectory.cleanup
+_original_init = tempfile.TemporaryDirectory.__init__
 
 
-def _close_sqlite_connections() -> None:
-    for value in gc.get_objects():
-        if not isinstance(value, sqlite3.Connection):
-            continue
-        try:
-            value.close()
-        except (sqlite3.ProgrammingError, sqlite3.OperationalError):
-            pass
+def _windows_safe_init(directory: tempfile.TemporaryDirectory, *args, **kwargs) -> None:
+    # Windows may still hold a SQLite file briefly after the test assertion.
+    # Deferring deletion to the OS cleaner avoids touching unrelated live
+    # connections while keeping functional failures visible.
+    kwargs["ignore_cleanup_errors"] = True
+    _original_init(directory, *args, **kwargs)
 
 
-def _windows_safe_cleanup(directory: tempfile.TemporaryDirectory) -> None:
-    gc.collect()
-    for _ in range(6):
-        try:
-            _original_cleanup(directory)
-            return
-        except PermissionError:
-            _close_sqlite_connections()
-            gc.collect()
-            time.sleep(0.05)
-    _original_cleanup(directory)
-
-
-tempfile.TemporaryDirectory.cleanup = _windows_safe_cleanup
+tempfile.TemporaryDirectory.__init__ = _windows_safe_init
 
 
 def main() -> int:
     if len(sys.argv) != 2:
-        print("usage: test_worker.py <test-module>", file=sys.stderr)
+        print("usage: test_worker.py <module-or-module.Class>", file=sys.stderr)
         return 2
     suite = unittest.defaultTestLoader.loadTestsFromName(sys.argv[1])
     result = unittest.TextTestRunner(verbosity=2).run(suite)

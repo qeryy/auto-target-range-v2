@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import os
 import re
 import subprocess
@@ -20,7 +21,28 @@ def available_modules() -> list[tuple[str, int]]:
     modules: list[tuple[str, int]] = []
     for path in sorted(TESTS.glob("test_*.py")):
         text = path.read_text(encoding="utf-8")
-        modules.append((path.stem, len(re.findall(r"^\s*(?:async\s+)?def test_", text, re.MULTILINE))))
+        tree = ast.parse(text, filename=str(path))
+        classes = [
+            node for node in tree.body
+            if isinstance(node, ast.ClassDef)
+            and any(
+                (isinstance(base, ast.Name) and base.id.endswith("TestCase"))
+                or (isinstance(base, ast.Attribute) and base.attr.endswith("TestCase"))
+                for base in node.bases
+            )
+        ]
+        if classes:
+            for node in classes:
+                count = sum(
+                    isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
+                    and item.name.startswith("test_")
+                    for item in node.body
+                )
+                modules.append((f"{path.stem}.{node.name}", max(1, count)))
+        else:
+            count = len(re.findall(
+                r"^\s*(?:async\s+)?def test_", text, re.MULTILINE))
+            modules.append((path.stem, max(1, count)))
     return modules
 
 
@@ -70,10 +92,23 @@ def main() -> int:
 
     catalog = dict(available_modules())
     if args.modules:
-        missing = [name for name in args.modules if name not in catalog]
+        selected_names: list[str] = []
+        missing: list[str] = []
+        for name in args.modules:
+            if name in catalog:
+                selected_names.append(name)
+                continue
+            expanded = [
+                target for target in catalog
+                if target.startswith(name + ".")
+            ]
+            if expanded:
+                selected_names.extend(expanded)
+            else:
+                missing.append(name)
         if missing:
             parser.error("unknown test modules: " + ", ".join(missing))
-        selected = [(name, catalog[name]) for name in args.modules]
+        selected = [(name, catalog[name]) for name in dict.fromkeys(selected_names)]
     else:
         selected = list(catalog.items())
 
