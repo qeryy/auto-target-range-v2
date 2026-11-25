@@ -76,7 +76,7 @@ def _public_discovery(value: Any) -> dict[str, Any]:
     refs = value.get('evidence_refs')
     if (not isinstance(refs, list) or len(refs) > 8
             or any(not isinstance(ref, str) or not ref.strip() or len(ref) > 300 for ref in refs)
-            or value['confidence'] != 'hypothesis' and not refs):
+            or (value['confidence'] != 'hypothesis' and not refs)):
         raise ValueError('已观察/已验证须附实际证据引用；推测可以留空，最多8条')
     public = {key: value[key].strip() for key in limits}
     public.update(importance=value['importance'], confidence=value['confidence'], kind=value['kind'],

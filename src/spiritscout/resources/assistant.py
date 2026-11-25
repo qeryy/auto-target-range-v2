@@ -358,7 +358,7 @@ class ResourceAssistant:
             state = "completed"
         except asyncio.CancelledError:
             state, result = "interrupted", "服务退出，安装未确认完成；请核对后重试。"
-        except Exception as exc:  # noqa: BLE001 —— 安装失败必须落终态
+        except Exception as exc:
             state, result = "failed", str(exc)[:700]
         with self.store.connection() as conn:
             conn.execute(

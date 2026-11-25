@@ -190,7 +190,7 @@ class ToolExecutor(abc.ABC):
         if spec.parser:
             try:
                 result.parsed = spec.parser(stdout, stderr, result.returncode)
-            except Exception as exc:  # noqa: BLE001 —— 解析失败不致命
+            except Exception as exc:
                 result.parsed = {"parse_error": str(exc)}
         self.audit.log("tool.result", "executor", {
             "tool": spec.name, "ok": ok, "rc": result.returncode,

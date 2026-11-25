@@ -495,7 +495,7 @@ async def _run(infra, assembly, target, *, mission, standing_rules, dialogue_his
                 reason=state["note"], outcome="cancelled",
             )
         raise
-    except Exception as exc:  # noqa: BLE001 —— 增益分支失败不拖累主流程
+    except Exception as exc:
         state.update(status="failed", error=f"{type(exc).__name__}: {exc}"[:2000])
         if nuclei_delegated:
             _settle_nuclei_hypothesis(

@@ -12,6 +12,7 @@ import zipfile
 from pathlib import Path
 from types import SimpleNamespace
 
+from _platform import CAN_SYMLINK
 from test_single_executor import context
 
 from spiritscout.awdp.builder import build_patch
@@ -50,6 +51,7 @@ class Normal(unittest.TestCase):
 from pathlib import Path
 from app import handle
 class Boundary(unittest.TestCase):
+    @unittest.skipUnless(CAN_SYMLINK, "本机无法创建符号链接（Windows 需管理员或开发者模式）")
     def test_boundaries(self):
         root = Path.cwd()
         (root/'public/link.txt').symlink_to('../secret.txt')
@@ -288,6 +290,7 @@ class VerificationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(state['review_due']['same_failure_count'], 2)
         self.assertTrue(activate(state))
 
+    @unittest.skipUnless(CAN_SYMLINK, "本机无法创建符号链接（Windows 需管理员或开发者模式）")
     async def test_code_file_is_scoped_and_cannot_be_combined_with_code(self):
         path = self.root / 'sandbox/one/test.py'
         path.parent.mkdir(parents=True)

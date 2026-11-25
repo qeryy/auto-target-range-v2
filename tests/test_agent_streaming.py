@@ -5,11 +5,13 @@ import asyncio
 import tempfile
 import time
 import unittest
+from datetime import UTC
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
 import httpx
+from _platform import CAN_SYMLINK
 
 from spiritscout.agents.sub.base import StepResult, SubAgent
 from spiritscout.blackboard import Blackboard
@@ -567,6 +569,7 @@ class AgentStreamingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(transition.call_args.kwargs["state"], "blocked")
         self.assertEqual(transition.call_args.kwargs["outcome"], "prerequisite_missing")
 
+    @unittest.skipUnless(CAN_SYMLINK, "本机无法创建符号链接（Windows 需管理员或开发者模式）")
     def test_recon_html_publishes_exact_cross_origin_scripts_as_readonly_assets(self) -> None:
         from spiritscout.agents.recon.agent import ReconAgent
         from spiritscout.core.models import Scope
@@ -729,6 +732,7 @@ class AgentStreamingTests(unittest.IsolatedAsyncioTestCase):
             await SubAgent._report(agent, task, [route], summary)
             self.assertEqual(len(list_task_reports(workspace)), 1)
 
+    @unittest.skipUnless(CAN_SYMLINK, "本机无法创建符号链接（Windows 需管理员或开发者模式）")
     async def test_src_report_write_failure_does_not_publish_success_or_follow_links(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             workspace = Path(tmp) / "session"
@@ -1061,7 +1065,7 @@ class GatewayRetryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(chunks, [("text", "失败片段"), ("reset", ""), ("text", "成功正文")])
 
     async def test_retry_after_and_backoff_do_not_retry_billing_failures(self):
-        from datetime import datetime, timezone
+        from datetime import datetime
         from email.utils import format_datetime
 
         from spiritscout.gateway.retry import recoverable, retry_delay
@@ -1071,7 +1075,7 @@ class GatewayRetryTests(unittest.IsolatedAsyncioTestCase):
         self.assertAlmostEqual(retry_delay(self.unavailable(), 30, gateway.config), .002)
         self.assertEqual(retry_delay(self.unavailable(headers={"Retry-After": "90"}), 0, gateway.config), 90)
         self.assertEqual(retry_delay(self.unavailable(headers={"retry-after-ms": "250"}), 0, gateway.config), .25)
-        date = format_datetime(datetime.fromtimestamp(1_700_000_030, timezone.utc), usegmt=True)
+        date = format_datetime(datetime.fromtimestamp(1_700_000_030, UTC), usegmt=True)
         with patch("spiritscout.gateway.retry.time.time", return_value=1_700_000_000):
             self.assertEqual(retry_delay(self.unavailable(headers={"Retry-After": date}), 0, gateway.config), 30)
         error = self.unavailable(429, body={"error": {"code": "insufficient_quota"}})

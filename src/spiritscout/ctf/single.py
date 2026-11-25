@@ -667,7 +667,7 @@ class SingleCTFAgent(CTFBaseAgent):
                 issues = previous.get('same_issue_count', 0) + 1 if profile and previous.get('issues') == profile else 1
                 state[failure_key] = {'request': request, 'count': count, 'error': error,
                                      'same_failure_count': failures, 'issues': profile, 'same_issue_count': issues}
-                if count > 1 or failures > 1 or profile and issues > 1:
+                if count > 1 or failures > 1 or (profile and issues > 1):
                     reason = {'tool': name, 'failed': True, 'same_request_count': count,
                               'same_failure_count': failures, 'same_issue_count': issues,
                               'unresolved_issues': profile, 'reason': recovery[name]}

@@ -15,6 +15,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from _platform import CAN_SYMLINK
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -141,6 +142,7 @@ class CaptureTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(packets.get_capture(self.root, capture_id)["packet_count"], 10)
         self.assertEqual(len(await display_numbers(self.root, capture_id, "websocket")), 2)
 
+    @unittest.skipUnless(CAN_SYMLINK, "本机无法创建符号链接（Windows 需管理员或开发者模式）")
     async def test_invalid_upload_truncation_missing_and_symlinks(self):
         with self.assertRaises(CaptureError):
             await self.import_fixture(b"not a capture file" * 2)

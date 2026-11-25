@@ -15,6 +15,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
 import httpx
+from _platform import CAN_SYMLINK
 from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
 
@@ -265,6 +266,7 @@ print('isolated')
             self.assertEqual(followup.stdout, "savedartifact")
             self.assertEqual((root / "bb.db").read_text(), "host-control")
 
+    @unittest.skipUnless(CAN_SYMLINK, "本机无法创建符号链接（Windows 需管理员或开发者模式）")
     async def test_sandbox_rejects_symlink_shared_directory(self) -> None:
         if not sandbox_available():
             self.skipTest("需要 bubblewrap")
@@ -408,6 +410,7 @@ class AuditOwnershipTests(unittest.TestCase):
             finally:
                 bb.close()
 
+    @unittest.skipUnless(CAN_SYMLINK, "本机无法创建符号链接（Windows 需管理员或开发者模式）")
     def test_same_database_aliases_cannot_take_second_lock(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

@@ -20,7 +20,7 @@ LOG_ROOT = ROOT / "build" / "test-logs"
 def available_modules() -> list[tuple[str, int]]:
     modules: list[tuple[str, int]] = []
     for path in sorted(TESTS.glob("test_*.py")):
-        text = path.read_text(encoding="utf-8")
+        text = path.read_text(encoding="utf-8-sig")
         tree = ast.parse(text, filename=str(path))
         classes = [
             node for node in tree.body

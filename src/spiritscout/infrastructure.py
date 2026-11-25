@@ -186,7 +186,7 @@ def _bind_asset_memory(
                 asset,
                 f"{Path(cfg.workspace.root).name}:{layer.value}:{record_id}@{version}",
             )
-        except Exception:  # noqa: BLE001
+        except Exception:
             audit.log(
                 "assets.sync_failed",
                 "runtime",

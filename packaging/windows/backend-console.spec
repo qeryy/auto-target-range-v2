@@ -15,7 +15,7 @@ from PyInstaller.utils.hooks import collect_all, collect_submodules, copy_metada
 # 收集 LiteLLM 子模块时会导入包；强制使用内置价格表，避免构建期访问 GitHub。
 os.environ.setdefault("LITELLM_LOCAL_MODEL_COST_MAP", "True")
 
-ROOT = Path(SPECPATH).resolve().parents[2]
+ROOT = Path(SPECPATH).resolve().parents[1]   # packaging/windows → 仓库根
 PKG = ROOT / "src" / "spiritscout"
 
 # 运行期按 __file__ 相对路径读取的资产，缺一不可。

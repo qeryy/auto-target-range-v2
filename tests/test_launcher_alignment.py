@@ -8,7 +8,6 @@
 
 from __future__ import annotations
 
-import io
 import re
 import tomllib
 import unittest
@@ -16,9 +15,9 @@ from pathlib import Path
 
 from spiritscout import __version__
 from spiritscout.__main__ import build_parser
-from spiritscout.startup import StartupDisplay
 
-ROOT = Path(__file__).resolve().parents[1]        # repository root
+ROOT = Path(__file__).resolve().parents[1]        # 仓库根（单根布局：tests/ 的上一级就是根）
+REPO = ROOT                                       # 启动脚本与 README 也在这一层
 
 
 def read(path: Path) -> str:
@@ -29,7 +28,7 @@ def read(path: Path) -> str:
 def cli_flags(text: str) -> set[str]:
     """脚本里**显式**传给 `-m spiritscout` 的参数名。
 
-    只看含 `-m spiritscout` 的行：启动器自己的开关（`launch.sh` 的 `--force`、
+    只看含 `-m spiritscout` 的行：启动器自己的开关（launch.sh 的 `--force`、
     `-h` 之类）不算，`"$@"` / `%*` 透传的东西静态看不出来，也跳过。
     """
     flags: set[str] = set()
@@ -62,23 +61,23 @@ class LauncherAlignmentTests(unittest.TestCase):
 
     def test_local_launcher_still_sets_password_then_serves(self) -> None:
         """根启动器两步都要在：先 --set-admin-password --if-missing，再带 --port 起服务。"""
-        launcher = ROOT / "scripts/windows/start-web.ps1"
+        launcher = REPO / "scripts/windows/start-web.ps1"
         flags = cli_flags(read(launcher))
         self.assertLessEqual({"--config", "--port", "--set-admin-password", "--if-missing"}, flags)
         self.assertFalse(flags - self.known)
         self.assertIn("--port $Port", read(launcher))
 
     def test_double_click_entry_and_docs_agree_on_port(self) -> None:
-        root_entry = read(ROOT / "Start-SpiritScout.cmd")
+        root_entry = read(REPO / "Start-SpiritScout.cmd")
         self.assertIn(r"scripts\windows\start-web.cmd", root_entry)
-        entry = read(ROOT / "scripts/windows/start-web.cmd")
+        entry = read(REPO / "scripts/windows/start-web.cmd")
         self.assertIn("start-web.ps1", entry)
         self.assertIn("-Port 8010", entry)
         self.assertRegex(
-            read(ROOT / "scripts/windows/start-web.ps1"),
+            read(REPO / "scripts/windows/start-web.ps1"),
             r"\[int\]\$Port\s*=\s*8010",
         )
-        readme = read(ROOT / "README.md")
+        readme = read(REPO / "README.md")
         self.assertIn("127.0.0.1:8010", readme)
         # 配置里的 8000 是给不带参的 start-console 用的，别让文档说岔
         self.assertIn("8000", readme)
@@ -101,31 +100,30 @@ class LauncherAlignmentTests(unittest.TestCase):
                          "probe_deps.TOOLKIT 与 pyproject toolkit 不一致")
 
     def test_banner_prints_source_version(self) -> None:
-        """启动横幅带版本：一眼确认接的是当前源码，而不是旧 venv 或旧包。"""
-        stream = io.StringIO()
-        display = StartupDisplay(stream)
-        display.start()
-        display.ready("127.0.0.1", 8010, auth_enabled=False)
-        text = stream.getvalue()
+        """启动面板带版本：一眼确认接的是当前源码，而不是旧 venv 或旧包。"""
+        import io
+
+        from spiritscout.startup import StartupDisplay
+
+        buffer = io.StringIO()
+        StartupDisplay(stream=buffer).start()
+        text = buffer.getvalue()
         self.assertIn(f"v{__version__}", text)
-        self.assertIn("http://127.0.0.1:8010", text)
+        self.assertIn("多智能体安全测试控制台", text)
 
     def test_local_launcher_reports_source_version(self) -> None:
         """启动器要把源码版本打出来（探针读 __init__.py，与 --version 同源）。"""
-        text = read(ROOT / "scripts/windows/start-web.ps1")
+        text = read(REPO / "scripts/windows/start-web.ps1")
         self.assertIn("deps.source_version", text)
         self.assertIn("源码版本", text)
 
     def test_readme_banner_sample_follows_version(self) -> None:
-        """文档里贴的横幅示例也得跟着版本走，别再留一份旧号的输出。"""
+        """文档里贴的启动样例也得跟着版本走，别再留一份旧号的输出。"""
         for name in ("README.md", "README_EN.md"):
             with self.subTest(file=name):
-                expected = (
-                    f"灵枢 Web 控制台 v{__version__}:"
-                    if name == "README.md"
-                    else f"SpiritScout Web console v{__version__}:"
-                )
-                self.assertIn(expected, read(ROOT / name))
+                text = read(ROOT / name)
+                self.assertIn("SPIRITSCOUT", text, "启动样例缺少品牌头")
+                self.assertIn(f"v{__version__}", text, "启动样例版本号与源码不一致")
 
 
 if __name__ == "__main__":       # pragma: no cover

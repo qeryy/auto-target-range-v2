@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+﻿#!/usr/bin/env python
 """核对本地 LLM 端点：连不连得上、配置里的模型 id 对不对。
 
 本地模型最常见的两个坑都不在代码里——服务没启动，或者填的模型名和端点
@@ -23,7 +23,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 
-from spiritscout.config.settings import (  # noqa: E402 —— 需要先改 sys.path
+from spiritscout.config.settings import (  # noqa: E402
     load_model_config,
 )
 

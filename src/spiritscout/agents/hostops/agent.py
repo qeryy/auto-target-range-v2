@@ -320,7 +320,7 @@ class HostVulnAgent(SubAgent):
             if not res.ok or res.parsed.get("status_code") != 200:
                 continue
             body = res.stdout or ""
-            evidence = marker.lower() in body.lower() or path == "/.env" and "=" in body
+            evidence = marker.lower() in body.lower() or (path == "/.env" and "=" in body)
             if evidence:
                 hits.append(base + path)
                 self.ctx.convergence.merge_vulnerability(self._new_vuln(

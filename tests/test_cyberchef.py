@@ -13,6 +13,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
+from _platform import CAN_SYMLINK
+
 from spiritscout.agents.business.agent import BusinessContextAgent
 from spiritscout.agents.profiles import get_profile
 from spiritscout.agents.recon.agent import ReconAgent
@@ -44,6 +46,7 @@ class _NoCLI(ToolExecutor):
 
 
 class CyberChefInputTests(unittest.TestCase):
+    @unittest.skipUnless(CAN_SYMLINK, "本机无法创建符号链接（Windows 需管理员或开发者模式）")
     def test_file_ranges_and_scope_do_not_normalise_input(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -68,7 +71,7 @@ class CyberChefInputTests(unittest.TestCase):
         self.assertFalse(get_profile(AgentType.MASTER).allows_tool('cyberchef_bake'))
         self.assertFalse(get_profile(AgentType.SECRETARY).allows_tool('cyberchef_bake'))
         self.assertEqual({s['function']['name'] for s in SCHEMAS}, NAMES)
-        self.assertTrue(NAMES <= {s['function']['name'] for s in CTFBaseAgent.tool_schemas})
+        self.assertTrue({s['function']['name'] for s in CTFBaseAgent.tool_schemas} >= NAMES)
         for role in (AgentType.BUSINESS_CONTEXT, AgentType.RECON, AgentType.WEB_VULN,
                      AgentType.PORT_SCAN, AgentType.HOST_VULN, AgentType.POST_EXPLOIT, AgentType.VERIFIER):
             with self.subTest(role=role):
@@ -154,7 +157,7 @@ class CyberChefLiveTests(unittest.IsolatedAsyncioTestCase):
         agent.agent_id = 'business-fixture'
         agent.ctx = self.src_context(AgentType.BUSINESS_CONTEXT)
         agent._explore = {}
-        self.assertTrue(NAMES <= {s['function']['name'] for s in agent._tool_schemas(deferred=True)})
+        self.assertTrue({s['function']['name'] for s in agent._tool_schemas(deferred=True)} >= NAMES)
         task = Task(task_id='src-business', task_type='business_context',
                     agent_type=AgentType.BUSINESS_CONTEXT, target='https://fixture.invalid')
         text = await agent._run_tool_call(task, {'id': 'decode', 'name': 'cyberchef_bake',
@@ -163,7 +166,7 @@ class CyberChefLiveTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(Path(result['output_file']).read_bytes(), b'__verificatiionToken')
         verifier = object.__new__(VerifierAgent)
         verifier.ctx = self.src_context(AgentType.VERIFIER)
-        self.assertTrue(NAMES <= {s['function']['name'] for s in verifier.schemas()})
+        self.assertTrue({s['function']['name'] for s in verifier.schemas()} >= NAMES)
         decoded = await verifier.ctx.tools.call('cyberchef_bake', {
             'input': 'YWJj', 'recipe': DECODE}, **verifier.ctx.builtin_ctx)
         self.assertTrue(decoded.ok, decoded.error)

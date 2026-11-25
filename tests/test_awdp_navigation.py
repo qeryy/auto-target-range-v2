@@ -12,6 +12,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from _platform import CAN_SYMLINK
 from test_single_executor import context
 
 from spiritscout.awdp.builder import build_patch
@@ -101,6 +102,7 @@ class NavigationTests(unittest.TestCase):
             self.query('read', file_id='f0000')
 
     @unittest.skipIf(os.name == "nt", "Windows 工具集与 Linux AWDP 宿主的缺失工具集合不同")
+    @unittest.skipUnless(CAN_SYMLINK, "本机无法创建符号链接（Windows 需管理员或开发者模式）")
     def test_missing_ctags_and_parse_failure_are_explicit_not_empty_success(self):
         (self.source / 'ok.py').write_text('def valid():\n    pass\n')
         (self.source / 'bad.py').write_text('def broken(:\n')
@@ -199,6 +201,7 @@ class ExactEditTests(unittest.TestCase):
         self.assertEqual((deploy / 'app.py').read_text(), 'print("after")\n')
         self.assertEqual(original.read_text(), 'print("before")\n')
 
+    @unittest.skipUnless(CAN_SYMLINK, "本机无法创建符号链接（Windows 需管理员或开发者模式）")
     def test_links_other_challenge_and_attachment_escape_are_rejected(self):
         path = self.source / 'file.py'
         path.write_text('old')

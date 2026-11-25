@@ -72,14 +72,14 @@ def register_handoff(registry: Any, catalog: dict, spec: Any, client: Any,
                 answer = await questions.ask(
                     actor, question.strip() + "\n请在已打开的 Chrome 窗口操作，完成后在这里确认；窗口随后自动最小化。",
                     ["已完成操作", "取消本次操作"])
-            except Exception as exc:  # noqa: BLE001 —— 回灌实际失败，避免假报完成
+            except Exception as exc:
                 error = str(exc)[:600]
             finally:
                 if shown:
                     try:
                         await asyncio.shield(window_state(client, code_tool, "minimized"))
                         audit.log("browser.handoff", actor, {"state": "minimized", "server": spec.name})
-                    except Exception as exc:  # noqa: BLE001 —— 登录输入保留，明确报告窗口处理失败
+                    except Exception as exc:
                         error = (error + "；" if error else "") + "窗口未能最小化：" + str(exc)[:300]
             cancelled = bool(answer.get("cancelled")) or answer.get("answer") == "取消本次操作"
             payload = {"answer": answer.get("answer", ""), "cancelled": cancelled,

@@ -167,7 +167,7 @@ async def _manual_worker(cfg: Any, manager: Any, session: Any, digest: dict[str,
                                                       else distill_blocker(session, digest)))
         handed_off = True
         await _background_distill(infra, store, digest, outcome=session.status, snapshot=snapshot)
-    except Exception as exc:  # noqa: BLE001 —— 后台配置错误也必须留下真实结果
+    except Exception as exc:
         result = {'result': 'error', 'insights': 0, 'trigger': 'manual',
                   'error': f'{type(exc).__name__}: {exc}'[:200]}
         audit.log('experience.distill', 'master', result)

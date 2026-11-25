@@ -1,7 +1,35 @@
 # 更新日志
 
-项目采用 `主版本.次版本.修订号`。当前版本为 **1.3.0**，版本唯一来源是
+项目采用 `主版本.次版本.修订号`。当前版本为 **1.3.1**，版本唯一来源是
 `src/spiritscout/__init__.py`；包构建、命令行、控制台及 MCP 握手共用该值。
+
+## [1.3.1] - 2026-11-25
+
+**修 CI / Release 的失败，并补齐跨平台兜底。**
+
+- **Web 到原生桌面完整移植**：任务创建、会话全部标签、子 Agent 旁路、项目、资产收集与
+  情报、模型/供应商/OAuth、MCP、Skill 文件编辑、本地工具、自动任务、代理池、浏览器账号、
+  经验、HTTP/WS/PCAP 流量和设置均使用 Compose/SaltUI 专用页面；高级 JSON 只保留诊断用途。
+- **桌面生命周期收口**：后端接入 Windows `KILL_ON_JOB_CLOSE` Job Object，并保留父进程
+  watchdog；关闭桌面或强制结束进程都会释放整棵 Python 后端进程树。
+- **桌面中英文覆盖**：增加独立英文资源目录与覆盖率测试，桌面静态文案覆盖 `1306/1306`。
+- **Windows 发布冒烟**：打包脚本清理 `__pycache__`/`.pyc`，新增
+  `packaging/windows/smoke-desktop.ps1`，验证 HTTP 就绪、WebSocket 依赖、ZIP 内容和进程树释放。
+- **内置技能 3 条描述为 null**：`archive_skills.json` 的 `browser-automation` /
+  `docs-generator` / `js-reverse` 没有 description，`ResourceStore.skills()` 拼接
+  None 抛 TypeError，连带十余个技能测试失败。补齐描述，拼接加 `or ""` 保护。
+- **`dir_picker.available()` 恒为真**：上一轮整理时 F401 删掉了用于探测的
+  `import tkinter`，留下空 `try: pass`。恢复 import。
+- **`os.fchmod` 与 `resource`**：`awdp/editor.py`、`ctf/ai_worker.py` 在 Windows 上
+  分别抛 AttributeError / ImportError（后者会直接让 worker 返回错误而不执行任务）。
+  加平台判断。
+- **`chmod_at` 的 follow_symlinks**：Windows 不支持，捕获后退回普通 chmod。
+- **`backend-console.spec` 的 ROOT**：`parents[2]` 多退一级（单根化时漏改），
+  导致 Release 的 Windows 打包找不到 entry 文件。改为 `parents[1]`。
+- **测试平台化**：新增 `tests/_platform.py` 探测符号链接能力，给 27 处依赖符号链接的
+  用例加 `skipUnless`（Windows 需管理员或开发者模式）；Linux 上照常执行。
+- **`probe_deps.RUNTIME`** 对齐 pyproject（删 langgraph / langchain-core，
+  加 websockets / psutil）。
 
 ## [1.3.0] - 2026-11-24
 
@@ -976,7 +1004,7 @@ Git 历史与日期日志回溯整理，用于标识功能演进，**并非当�
 不把每次提交视为一次发布，不改写 Git 历史，也不倒填发布标签。历史条目描述当时的
 行为，部分规则后来已有调整，请以当前代码和最新条目为准。
 
-版本递增和发布记录规则见 [贡献指南](CONTRIBUTING.md#版本管理)。
+版本递增和发布记录规则见 [贡献指南](.github/CONTRIBUTING.md#版本管理)。
 
 ## [0.44.2] - 2026-11-10
 

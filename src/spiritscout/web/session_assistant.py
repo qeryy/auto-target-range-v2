@@ -286,13 +286,13 @@ async def _llm_extract_platform(cfg: SystemConfig, models: list[ModelEntry],
             task_type="classification", response_format="json",
             reasoning_effort="low", model=_bound_model(cfg, models),
             timeout_seconds=min(90, cfg.gateway.request_timeout_seconds))
-    except Exception as exc:  # noqa: BLE001 —— 抽取失败不阻断开工
+    except Exception as exc:
         audit.log("system.lifecycle", "platform_extractor", {
             "action": "platform_extract_failed", "error": str(exc)[:200]})
         return None
     try:
         data = extract_json(resp.content)
-    except Exception:  # noqa: BLE001 —— 应答不可解析按「无平台」处理
+    except Exception:
         data = None
     raw = (data or {}).get("platform") if isinstance(data, dict) else None
     if not isinstance(raw, dict) or not raw:
@@ -390,13 +390,13 @@ async def _llm_discover_platform(cfg: SystemConfig, models: list[ModelEntry],
             task_type="classification", response_format="json",
             reasoning_effort="low", model=_bound_model(cfg, models),
             timeout_seconds=min(90, cfg.gateway.request_timeout_seconds))
-    except Exception as exc:  # noqa: BLE001 —— 自动发现失败不阻断赛事开工
+    except Exception as exc:
         audit.log("system.lifecycle", "platform_discovery", {
             "action": "platform_discovery_model_failed", "error": str(exc)[:200]})
         return None
     try:
         data = extract_json(resp.content)
-    except Exception:  # noqa: BLE001
+    except Exception:
         data = None
     raw = (data or {}).get("platform") if isinstance(data, dict) else None
     if not isinstance(raw, dict) or not raw:
@@ -478,7 +478,7 @@ async def _llm_name(cfg: SystemConfig, models: list[ModelEntry], audit: AuditLog
         }, ensure_ascii=False)}]
     try:
         gateway = _conversation_gateway(cfg, models, audit)
-    except Exception as exc:  # noqa: BLE001 —— 命名是锦上添花，任何失败不阻断主流程
+    except Exception as exc:
         audit.log("session.naming", "namer", {
             "action": "failed", "mode": mode, "error": str(exc)[:300]})
         return None
@@ -506,7 +506,7 @@ async def _llm_name(cfg: SystemConfig, models: list[ModelEntry], audit: AuditLog
                     reasoning_effort="low", model=candidate,
                     max_tokens=_NAMING_MAX_TOKENS * 4,
                     timeout_seconds=min(30, cfg.gateway.request_timeout_seconds))
-        except Exception as exc:  # noqa: BLE001 —— 该模型调不动：换链上用户排的下一个
+        except Exception as exc:
             audit.log("session.naming", "namer", {
                 "action": "model_unavailable", "mode": mode,
                 "model": candidate, "error": str(exc)[:200]})
@@ -648,7 +648,7 @@ async def _master_reply(cfg: SystemConfig, models: list[ModelEntry],
     if run_facts:
         facts["execution_facts"] = run_facts
     if project_memory:
-        if project_memory.get("history_on_demand") or session is not None and session.mode == RunMode.SRC.value:
+        if project_memory.get("history_on_demand") or (session is not None and session.mode == RunMode.SRC.value):
             from spiritscout.resources.store import project_context
 
             facts["project_context"] = project_context(project_memory)
@@ -804,7 +804,7 @@ async def _llm_scope_question(cfg: SystemConfig, models: list[ModelEntry],
             task_type="meta_planning", response_format="json",
             reasoning_effort="low", model=_bound_model(cfg, models),
             timeout_seconds=min(45, cfg.gateway.request_timeout_seconds))
-    except Exception as exc:  # noqa: BLE001 —— 问句失败走兜底，不阻断
+    except Exception as exc:
         audit.log("master.scope_question_failed", "master",
                   {"error": str(exc)[:200]})
         return None

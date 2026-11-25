@@ -163,7 +163,10 @@ def edit_source(root: Path, challenge: str, args: dict, attachments: list[str] |
             )
             with os.fdopen(fd, 'wb') as stream:
                 stream.write(payload)
-                os.fchmod(stream.fileno(), permissions)
+                # os.fchmod 只在 POSIX 有；Windows 上权限靠 open_at 的 0o600 掩码
+                # 和目录 ACL，没有等价调用，跳过即可（不能因此让补丁写入失败）。
+                if hasattr(os, "fchmod"):
+                    os.fchmod(stream.fileno(), permissions)
     return {'ok': True, 'original_path': str(path), 'patched': str(root / directory / filename),
         **({'source_ref': reference} if reference else {}),
         'before_sha256': actual, 'sha256': hashlib.sha256(after).hexdigest(), 'edits': len(edits),

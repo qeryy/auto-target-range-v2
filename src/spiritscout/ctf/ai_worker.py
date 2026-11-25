@@ -207,10 +207,16 @@ def run(args):
 def main():
     for name in ('OMP_NUM_THREADS', 'OPENBLAS_NUM_THREADS', 'MKL_NUM_THREADS'):
         os.environ[name] = '1'
+    # 地址空间上限只在 POSIX 有意义：resource 在 Windows 不存在，
+    # 之前把它和任务执行包在同一个 try 里，Windows 上会直接返回
+    # ImportError 而根本不跑任务。
     try:
         import resource
 
         resource.setrlimit(resource.RLIMIT_AS, (1024 ** 3, 1024 ** 3))
+    except (ImportError, OSError, ValueError):
+        pass
+    try:
         args = json.loads(sys.argv[1])
         result = run(args)
         text = json.dumps(result, ensure_ascii=False, allow_nan=False, separators=(',', ':'))

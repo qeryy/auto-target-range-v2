@@ -211,7 +211,7 @@ class McpClient:
                     await self._pump(session)
         except asyncio.CancelledError:
             raise
-        except BaseException as exc:  # noqa: BLE001 —— 连接/会话故障：唤醒等待者
+        except BaseException as exc:
             self._fatal = exc
         finally:
             self._closing = True
@@ -242,7 +242,7 @@ class McpClient:
                 result = await session.call_tool(
                     tool, arguments,
                     read_timeout_seconds=timedelta(seconds=timeout))
-            except Exception as exc:  # noqa: BLE001 —— 单次调用失败不拆会话
+            except Exception as exc:
                 # 等待方可能在调用途中取消（future 已 done）——回填前须确认，
                 # 否则 InvalidStateError 会把整条常驻会话拆掉
                 if not future.done():

@@ -43,7 +43,7 @@ def _distill_digest(infra: _Infra, assembly: Any,
     if flag_manager is not None:
         try:
             digest["flags"] = flag_manager.stats()
-        except Exception:  # noqa: BLE001 —— 统计失败不阻断提炼
+        except Exception:
             pass
     dag = summary.get("dag_nodes") or []
     if dag:
@@ -101,7 +101,7 @@ def _distill_digest(infra: _Infra, assembly: Any,
                 break
         if sources:
             digest['evidence_catalog'] = sources
-    except Exception:  # noqa: BLE001 —— 黑板读取异常时保留最小战报
+    except Exception:
         pass
     return digest
 
@@ -236,7 +236,7 @@ async def _distill_run(infra: _Infra, experience: Any, digest: dict[str, Any], *
             timeout_seconds=infra.cfg.experience.distill_timeout_seconds,
             audit=infra.audit,
             source_session=Path(str(workspace_root)).name if workspace_root else "")
-    except Exception as exc:  # noqa: BLE001 —— 不吞 CancelledError（停止语义优先）
+    except Exception as exc:
         result = {"result": "error", "insights": 0,
                   "error": f"{type(exc).__name__}: {exc}"[:200]}
     infra.audit.log("experience.distill", "master", {
@@ -388,7 +388,7 @@ async def _background_distill(infra: _Infra, experience: Any,
             _update_distill_snapshot(
                 snapshot, status="failed" if failed else "done",
                 completed_at=datetime.now(UTC).isoformat(), result=result)
-    except Exception:  # noqa: BLE001 —— 不吞 CancelledError（停止语义优先）
+    except Exception:
         with contextlib.suppress(Exception):
             _update_distill_snapshot(snapshot, status="failed",
                                      completed_at=datetime.now(UTC).isoformat())
@@ -437,7 +437,7 @@ async def resume_pending_distills(
                         audit=audit,
                         source_session=str(payload.get("session") or workspace.name))
                     failed = result.get("result") == "error"
-                except Exception as exc:  # noqa: BLE001 —— 单条失败保留快照重试
+                except Exception as exc:
                     result = {"result": "error", "insights": 0,
                               "error": f"{type(exc).__name__}: {exc}"[:200]}
                     failed = True

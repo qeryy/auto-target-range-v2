@@ -108,7 +108,7 @@ def create_app(cfg: SystemConfig, models: list[ModelEntry], *,
     if skills_path.is_file():
         try:
             sync_skills(resource_store, skills_path)
-        except Exception as exc:  # noqa: BLE001 - startup remains usable; registry can be repaired
+        except Exception as exc:
             print(
                 f"[spiritscout] 自定义技能同步失败（控制台继续启动）：{exc}",
                 file=sys.stderr,
@@ -148,7 +148,7 @@ def create_app(cfg: SystemConfig, models: list[ModelEntry], *,
 
             try:
                 await load_litellm()
-            except Exception as exc:  # noqa: BLE001 — 首次调用仍保留原生错误。
+            except Exception as exc:
                 print(f"[警告] 模型 SDK 预热失败（首次调用时重试）：{exc}",
                       file=sys.stderr)
 

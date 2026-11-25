@@ -5,7 +5,7 @@
 
 ## 准备开发环境
 
-安装和数据迁移统一参考 [部署与配置](docs/部署与配置.md)，不要用开发工作区覆盖运行中的配置。
+安装和数据迁移统一参考 [部署与配置](../docs/部署与配置.md)，不要用开发工作区覆盖运行中的配置。
 只修改文档或前端不需要配置真实模型，也不需要下载额外操作系统或启动付费测试。
 
 **uv（推荐，三平台一致）**
@@ -21,7 +21,7 @@ uv run python -m spiritscout --help
 
 多个 extras 需在同一条 `uv sync` 命令中组合；单独执行后一次会按当前参数同步环境。
 
-`uv sync` 按 `uv.lock` 创建项目根 `.venv`，`scripts/windows/start-console.ps1` 和下列检查命令
+`uv sync` 按 `uv.lock` 创建项目根 `.venv`，`launch.ps1` 和下列检查命令
 可直接使用该环境。修改依赖后执行 `uv lock` 并一并提交锁文件。
 
 **不使用 uv 时仍可使用 pip**
@@ -40,8 +40,7 @@ py -3 -m venv .venv
 
 各系统使用自己的虚拟环境。Windows 完整工具执行优先在 WSL2 内源码部署，Linux
 优先源码部署；沙箱需要 bubblewrap 和命名空间权限。Docker 保留为可选方式。
-WSL2 用户在 Linux 文件系统中创建仓库和虚拟环境，具体检查见
-[部署与配置](docs/部署与配置.md)。
+WSL2 用户在 Linux 文件系统中创建仓库和虚拟环境，具体检查见 [Agent 安装指南](../docs/部署与配置.md)。
 测试密钥使用明确标记的夹具值，真实密钥通过控制台配置。
 
 ## 分支与 PR
@@ -74,15 +73,6 @@ Dockerfile、Compose 和通用部署代码仍正常维护、提交。
 .venv/bin/python -m ruff check src/ tests/ deploy.py deploy
 .venv/bin/python -m unittest discover -s tests -v
 ```
-
-Windows 或需要快速定向回归时，按模块隔离并行运行；默认使用逻辑 CPU 的一半，最多 12 个进程：
-
-```powershell
-.venv\Scripts\python.exe scripts\test_parallel.py --workers 12
-.venv\Scripts\python.exe scripts\test_parallel.py --workers 12 test_web_auth test_audit_repairs
-```
-
-每个模块在独立进程中运行，避免 SQLite 连接、临时目录和全局状态互相污染。全量结果只作为跨模块变更后的最终门禁；局部修改优先只跑受影响模块。
 
 前端没有构建步骤，使用 Node.js 22+ 检查语法并运行回归：
 
@@ -139,7 +129,7 @@ LiteLLM 固定为 `1.102.0`，MCP SDK 使用 `>=1.28.1,<2`。较新的 LiteLLM M
 构建脚本最后会执行 `dist/... --version`。修改打包资源、依赖或启动路径后，至少运行一次
 对应平台的构建，并在空目录中启动产物确认首次配置生成和 `/login` 可访问。
 `.venv-build/`、`build/`、`dist/` 属本地构建产物，不提交。打包版的能力边界见
-[部署与配置](docs/部署与配置.md#免安装可执行文件)。
+[部署与配置](../docs/部署与配置.md#免安装可执行文件)。
 
 ## 设计与安全约定
 
@@ -153,7 +143,7 @@ LiteLLM 固定为 `1.102.0`，MCP SDK 使用 `>=1.28.1,<2`。较新的 LiteLLM M
 | CTF / 智能体 | 工具操作预授权并留审计；智能体不向用户提问，普通 CTF 可询问缺失信息或范围 |
 | 知识与证据 | 知识库存参考事实；发现保留来源与实际验证结果，不把推断写成已确认成果 |
 
-涉及安全机制先阅读 [安全设计](docs/04-安全设计与防绕过防攻击.md)。
+涉及安全机制先阅读 [安全设计](../docs/04-安全设计与防绕过防攻击.md)。
 项目自身漏洞按 [安全策略](SECURITY.md) 私密报告，不把敏感复现细节放进公开 Issue。
 
 ## 文档维护

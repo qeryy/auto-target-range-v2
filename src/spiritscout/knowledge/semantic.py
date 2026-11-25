@@ -1,4 +1,4 @@
-"""知识库向量检索：Chroma 存储与可配置的 embedding。"""
+﻿"""知识库向量检索：Chroma 存储与可配置的 embedding。"""
 
 from __future__ import annotations
 
@@ -101,7 +101,7 @@ class SemanticIndex:
 
     def __init__(self, cfg: KnowledgeConfig, *, client: Any = None):
         try:
-            import chromadb
+            import chromadb  # noqa: F401
         except ImportError as exc:
             raise ConfigurationError(
                 "语义检索需要可选依赖 chromadb（未安装）。"

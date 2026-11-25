@@ -4,10 +4,10 @@ from __future__ import annotations
 import hashlib
 import os
 import re
+from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterator
 
 _O_DIRECTORY = getattr(os, "O_DIRECTORY", 0)
 _O_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
@@ -143,7 +143,12 @@ def chmod_at(
     target = _checked_child(directory, name)
     if target.is_symlink() and not follow_symlinks:
         raise ValueError(f"拒绝修改链接：{name}")
-    os.chmod(target, mode, follow_symlinks=follow_symlinks)
+    try:
+        os.chmod(target, mode, follow_symlinks=follow_symlinks)
+    except (NotImplementedError, TypeError):
+        # Windows 的 os.chmod 不支持 follow_symlinks。上面已经排除了「改链接本身」
+        # 的情形，走到这里的 target 一定是普通文件或目录，直接改即可。
+        os.chmod(target, mode)
 
 
 def link_at(

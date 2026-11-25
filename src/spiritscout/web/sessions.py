@@ -79,31 +79,31 @@ if TYPE_CHECKING:
 
 # 原入口继续可用，模块之间直接依赖各自所属的数据或能力。
 __all__ = [
-    "_preflight_models",
-    "Session",
-    "TERMINAL_STATES",
     "DIALOGUE_HISTORY_MAX",
-    "_remember_reply",
-    "_bound_model",
-    "_conversation_gateway",
-    "_llm_route_mode",
-    "_llm_route_intent",
-    "_routed_competition_rules_yaml",
-    "_llm_extract_platform",
-    "_llm_discover_platform",
-    "_NAMING_SYSTEM",
+    "TERMINAL_STATES",
     "_NAMING_MAX_TOKENS",
-    "_naming_model_candidates",
+    "_NAMING_SYSTEM",
+    "Session",
+    "SessionManager",
+    "_bound_model",
+    "_clean_scope_question",
+    "_conversation_gateway",
+    "_is_scope_domain",
+    "_llm_discover_platform",
+    "_llm_extract_platform",
     "_llm_name",
+    "_llm_route_intent",
+    "_llm_route_mode",
+    "_llm_scope_question",
+    "_master_reply",
+    "_naming_model_candidates",
+    "_preflight_models",
+    "_project_target_key",
+    "_project_target_value",
+    "_remember_reply",
+    "_routed_competition_rules_yaml",
     "_self_view",
     "_session_run_facts",
-    "_master_reply",
-    "_llm_scope_question",
-    "_is_scope_domain",
-    "_project_target_value",
-    "_project_target_key",
-    "_clean_scope_question",
-    "SessionManager",
 ]
 
 
@@ -467,7 +467,7 @@ class SessionManager:
             self._mcp_preflight = McpPreflight()
             try:
                 self._mcp_preflight.start(self._resources().effective_mcp(self._cfg.mcp_servers))
-            except Exception as exc:  # noqa: BLE001 —— 目录读取故障不阻塞服务启动
+            except Exception as exc:
                 print(f'[spiritscout] MCP 启动预检配置读取失败：{type(exc).__name__}', file=sys.stderr)
         if self._supervisor is None or self._supervisor.done():
             self._supervisor = asyncio.create_task(
@@ -525,7 +525,7 @@ class SessionManager:
                     models=models, agent_models=assignments)
             except asyncio.CancelledError:
                 raise
-            except Exception as exc:  # noqa: BLE001 —— 后台恢复不拖垮控制台
+            except Exception as exc:
                 print(f"[spiritscout] 提炼快照恢复失败（{session.session_id}）:"
                       f" {type(exc).__name__}: {exc}", file=sys.stderr)
 
@@ -559,7 +559,7 @@ class SessionManager:
                     session.task.cancel()   # spawn 瞬间被并发 stop：立即取消
             except asyncio.CancelledError:
                 raise
-            except Exception as exc:  # noqa: BLE001 —— 监督器不能因单会话退出
+            except Exception as exc:
                 session.status = "failed"
                 session.phase = "failed"
                 session.error = f"启动监督失败：{type(exc).__name__}: {exc}"[:500]
@@ -753,7 +753,7 @@ class SessionManager:
             session.finished_at = time.time()
             try:
                 self._persist(session)
-            except Exception:  # noqa: BLE001 —— 落盘失败不遮蔽原始异常
+            except Exception:
                 pass
             raise
         if not no_llm and self._cfg.web.auto_name_sessions:
@@ -792,7 +792,7 @@ class SessionManager:
                 self._persist(session)
         except asyncio.CancelledError:
             raise
-        except Exception as exc:  # noqa: BLE001 —— 命名旁路绝不影响会话主流程
+        except Exception as exc:
             audit.log("session.naming", "namer", {
                 "action": "error",
                 "error": f"{type(exc).__name__}: {exc}"[:300]})
@@ -1242,7 +1242,7 @@ class SessionManager:
             # 正常结束（不向上 re-raise——任务目的即被终止）
             session.status = "stopped"
             session.phase = "stopped"
-        except Exception as exc:  # noqa: BLE001 —— 会话故障隔离：单会话失败不影响其他会话
+        except Exception as exc:
             if session.request.get("side_agent"):
                 AuditLogger(session.audit_path).log("agent.reply_failed", session.request["side_agent"],
                     {"error": f"子 Agent 本轮回复未完成（{type(exc).__name__}），可继续发送消息重试。"})

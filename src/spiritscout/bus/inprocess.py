@@ -117,6 +117,6 @@ class InProcessBus(EventBus):
                 try:
                     await sub.handler(event)
                     self._delivered += 1
-                except Exception:  # noqa: BLE001 —— 单订阅者故障不影响总线（容错鲁棒性 2.1-3）
+                except Exception:
                     self._handler_errors += 1
             self._queue.task_done()

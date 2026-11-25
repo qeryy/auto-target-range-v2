@@ -25,7 +25,7 @@ from spiritscout.core.models import (
     TaskStatus,
 )
 
-__all__ = ["MasterAgent", "MasterContext", "MasterState", "TACTIC_AGENT_MAP"]
+__all__ = ["TACTIC_AGENT_MAP", "MasterAgent", "MasterContext", "MasterState"]
 
 
 class MasterAgent(MasterCoordination, MasterInteraction, MasterPlanning):

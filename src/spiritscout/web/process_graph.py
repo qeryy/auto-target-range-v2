@@ -85,7 +85,7 @@ def project_blackboard(blackboard: Any) -> dict[str, Any]:
                          or data.get('value') or data.get('detail') or key))
             refs = [ref for ref in (data.get('evidence_refs') or []) if isinstance(ref, str)]
             reference_type = ('assets' if layer in {BlackboardLayer.ASSET, BlackboardLayer.JS_INTEL} or
-                              layer == BlackboardLayer.TOPOLOGY and data.get('type') == 'asset' else
+                              (layer == BlackboardLayer.TOPOLOGY and data.get('type') == 'asset') else
                               'rules' if is_rule else
                               'evidence' if layer == BlackboardLayer.RECON_CLUE
                               and isinstance(data.get('detail'), (dict, list))

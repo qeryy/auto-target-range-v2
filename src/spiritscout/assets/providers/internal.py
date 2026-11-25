@@ -90,7 +90,7 @@ class InternalAssetProvider:
                 timeout=min(5.0, float(self.timeout_seconds)),
             )
             return True
-        except (asyncio.TimeoutError, OSError, socket.gaierror):
+        except (TimeoutError, OSError, socket.gaierror):
             return False
 
     @staticmethod

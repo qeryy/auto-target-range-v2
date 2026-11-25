@@ -92,42 +92,42 @@ from spiritscout.traffic.tools import NAMES as TRAFFIC_NAMES
 
 # 保留历史导入入口；能力模块直接依赖各自的契约和工具模块。
 __all__ = [
-    "_DeltaEmitter",
-    "_TURN_PROGRESS",
-    "_ToolOutcome",
-    "_challenge_text",
-    "_challenge_view",
-    "_complete_tool_history",
-    "_head_tail",
-    "_model_messages",
-    "_MIN_BLOB_LEN",
-    "_caesar_brute",
-    "_decode_blobs",
-    "_decode_chain",
-    "_rail_fence_brute",
-    "_try_single_decode",
+    "CTF_TOOL_SCHEMAS",
     "_CALL_SITE",
     "_HTML_HINT",
+    "_HTTP_METHODS",
+    "_MIN_BLOB_LEN",
     "_OBS_EXCERPT_CAP",
     "_OBS_HEADERS",
     "_STR_LITERAL",
     "_TOKEN_HINT",
-    "_challenge_instance_blocker",
-    "_collapse",
-    "_html_digest",
-    "_http_observation",
-    "_obs_text",
-    "_signal_line",
-    "_text_digest",
-    "_HTTP_METHODS",
-    "CTF_TOOL_SCHEMAS",
-    "_fn",
+    "_TURN_PROGRESS",
     "CTFBaseAgent",
-    "CTFWebAgent",
     "CTFCryptoAgent",
     "CTFMiscAgent",
-    "CTFReverseAgent",
     "CTFPwnAgent",
+    "CTFReverseAgent",
+    "CTFWebAgent",
+    "_DeltaEmitter",
+    "_ToolOutcome",
+    "_caesar_brute",
+    "_challenge_instance_blocker",
+    "_challenge_text",
+    "_challenge_view",
+    "_collapse",
+    "_complete_tool_history",
+    "_decode_blobs",
+    "_decode_chain",
+    "_fn",
+    "_head_tail",
+    "_html_digest",
+    "_http_observation",
+    "_model_messages",
+    "_obs_text",
+    "_rail_fence_brute",
+    "_signal_line",
+    "_text_digest",
+    "_try_single_decode",
 ]
 
 # 外部安全技能库（NoorQureshi/security-skills，MIT，206 条）——
@@ -570,7 +570,7 @@ class CTFBaseAgent(SubAgent):
                 tools=self._model_tool_schemas(), tool_choice=self._recovery_tool_choice(),
                 preserve_tool_order=bool(getattr(self.flag_manager, 'fix_mode', False)),
                 preserve_context=True, reasoning_effort=self.task_effort(task))
-        except Exception as exc:  # noqa: BLE001 —— 恢复失败走原路径
+        except Exception as exc:
             self.ctx.audit.log("solver.forced_recovery", self.agent_id, {
                 "route": route.name, "challenge": self.challenge_id(task),
                 "turn": turn, "ok": False, "error": str(exc)[:120]})
@@ -1121,7 +1121,7 @@ class CTFBaseAgent(SubAgent):
                 if out is None:
                     out = _ToolOutcome(ok=False, text=(
                         f"工具 {name} 不在本方向工具目录内，请使用已提供的工具。"))
-        except Exception as exc:  # noqa: BLE001 —— 工具异常作为结果回灌，模型自行纠偏
+        except Exception as exc:
             out = _ToolOutcome(
                 ok=False,
                 text=f"工具执行异常：{type(exc).__name__}: {str(exc)[:200]}")
@@ -1610,7 +1610,7 @@ class CTFBaseAgent(SubAgent):
             return _ToolOutcome(ok=False, text="经验知识库未装配。")
         try:
             hits = kb.search(query, limit=6)
-        except Exception as exc:  # noqa: BLE001 —— 检索失败作为结果回灌
+        except Exception as exc:
             return _ToolOutcome(ok=False, text=f"知识库检索失败: {exc}")
         # 兼容知识检索入口，但不再偷偷注入截断的技能正文。
         skill_hits = []
@@ -2384,8 +2384,8 @@ class CTFBaseAgent(SubAgent):
         if getattr(self.flag_manager, "fix_mode", False):
             # 修补模式兜底：附件是外层 zip，内层语言未知——通用 Web 修复
             # 词 + pwn 二进制词，direction 映射负责大类
-            terms.extend("upload deserialization injection validation fix patch".split())
-            terms.extend("reverse patch diff pwn binary".split())
+            terms.extend(["upload", "deserialization", "injection", "validation", "fix", "patch"])
+            terms.extend(["reverse", "patch", "diff", "pwn", "binary"])
         title = str(ch.get("title") or "")
         terms.extend(tok for tok in re.split(r"[^A-Za-z0-9]+", title) if len(tok) >= 3)
         if not terms:

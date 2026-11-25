@@ -11,7 +11,7 @@ import sqlite3
 import time
 import weakref
 import xml.etree.ElementTree as ET
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, ClassVar
@@ -285,7 +285,7 @@ class SearchService:
                 data = json.loads(body)
         if not isinstance(data, dict):
             raise ValueError("搜索服务返回格式不正确")
-        return _format(params, data, datetime.now(timezone.utc).isoformat(timespec="seconds"))
+        return _format(params, data, datetime.now(UTC).isoformat(timespec="seconds"))
 
     async def _fetch_free(self, params: dict[str, Any]) -> str:
         """官方免密 MCP 不发送账户凭据；失败不降级到付费 API。"""
@@ -324,7 +324,7 @@ class SearchService:
                 if not rows:
                     raise ValueError("免费检索未返回可解析的来源；未调用付费 API")
                 data = {"results": rows}
-            return _format(params, data, datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            return _format(params, data, datetime.now(UTC).isoformat(timespec="seconds"),
                            provider="exa-free-mcp")
         except (McpError, TimeoutError) as exc:
             raise ValueError("免费检索暂不可用；未自动调用付费 API。请依据实际阻塞决定是否付费检索") from exc
@@ -374,7 +374,7 @@ class SearchService:
             rows.append({"title": item.findtext("title") or "", "url": url,
                          "publishedDate": "",  # RSS pubDate 可能是检索时间，不能当文章发布时间。
                          "text": item.findtext("description") or ""})
-        return _format(params, {"results": rows}, datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        return _format(params, {"results": rows}, datetime.now(UTC).isoformat(timespec="seconds"),
                        provider="public-search-curl")
 
     async def _load(self, key: str, params: dict[str, Any], refresh: bool, paid: bool,

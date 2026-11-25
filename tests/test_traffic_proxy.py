@@ -14,7 +14,7 @@ import tempfile
 import time
 import unittest
 from contextlib import asynccontextmanager
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from threading import Thread
@@ -70,7 +70,7 @@ class ProxyExecutableTests(unittest.TestCase):
 def tls_fixture(root: Path) -> Path:
     key = ec.generate_private_key(ec.SECP256R1())
     name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "SpiritScout local test CA")])
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     ca = x509.CertificateBuilder().subject_name(name).issuer_name(name).public_key(key.public_key()).serial_number(
         x509.random_serial_number()).not_valid_before(now-timedelta(hours=1)).not_valid_after(now+timedelta(days=1)).add_extension(
         x509.BasicConstraints(ca=True, path_length=None), critical=True).sign(key, hashes.SHA256())

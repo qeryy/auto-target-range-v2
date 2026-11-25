@@ -8,6 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from _platform import CAN_SYMLINK
 from test_single_executor import context
 
 from spiritscout.core.models import RunMode, Task
@@ -88,6 +89,7 @@ class LightToolRecoveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(''.join(chunks), Path(result.metadata['output_file']).read_text())
         self.assertFalse(working_snapshot(self.state)['history_reads'][-1]['has_more'])
 
+    @unittest.skipUnless(CAN_SYMLINK, "本机无法创建符号链接（Windows 需管理员或开发者模式）")
     async def test_changed_missing_rotated_and_linked_logs_are_not_claimed_complete(self):
         result = await self.call('python', {'code': "print('中文'*4000)", 'action': 'analysis'})
         log = Path(result.metadata['output_file'])

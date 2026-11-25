@@ -6,7 +6,7 @@ import json
 import tempfile
 import zipfile
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -128,18 +128,18 @@ def bootstrap(service: CVEService, directory: Path, *, offline: bool = False) ->
         service.store.meta_put("cvelist_snapshot", {"tag": release["tag_name"],
             "published_at": release['published_at'],
             "coverage_until": asset["name"][:10] + "T00:00:00+00:00",
-            "finished_at": datetime.now(timezone.utc).isoformat(), **result})
+            "finished_at": datetime.now(UTC).isoformat(), **result})
     return {"tag": release["tag_name"], 'offline': offline, **result}
 
 
 def sync_nvd(service: CVEService, since: str = "") -> dict:
     """窗口 <=120 天，逐页落库；整窗口成功才推进水位，可从失败窗口重试。"""
     saved = service.store.meta_get('nvd_watermark')
-    start = datetime.fromisoformat(since or saved or (datetime.now(timezone.utc) - timedelta(days=7)).isoformat())
+    start = datetime.fromisoformat(since or saved or (datetime.now(UTC) - timedelta(days=7)).isoformat())
     if start.tzinfo is None:
-        start = start.replace(tzinfo=timezone.utc)
-    start = start.astimezone(timezone.utc)
-    end = datetime.now(timezone.utc)
+        start = start.replace(tzinfo=UTC)
+    start = start.astimezone(UTC)
+    end = datetime.now(UTC)
     if start > end:
         raise ValueError("同步起点不能晚于当前时间")
     start -= timedelta(minutes=2)  # 边界重叠，幂等 upsert 消除重复。
@@ -195,7 +195,7 @@ def index_templates(store: CVEStore, directory: Path) -> dict:
         db.execute('DELETE FROM templates')
         db.executemany('INSERT INTO templates VALUES(?,?,?,?,?,?)', rows)
     result = {'indexed': len(rows), 'invalid': invalid, 'directory': str(directory.resolve()),
-              'finished_at': datetime.now(timezone.utc).isoformat()}
+              'finished_at': datetime.now(UTC).isoformat()}
     store.meta_put('templates', result)
     return result
 

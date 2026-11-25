@@ -168,8 +168,8 @@ class FlagManager:
     def completed_ids(self) -> set[str]:
         return {cid for cid, row in self.completions.items() if isinstance(row, dict)
                 and row.get('completed') and (
-                    row.get('answer_ids') and set(row['answer_ids']) == self.answer_ids(cid)
-                    or self.fix_mode and row.get('no_fix_needed') is True and not self.answer_ids(cid))}
+                    (row.get('answer_ids') and set(row['answer_ids']) == self.answer_ids(cid))
+                    or (self.fix_mode and row.get('no_fix_needed') is True and not self.answer_ids(cid)))}
 
     # ------------------------------------------------------------ 提取
 
@@ -235,7 +235,7 @@ class FlagManager:
                 await self._throttle()
                 try:
                     result = await self.submit_fn(cand.value, cand.challenge_id)
-                except Exception as exc:  # noqa: BLE001 —— 提交异常按未决处理
+                except Exception as exc:
                     result = SubmitResult(None, f"提交异常: {exc}")
                 cand.submitted = True
                 cand.accepted = result.accepted

@@ -6,8 +6,8 @@
 > Desktop + SaltUI，直接运行后端进程，不使用 WebView2，也不把浏览器标签页当成
 > 产品界面。旧的 `DesktopApp/`、WebView2 壳和单文件兼容流程已移除。
 >
-> 当前源码版本为 `1.3.0`。打包产物按用途放在 `dist/windows/desktop/`、
-> `dist/windows/backend/` 和 `dist/python/`，这些目录不进入 Git。
+> 当前源码版本为 `1.3.1`。打包产物按用途放在 `dist/windows/desktop/` 和
+> `dist/python/`，这些目录不进入 Git。
 
 > 上游项目：**[FLIAZ/SpiritScout](https://github.com/FLIAZ/SpiritScout)**（灵枢，多智能体渗透/CTF 系统）。
 > 本仓库是它的工作区级超集：上游源码 + 本机免 Docker 启动器 + 便携包构建脚本 + 运行期经验沉淀导出。
@@ -17,38 +17,35 @@
 
 | 路径 | 作用 |
 | --- | --- |
-| `.` | 产品本体与 Git 仓库根，Python 3.11+，FastAPI Web 控制台 + 多 Agent 编排。详见 [README.md](../../README.md) |
-| `scripts/windows/start-web.ps1` | 本机启动器（不走 Docker）：环境与依赖自检（缺运行依赖自动 `pip install`，缺 venv/pip/解释器版本只给命令不动手）→ 导出执行后端与模型 key 环境变量 → 前台起 Web 控制台。首次启动会先让你设管理员密码（输两遍、不回显，只存 scrypt 哈希进 `admin.db`）。`-NoInstall` 只报告不装；装依赖默认走**清华 PyPI 镜像**，`-PipIndex official` 换官方源 |
-| `Start-SpiritScout.cmd` | 根目录唯一双击入口，转发到 `scripts/windows/start-web.ps1 -Port 8010` |
-| `tools/experience-export/` | 运行期经验沉淀的**脱敏快照**（`experience-insights.json`，条数见文件里的 `total`）：`export_experience.py` 从 `.spiritscout/experience.db` 导出，pre-commit 钩子保证每次提交都把它一起带上。装钩子：`python tools/experience-export/install_hook.py`。细节见该目录 README |
-| `desktop/` | Kotlin Compose + SaltUI 原生桌面端源码 |
-| `packaging/windows/` | 所有 Windows 桌面、后端运行时和后端控制台打包入口 |
-| `dist/windows/desktop/`、`dist/python/` | 分区后的本地/Release 产物，不提交 |
-| [`PUSH-POLICY.md`](PUSH-POLICY.md) | **什么进仓库、什么只留本机**：源码/测试/文档/配置模板推，运行数据/密钥/构建产物/本机私用脚本不推。含推送前三十秒自检清单 |
+`.` | 产品本体与 Git 仓库根，Python 3.11+，FastAPI Web 控制台 + 多 Agent 编排。详见 [README.md](../../README.md)
+`start-local.ps1` | 本机启动器（不走 Docker）：环境与依赖自检（缺运行依赖自动 `pip install`，缺 venv/pip/解释器版本只给命令不动手）→ 导出执行后端与模型 key 环境变量 → 前台起 Web 控制台。首次启动会先让你设管理员密码（输两遍、不回显，只存 scrypt 哈希进 `admin.db`）。`-NoInstall` 只报告不装；装依赖默认走**清华 PyPI 镜像**，`-PipIndex official` 换官方源
+`启动服务.cmd` | 双击入口，包一层 `start-local.ps1 -Port 8010`
+`tools/experience-export/` | 运行期经验沉淀的**脱敏快照**（`experience-insights.json`，条数见文件里的 `total`）：`export_experience.py` 从 `.spiritscout/experience.db` 导出，pre-commit 钩子保证每次提交都把它一起带上。装钩子：`python tools/experience-export/install_hook.py`。细节见该目录 README
+`desktop/` | Kotlin Compose + SaltUI 原生桌面端源码
+`packaging/windows/` | 所有 Windows 桌面、后端运行时和后端控制台打包入口
+`dist/windows/desktop/`、`dist/windows/backend/`、`dist/python/` | 分区后的本地/Release 产物，不提交
+[`PUSH-POLICY.md`](PUSH-POLICY.md) | **什么进仓库、什么只留本机**：源码/测试/文档/配置模板推，运行数据/密钥/构建产物/本机私用脚本不推。含推送前三十秒自检清单
 
 ## 三十秒跑起来
 
 ```powershell
 py -3.11 -m venv .venv
-.\Start-SpiritScout.cmd
+.\启动服务.cmd
 ```
 
 只有 venv 需要你亲手建（装在哪、用哪个解释器由你定）；建好后双击启动，缺的运行依赖
-与可选工具包由 `scripts/windows/start-web.ps1` 自己 `pip install`，首次要几分钟。
-不想让它联网装东西就手动跑
-`powershell -ExecutionPolicy Bypass -File .\scripts\windows\start-web.ps1 -NoInstall`，只报命令。
+与可选工具包由 `start-local.ps1` 自己 `pip install`，首次要几分钟。不想让它联网装东西就
+手动跑 `powershell -ExecutionPolicy Bypass -File .\start-local.ps1 -NoInstall`，只报命令。
 
 装依赖的源默认是**清华 PyPI 镜像**（`https://pypi.tuna.tsinghua.edu.cn/simple`），
-国内直连官方站常常几十 KB/s；镜像没同步好或想走官方源时，
-`.\Start-SpiritScout.cmd -PipIndex official`，
+国内直连官方站常常几十 KB/s；镜像没同步好或想走官方源时，`.\start-local.ps1 -PipIndex official`，
 换别的镜像 `-PipIndex https://mirrors.aliyun.com/pypi/simple/`，也可以设环境变量
 `SPIRITSCOUT_PIP_INDEX`。镜像装不下来时脚本会自动退官方源重试一次并打印换了源。
-只想看当前解析出哪个源、不动手：`.\Start-SpiritScout.cmd -ShowPipIndex`。
+只想看当前解析出哪个源、不动手：`.\start-local.ps1 -ShowPipIndex`。
 
 浏览器打开 <http://127.0.0.1:8010>。关闭那个窗口即停止服务。
 端口来自双击入口里的 `-Port 8010`（它转成 `--port` 覆盖 `configs/system.yaml` 的 `web.port`；
-那份配置里写的是 8000，只是给 `scripts/windows/start-console.cmd` /
-`scripts/linux/launch.sh` 这类不带参启动用的，两个数字不一样是正常的）。
+那份配置里写的是 8000，只是给 `launch.cmd` / `launch.sh` 这类不带参启动用的，两个数字不一样是正常的）。
 
 第一次启动会先问管理员密码：用户名直接回车就是 `master`，密码输两遍（不回显）；**长度不限**，
 一位和整句话都收。设完明文会在**这个终端显示一次**方便当场记下来，之后重启、日志、界面都不再
@@ -124,7 +121,7 @@ CUDA 运行时在 `vendor\win-llama-cuda12-vendor-v2`，不加进 PATH 也是同
 前提是这三样在**联网时**已经备好（都是一次性的）：
 
 1. 模型权重下到 LM Studio（`lms load` 能加载即可）
-2. `.venv` 依赖装全（`scripts/windows/start-web.ps1` 首次会自动装）
+2. `.venv` 依赖装全（`start-local.ps1` 首次会自动装）
 3. 要用浏览器工具时，playwright 的 chromium 已下载（`%LOCALAPPDATA%\ms-playwright\`）
 
 断网后按正常流程起就行：
@@ -134,7 +131,7 @@ CUDA 运行时在 `vendor\win-llama-cuda12-vendor-v2`，不加进 PATH 也是同
 lms server start; lms load qwen3.5-9b --context-length 16384 --parallel 1
 
 # 2. 控制台
-.\Start-SpiritScout.cmd
+.\启动服务.cmd
 ```
 
 断网时用不了的只有三样，都不影响解题：**Exa 联网搜索**（配置里本就是 `enabled: false`）、
@@ -158,7 +155,7 @@ lms server start; lms load qwen3.5-9b --context-length 16384 --parallel 1
 开发运行：
 
 ```powershell
-$env:JAVA_HOME = 'C:\Program Files\Microsoft\jdk-21.0.12.101-hotspot'
+$env:JAVA_HOME = '<你的 JDK 21 安装目录>'   # 需要 JDK 21
 .\desktop\gradlew.bat -p .\desktop run
 ```
 
@@ -203,15 +200,15 @@ Release 上按需取：
 | `SpiritScout-<版本>-windows-x64.zip` | **Windows 原生桌面完整版**：SaltUI/Compose 窗口，内嵌 JRE 与 Python 运行时 |
 | `SpiritScout-<版本>-windows-x64-backend.zip` | 兼容性后端运行时包，仅用于不能启用原生桌面的场景 |
 | `spiritscout-<版本>-py3-none-any.whl` | `pip install` 用。带 CTF 工具箱要写成 `pip install "spiritscout[toolkit] @ file:///…whl"`——写成 `xxx.whl[toolkit]` 会被 pip **静默丢弃 extras**，一个工具箱依赖都不装还不报错 |
-| `spiritscout-<版本>.tar.gz` | sdist：后端、桌面端、前端、脚本、测试与配置模板 |
+| `spiritscout-<版本>.tar.gz` | sdist：源码 + `scripts/` + `skills/` 文本素材 + 配置模板 |
 | `SpiritScout-<版本>-source.zip` | 整仓源码，解开就能看/构建 |
 | `SHA256SUMS` | 上面几个的校验和 |
 
-**原生桌面包怎么来的**：`uv build --wheel --outdir dist\python .` 出 wheel，
+**原生桌面包怎么来的**：`python -m build --outdir dist\python .` 出 wheel，
 `build-desktop.ps1` 再调用 `build-backend-runtime.ps1` 生成 `py\` 与 `configs\`，
 用 Gradle staging 和 JDK 21 `jpackage` 生成 `SpiritScout.exe`，最后压成
 `dist\windows\desktop\SpiritScout-<版本>-windows-x64.zip`。细节见
-[`原生桌面端`](../原生桌面端.md)。
+[`docs/原生桌面端.md`](../原生桌面端.md)。
 
 直接运行后端时用 `python -m spiritscout --port 8010`；`--config` 与模型注册表按当前工作目录
 解析，从仓库外安装时需要显式传 `--config` 指向你自己的 `system.yaml`。
@@ -224,7 +221,7 @@ Release 上按需取：
   `admin.db` / `auth.key` 连同 `vault.*` 都在打包时被清掉，出厂包不含任何凭据。
 - Web 控制台默认只绑 `127.0.0.1`；非回环绑定且未启用管理员认证时拒绝启动，
   判据见 [`src/spiritscout/web/app.py:61`](../../src/spiritscout/web/app.py#L61)。
-- 只在你自己有授权的靶标上使用。完整条款见 [SECURITY.md](../../SECURITY.md)
+- 只在你自己有授权的靶标上使用。完整条款见 [SECURITY.md](../../.github/SECURITY.md)
   与上游 README 的「许可与使用约定」。
 
 ## 许可

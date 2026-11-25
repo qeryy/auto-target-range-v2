@@ -9,13 +9,13 @@ and progress, evidence, and artifacts stay in the same session.
 
 **English · [简体中文](README.md)**
 
-[![Version](https://img.shields.io/badge/version-v1.3.0-2563eb?style=flat-square)](CHANGELOG.md) [![Python](https://img.shields.io/badge/Python-3.11%2B-3776ab?style=flat-square)](pyproject.toml) [![CI](https://github.com/FLIAZ/SpiritScout/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/FLIAZ/SpiritScout/actions/workflows/ci.yml) [![License](https://img.shields.io/badge/license-Apache--2.0-16a34a?style=flat-square)](LICENSE)
+[![Version](https://img.shields.io/badge/version-v1.3.1-2563eb?style=flat-square)](CHANGELOG.md) [![Python](https://img.shields.io/badge/Python-3.11%2B-3776ab?style=flat-square)](pyproject.toml) [![CI](https://github.com/qzuser/auto-target-range-v2/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/qzuser/auto-target-range-v2/actions/workflows/ci.yml) [![License](https://img.shields.io/badge/license-Apache--2.0-16a34a?style=flat-square)](LICENSE)
 
 [Quick start](#quick-start) · [Three modes](#three-modes) · [Interface](#interface) · [How it works](#how-it-works) · [Configuration](#configuration) · [FAQ](#faq) · [Deployment guide (中文)](docs/部署与配置.md)
 
 </div>
 
-> For authorized targets and competitions only. How scope is maintained, how approvals work, and where data lives: see [Data and boundaries](#data-and-boundaries) and the [security policy (中文)](SECURITY.md).
+> For authorized targets and competitions only. How scope is maintained, how approvals work, and where data lives: see [Data and boundaries](#data-and-boundaries) and the [security policy (中文)](.github/SECURITY.md).
 
 ## What it is
 
@@ -108,8 +108,8 @@ Recorded with DeepSeek v4.1 Flash; kept for reference
 Requires **Linux container mode** and **Docker Compose 2.20+**. Docker Desktop on Windows, Docker Engine on Linux; macOS / ARM64 compatibility is pending.
 
 ```bash
-git clone https://github.com/FLIAZ/SpiritScout.git
-cd SpiritScout
+git clone https://github.com/qzuser/auto-target-range-v2.git
+cd auto-target-range-v2
 python deploy.py up
 ```
 
@@ -197,7 +197,9 @@ up models, so a fixed delay would either lie or waste time. After that it report
 line every 60 seconds, so you do not need a task manager to know it is alive.
 
 ```
-SpiritScout Web console v1.3.0: http://127.0.0.1:8010  (loopback access, Ctrl+C to stop)
+  SPIRITSCOUT
+  灵枢 · 多智能体安全测试控制台
+  v1.3.1
 
 [就绪] 浏览器可以打开了: http://127.0.0.1:8010
        每 60 秒报一次状态；Ctrl+C 停止
@@ -248,15 +250,15 @@ Prefer a ready-made package over a source checkout? All three artifacts carry th
 
 | Asset | What it ships |
 | --- | --- |
-| `spiritscout-1.3.0-py3-none-any.whl` | installable console, bundled skills and experience digest |
-| `spiritscout-1.3.0.tar.gz` | source distribution with skill text, config templates and experience |
-| `SpiritScout-1.3.0-source.zip` | full repository source |
-| `SpiritScout-1.3.0-windows-x64.zip` | native Windows desktop client with embedded JRE and Python |
-| `SpiritScout-1.3.0-windows-x64-backend.zip` | Python/Web backend portable runtime for compatibility use |
+| `spiritscout-1.3.1-py3-none-any.whl` | installable console, bundled skills and experience digest |
+| `spiritscout-1.3.1.tar.gz` | source distribution with skill text, config templates and experience |
+| `SpiritScout-1.3.1-source.zip` | full repository source |
+| `SpiritScout-1.3.1-windows-x64.zip` | native Windows desktop client with embedded JRE and Python |
+| `SpiritScout-1.3.1-windows-x64-backend.zip` | Python/Web backend portable runtime for compatibility use |
 | `SHA256SUMS` | checksums for the release files above |
 
 ```bash
-pip install spiritscout-1.3.0-py3-none-any.whl
+pip install spiritscout-1.3.1-py3-none-any.whl
 spiritscout --help
 ```
 
@@ -269,13 +271,27 @@ current source layout.
 `__version__` (and fails loudly on a mismatch), renders a fresh experience digest with
 `python -m spiritscout.knowledge.digest`, builds the wheel and sdist with
 `python -m build`, creates the repository zip with `git archive` and appends the digest
-to it, installs the wheel into a clean venv to verify `web/static/js/count.js` and
+to it, installs the wheel into a clean venv to verify `web/static/js/core.js` and
 `knowledge/data/experience.json` really shipped, then attaches all three plus
 `SHA256SUMS` to the same-named release. You can also run it by hand:
 *Actions → 打包并发布 → Run workflow* with an existing tag.
 
 > Packaging only includes git-tracked files: `.venv/`, the `.spiritscout/` workspace
 > data, and real keys in `configs/models.yaml` never end up in an artifact.
+
+
+```
+  SPIRITSCOUT
+  灵枢 · 多智能体安全测试控制台
+  v1.3.1
+
+  启动  读取配置…
+  启动  装配控制台…
+  启动  启动 HTTP 服务…
+
+[就绪] 浏览器可以打开了: http://127.0.0.1:8010
+       每 60 秒报一次状态；Ctrl+C 停止
+```
 
 ## How it works
 
@@ -392,16 +408,16 @@ Use `python deploy.py migrate` for Docker. Manually: stop the service, copy `.sp
 
 ## Docs and contributing
 
-Current code version: **v1.3.0**. The single source of the version, the bump rules, and the history: see [version management (中文)](CONTRIBUTING.md#版本管理).
+Current code version: **v1.3.1**. The single source of the version, the bump rules, and the history: see [version management (中文)](.github/CONTRIBUTING.md#版本管理).
 
 | I want to | Read |
 | --- | --- |
 | Install, configure models and browsers, migrate, back up | [Deployment and configuration (中文)](docs/部署与配置.md) |
 | Understand the architecture and code layout | [Documentation index (中文)](docs/README.md) |
 | Understand the core algorithms | [Core algorithms and implementation (中文)](docs/05-核心算法与技术实现.md) |
-| Fix a bug or add a feature | [Contributing (中文)](CONTRIBUTING.md) · [Agent conventions (中文)](AGENTS.md) |
+| Fix a bug or add a feature | [Contributing (中文)](.github/CONTRIBUTING.md) · [Agent conventions (中文)](AGENTS.md) |
 | Track version changes | [Changelog](CHANGELOG.md) |
-| Report a vulnerability privately | [Security policy (中文)](SECURITY.md) |
+| Report a vulnerability privately | [Security policy (中文)](.github/SECURITY.md) |
 
 ## License and usage terms
 
@@ -469,7 +485,7 @@ Project code is licensed under the [Apache License 2.0](LICENSE). Bundled knowle
 ## Acknowledgements
 
 <details>
-<summary>Knowledge bases, reference projects, MCP servers, skill sources, and users</summary>
+<summary>Knowledge bases, reference projects, MCP servers, skill sources, </summary>
 
 ### Knowledge base sources
 
@@ -503,20 +519,15 @@ Whether each server is enabled depends on your local configuration:
 - [anthropics/skills](https://github.com/anthropics/skills)
 - [VoltAgent/awesome-agent-skills](https://github.com/VoltAgent/awesome-agent-skills)
 
-### Users
-
-- [@BProbie](https://github.com/BProbie)：documentation formatting fixes
-- [@k1ne](https://github.com/k1ne7)：multi-platform compatibility
-- [@neko](https://github.com/neko-11451)：login page front-end polish
 
 </details>
 
 ## Star History
 
-<a href="https://www.star-history.com/?repos=fliaz%2Fspiritscout&type=date&legend=top-left">
+<a href="https://www.star-history.com/?repos=qzuser%2Fauto-target-range-v2&type=date&legend=top-left">
  <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=fliaz/spiritscout&type=date&theme=dark&legend=top-left" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=fliaz/spiritscout&type=date&theme=light&legend=top-left" />
-   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=fliaz/spiritscout&type=date&legend=top-left" />
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=qzuser/auto-target-range-v2&type=date&theme=dark&legend=top-left" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=qzuser/auto-target-range-v2&type=date&theme=light&legend=top-left" />
+   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=qzuser/auto-target-range-v2&type=date&legend=top-left" />
  </picture>
 </a>

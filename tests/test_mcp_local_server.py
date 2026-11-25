@@ -38,7 +38,7 @@ def _cleanup_tmpdirs() -> None:
             holder.cleanup()
 
 
-def tearDownModule() -> None:  # noqa: N802 —— unittest 约定
+def tearDownModule() -> None:
     _cleanup_tmpdirs()
 
 

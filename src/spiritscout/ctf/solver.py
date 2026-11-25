@@ -92,7 +92,7 @@ class SolverTurn:
         if not state["messages"]:
             try:
                 boot_value, boot_note = await agent._inv_bootstrap(task, route, state)
-            except Exception as exc:  # noqa: BLE001 —— 首轮感知失败不终结调查：
+            except Exception as exc:
                 # 把障碍原样交给模型（见过现场才知道怎么绕：换入口/换工具/先读题面）
                 state["seed"].append(
                     f"首轮感知失败: {type(exc).__name__}: {str(exc)[:200]}"
@@ -301,7 +301,7 @@ class SolverTurn:
             return StepResult(
                 ok=False, final_note=True, note="上下文无法容纳当前契约：" + str(exc)
             )
-        except Exception as exc:  # noqa: BLE001 —— 单次调用失败允许下一回合重试
+        except Exception as exc:
             emitter.flush()
             state["llm_failures"] += 1
             agent.ctx.audit.log(
@@ -481,16 +481,7 @@ class SolverTurn:
                 turn=state.get("turn", 0),
                 streamed=emitter.has_public_text,
             )
-        elif resp.tool_calls:
-            progress = publish_progress(
-                agent.ctx.audit,
-                agent.agent_id,
-                resp.content or "",
-                task_id=task.task_id,
-                route_id=route.route_id,
-                turn=state.get("turn", 0),
-            )
-        elif not getattr(agent.flag_manager, "local_only", False):
+        elif resp.tool_calls or not getattr(agent.flag_manager, "local_only", False):
             progress = publish_progress(
                 agent.ctx.audit,
                 agent.agent_id,

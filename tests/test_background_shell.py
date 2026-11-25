@@ -9,6 +9,8 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
+from _platform import CAN_SYMLINK
+
 from spiritscout.core.audit import NullAuditLogger
 from spiritscout.core.pause import PauseGate
 from spiritscout.tools.background import SPECS, ShellJobs, seconds_until
@@ -366,6 +368,7 @@ class BackgroundArchiveTests(unittest.TestCase):
         self.store = BackgroundArchive(self.root, writable=True)
         self.assertEqual(self.store.get("one")["command"], self.row()["command"], "旧副本损坏不能阻止读取已有权威档案")
 
+    @unittest.skipUnless(CAN_SYMLINK, "本机无法创建符号链接（Windows 需管理员或开发者模式）")
     def test_archive_paths_cannot_follow_symlinks(self):
         from spiritscout.tools.background_archive import BackgroundArchive
         other = self.root / "other"

@@ -87,7 +87,7 @@ class WindowsPackagingTests(unittest.TestCase):
             path.name
             for path in (PACKAGE / ".github" / "workflows").glob("*.yml")
         }
-        self.assertEqual(workflows, {"ci.yml", "package.yml"})
+        self.assertEqual(workflows, {"ci.yml", "package.yml", "release.yml"})
 
     def test_package_workflow_checks_a_shipped_frontend_asset(self) -> None:
         workflow = (PACKAGE / ".github" / "workflows" / "package.yml").read_text(

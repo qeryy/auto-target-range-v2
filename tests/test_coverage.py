@@ -6,6 +6,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from _platform import CAN_SYMLINK
+
 from spiritscout.blackboard import Blackboard
 from spiritscout.blackboard.exploration import execute
 from spiritscout.core.models import AgentType, BlackboardLayer
@@ -69,6 +71,7 @@ class CoverageTests(unittest.TestCase):
         self.explore(evidence_refs=['vuln:claim'])
         self.assertEqual(read_coverage(self.root, status='confirmed')['total'], 0)
 
+    @unittest.skipUnless(CAN_SYMLINK, "本机无法创建符号链接（Windows 需管理员或开发者模式）")
     def test_evidence_file_boundary_and_credential_private(self) -> None:
         self.bb.write(BlackboardLayer.CREDENTIAL, 'private', {'password': 'not-public'}, updated_by='master')
         self.assertEqual(read_evidence(self.root, 'credential:private')['state'], 'restricted')

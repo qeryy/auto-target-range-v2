@@ -193,7 +193,7 @@ class AccountChromeMcpClient(ChromeMcpClient):
     async def _save_cache(self) -> None:
         try:
             await self.capture()
-        except Exception:  # noqa: BLE001 —— 绝不把 Cookie 或 MCP 返回正文放入日志
+        except Exception:
             self.cache_error = '登录态未保存：账号设置已变化或浏览器不可用'
             if getattr(self, 'on_cache_error', None):
                 self.on_cache_error(self.cache_error)

@@ -439,7 +439,7 @@ def main(argv: list[str] | None = None) -> int:
     except ExportError as exc:
         print(f"[失败] {exc}", file=sys.stderr)
         return 2
-    except Exception as exc:  # noqa: BLE001 - 钩子里要能看见任何意外
+    except Exception as exc:
         print(f"[失败] 未预期错误：{type(exc).__name__}: {exc}", file=sys.stderr)
         return 2
 

@@ -11,10 +11,11 @@ import subprocess
 import tarfile
 import tempfile
 import zipfile
+from collections.abc import Callable, Iterator
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import BinaryIO, Callable, Iterator, TypeVar
+from typing import BinaryIO, TypeVar
 
 from spiritscout.tools.sandbox_paths import (
     mkdir_at,

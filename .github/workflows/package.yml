@@ -94,7 +94,9 @@ jobs:
           import pathlib, spiritscout
           root = pathlib.Path(spiritscout.__file__).parent
           print("版本", spiritscout.__version__)
-          for rel in ("web/static/app/session.js",
+          # count.js 在单根化重构里并进了 core.js；这里校验核心前端与经验摘要都在 wheel 里。
+          for rel in ("web/static/js/core.js",
+                      "web/static/app/session.js",
                       "knowledge/data/experience.json",
                       "knowledge/data/experience.md"):
               assert (root / rel).is_file(), f"wheel 里缺 {rel}"
@@ -130,12 +132,6 @@ jobs:
         with:
           distribution: microsoft
           java-version: "21"
-
-      - name: 安装 Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: "1.26.3"
-          cache-dependency-path: traffic-proxy/go.sum
 
       - name: 取 wheel
         uses: actions/download-artifact@v4

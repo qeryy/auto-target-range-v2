@@ -12,6 +12,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import httpx
+from _platform import CAN_SYMLINK
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -212,6 +213,7 @@ class TrafficTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(self.requests), 1)
         self.assertEqual(recorder.summary(self.root)["total"], 1)
 
+    @unittest.skipUnless(CAN_SYMLINK, "本机无法创建符号链接（Windows 需管理员或开发者模式）")
     async def test_empty_isolation_readonly_and_symlinks(self):
         empty = self.root / "other"
         empty.mkdir()
@@ -238,6 +240,7 @@ class TrafficTests(unittest.IsolatedAsyncioTestCase):
 
 
 class TrafficAPITests(unittest.TestCase):
+    @unittest.skipUnless(CAN_SYMLINK, "本机无法创建符号链接（Windows 需管理员或开发者模式）")
     def test_project_classification_validation_isolation_and_no_store(self):
         with tempfile.TemporaryDirectory() as temp:
             sessions = []

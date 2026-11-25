@@ -35,7 +35,7 @@ class NatsBus(EventBus):
         for s in self._nats_subs:
             try:
                 await s.unsubscribe()
-            except Exception:  # noqa: BLE001, S110
+            except Exception:
                 pass
         self._nats_subs.clear()
         if self._nc:
@@ -76,14 +76,14 @@ class NatsBus(EventBus):
         async def _cb(msg) -> None:
             try:
                 event = Event.model_validate_json(msg.data.decode())
-            except Exception:  # noqa: BLE001
+            except Exception:
                 return
             if not remember_event(sub, event.event_id):
                 return
             try:
                 await sub.handler(event)
                 self._delivered += 1
-            except Exception:  # noqa: BLE001
+            except Exception:
                 self._handler_errors += 1
 
         self._nats_subs.append(await self._nc.subscribe(nats_pattern, cb=_cb))

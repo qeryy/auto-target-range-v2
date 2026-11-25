@@ -30,8 +30,8 @@ from pathlib import Path
 
 # 与 pyproject.toml 的 [project].dependencies 对齐（分发名，不是 import 名）
 RUNTIME = [
-    "pydantic", "pyyaml", "jinja2", "httpx", "litellm", "fastapi",
-    "uvicorn", "websockets", "cryptography", "mcp", "tzdata", "psutil",
+    "pydantic", "pyyaml", "jinja2", "httpx", "litellm", "fastapi", "uvicorn",
+    "websockets", "cryptography", "mcp", "tzdata", "psutil",
 ]
 
 # [project.optional-dependencies].toolkit —— 缺了不影响启动，只影响 CTF 工具链

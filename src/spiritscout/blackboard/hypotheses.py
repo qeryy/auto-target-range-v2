@@ -47,8 +47,8 @@ def merge_versioned_refs(*groups: list[Any], limit: int = 32) -> list[str]:
             clean = value.strip()[:200]
             identity, version = _identity(clean), _version(clean)
             previous = merged.get(identity)
-            if (previous is None or version is not None
-                    and (previous[1] is None or version >= previous[1])):
+            if (previous is None or (version is not None
+                    and (previous[1] is None or version >= previous[1]))):
                 merged[identity] = (clean, version)
     return [value for value, _version_no in merged.values()][:limit]
 

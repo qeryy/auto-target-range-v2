@@ -51,7 +51,7 @@ class MasterInteraction:
             try:
                 ok = await self._respond_user_feed()
                 delay = self._CHAT_INTERVAL if ok else min(30, delay * 2)
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 self.ctx.audit.log("master.reply_failed", self.agent_id, {"error": str(exc)[:200]})
                 delay = min(30, delay * 2)
 
@@ -320,7 +320,7 @@ class MasterInteraction:
                 break
             try:
                 task = Task.model_validate(spec["task"])
-            except Exception:  # noqa: BLE001, S112 —— 脏数据跳过，不影响复盘
+            except Exception:
                 continue
             if task.round_no != state["round_no"]:
                 continue
@@ -462,7 +462,7 @@ class MasterInteraction:
             steering = self._target_steering(items, digest["tasks"])
             await self._apply_scanner_control(data)
             return steering
-        except Exception:  # noqa: BLE001 —— 督导失败不拖垮派发
+        except Exception:
             return []
 
     def _steering_decision_current(self, item: dict[str, Any]) -> bool:

@@ -93,7 +93,7 @@ async def view_image(path: str, question: str = "描述图中可见内容，区�
     except (OSError, ValueError, TypeError) as exc:
         return ToolResult(tool=SPEC.name, ok=False, returncode=1, error=str(exc),
                           parsed={"images": [descriptor]} if descriptor else {})
-    except Exception as exc:  # noqa: BLE001 —— 模型不支持视觉时如实回传，不宣称已看懂
+    except Exception as exc:
         return ToolResult(tool=SPEC.name, ok=False, returncode=1,
                           error=f"图像查看失败：{type(exc).__name__}: {exc}",
                           parsed={"images": [descriptor]} if descriptor else {})

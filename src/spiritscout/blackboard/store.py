@@ -346,7 +346,7 @@ class Blackboard:
                 await self.flush_outbox()
             except asyncio.CancelledError:
                 raise
-            except Exception:  # noqa: BLE001, S110
+            except Exception:
                 # 发布失败不能删除记录，Redis 恢复后继续投递。
                 pass
             await asyncio.sleep(0.5)

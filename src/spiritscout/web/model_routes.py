@@ -396,5 +396,5 @@ def mount_model_routes(app: FastAPI, cfg: SystemConfig) -> None:
             return {"ok": True, "latency_ms": round(resp.latency_ms),
                     "sample": resp.content[:80],
                     "has_reasoning": bool(resp.reasoning)}
-        except Exception as exc:  # noqa: BLE001 —— 测试结果原样上报告知用户
+        except Exception as exc:
             return {"ok": False, "error": f"{type(exc).__name__}: {exc}"[:300]}

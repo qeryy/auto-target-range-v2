@@ -7,6 +7,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from _platform import CAN_SYMLINK
 from fastapi.testclient import TestClient
 
 from spiritscout.blackboard import Blackboard
@@ -101,6 +102,7 @@ class SessionArchiveTests(unittest.TestCase):
         self.assertEqual(item["status"], "succeeded")
         self.assertNotIn("hidden", json.dumps(result))
 
+    @unittest.skipUnless(CAN_SYMLINK, "本机无法创建符号链接（Windows 需管理员或开发者模式）")
     def test_file_access_rejects_traversal_and_links(self) -> None:
         secret = self.root / "private.txt"
         secret.write_text("private-marker")
@@ -113,6 +115,7 @@ class SessionArchiveTests(unittest.TestCase):
         files = read_deliverables(self.workspace, kind="file")["items"]
         self.assertEqual(len(files), 1)
 
+    @unittest.skipUnless(CAN_SYMLINK, "本机无法创建符号链接（Windows 需管理员或开发者模式）")
     def test_api_is_session_scoped_and_download_is_attachment(self) -> None:
         cfg = SystemConfig(workspace=WorkspaceConfig(root=str(self.root)),
                            models_config_path=str(self.root / "models.yaml"))

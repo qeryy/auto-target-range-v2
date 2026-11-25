@@ -9,13 +9,13 @@
 
 **简体中文 · [English](README_EN.md)**
 
-[![Version](https://img.shields.io/badge/version-v1.3.0-2563eb?style=flat-square)](CHANGELOG.md) [![Python](https://img.shields.io/badge/Python-3.11%2B-3776ab?style=flat-square)](pyproject.toml) [![CI](https://github.com/FLIAZ/SpiritScout/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/FLIAZ/SpiritScout/actions/workflows/ci.yml) [![License](https://img.shields.io/badge/license-Apache--2.0-16a34a?style=flat-square)](LICENSE)
+[![Version](https://img.shields.io/badge/version-v1.3.1-2563eb?style=flat-square)](CHANGELOG.md) [![Python](https://img.shields.io/badge/Python-3.11%2B-3776ab?style=flat-square)](pyproject.toml) [![CI](https://github.com/qzuser/auto-target-range-v2/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/qzuser/auto-target-range-v2/actions/workflows/ci.yml) [![License](https://img.shields.io/badge/license-Apache--2.0-16a34a?style=flat-square)](LICENSE)
 
 [快速开始](#快速开始) · [三种模式](#三种模式) · [界面](#界面) · [工作原理](#工作原理) · [配置参考](#配置参考) · [常见问题](#常见问题) · [部署指南](docs/部署与配置.md)
 
 </div>
 
-> 仅用于已获授权的测试目标与赛事。任务范围的界定方式、审批策略与数据落点见 [数据与使用边界](#数据与使用边界) 与 [安全策略](SECURITY.md)。
+> 仅用于已获授权的测试目标与赛事。任务范围的界定方式、审批策略与数据落点见 [数据与使用边界](#数据与使用边界) 与 [安全策略](.github/SECURITY.md)。
 
 > **1.3.0 架构迁移**：产品核心已合并官方 `v0.22.0` 的资产情报、假设驱动扫描、
 > 后台任务、会话工作台和阅读组件；Windows 端已切换为 SaltUI/Compose 原生桌面，
@@ -23,18 +23,16 @@
 
 ## 项目结构与根目录
 
-仓库使用单一根目录，不再保留额外的 `SpiritScout\` 嵌套层。
+采用**单根布局**：源码、桌面端和打包目录都直接在仓库根下，不再有 `SpiritScout\` 子目录。
 
 | 路径 | 作用 |
 | --- | --- |
 | `src/` | Python 后端、Agent、Web API 与静态前端 |
 | `desktop/` | Kotlin Compose + SaltUI 原生 Windows 桌面端 |
-| `frontend/` | React 会话阅读器源码；构建产物写入 Web 静态资源目录 |
-| `traffic-proxy/` | Go 流量录制代理；Windows 桌面包自动携带，无需用户安装 Go |
+| `frontend/` | 会话阅读器等独立 Web 前端组件 |
+| `traffic-proxy/` | Go 流量录制代理 |
 | `packaging/windows/` | 完整桌面版、后端运行时和后端控制台打包入口 |
-| `scripts/windows/` | Windows 调试控制台启动入口 |
-| `scripts/linux/` | Linux/macOS 兼容启动与安装入口 |
-| `scripts/` | 环境体检、评估、初始化和维护脚本 |
+| `scripts/` | 安装、体检、评估和运维脚本 |
 | `tests/` | Python 与浏览器脚本回归测试 |
 | `configs/` | 系统、模型和 Skill 配置模板 |
 | `deploy/` | Docker、浏览器和 CyberChef 部署文件 |
@@ -43,9 +41,10 @@
 
 根目录其余文件都是标准入口或构建元数据：`pyproject.toml` / `uv.lock` 管 Python，
 `frontend/package.json` / `frontend/vite.config.mts` 管前端构建，`deploy.py`、Dockerfile 和 Compose
-文件负责容器部署，唯一的 Windows 双击入口是 `Start-SpiritScout.cmd`。
-`LICENSE`、`CHANGELOG.md`、`CONTRIBUTING.md`、`SECURITY.md`、
-`CODE_OF_CONDUCT.md` 保持根目录标准位置。
+文件负责容器部署，`launch.*`、`install.sh`、`start-local.ps1`、`启动服务.cmd`
+是本机启动入口。`LICENSE`、`CHANGELOG.md` 保持根目录标准位置；
+社区文件（`CONTRIBUTING.md`、`SECURITY.md`、`CODE_OF_CONDUCT.md`、`CONTRIBUTORS.md`）
+统一放在 `.github/`，GitHub 会从那里读取。
 
 ## 它是什么
 
@@ -135,8 +134,8 @@
 需要 **Linux 容器模式**和 **Docker Compose 2.20+**。Windows 用 Docker Desktop，Linux 用 Docker Engine；macOS / ARM64 的兼容待开发。
 
 ```bash
-git clone https://github.com/FLIAZ/SpiritScout.git
-cd SpiritScout
+git clone https://github.com/qzuser/auto-target-range-v2.git
+cd auto-target-range-v2
 python deploy.py up
 ```
 
@@ -182,7 +181,7 @@ docker compose up -d --build --wait
 需要 Python 3.11+。原生浏览器工具另需 Node.js 22+ 和 Chromium/Chrome，也可用 `SPIRITSCOUT_CHROME_EXECUTABLE` 指定路径。
 
 装依赖国内建议加镜像：`-i https://pypi.tuna.tsinghua.edu.cn/simple`（清华 TUNA，也可以用
-`https://mirrors.aliyun.com/pypi/simple/`）。`scripts\windows\start-web.ps1` 已经把镜像当默认
+`https://mirrors.aliyun.com/pypi/simple/`）。仓库根那套 `start-local.ps1` 已经把镜像当默认
 ——它自检到缺依赖就会用镜像装，镜像不可用时自动退官方源重试。
 
 **Linux**
@@ -191,7 +190,7 @@ docker compose up -d --build --wait
 python3 -m venv .venv
 .venv/bin/python -m pip install -e . -i https://pypi.tuna.tsinghua.edu.cn/simple
 sudo apt install bubblewrap   # Debian / Ubuntu；Fedora 用 sudo dnf install bubblewrap
-./scripts/linux/launch.sh
+./launch.sh
 ```
 
 **Windows（cmd）**
@@ -199,12 +198,10 @@ sudo apt install bubblewrap   # Debian / Ubuntu；Fedora 用 sudo dnf install bu
 ```bat
 py -3 -m venv .venv
 .venv\Scripts\python.exe -m pip install -e . -i https://pypi.tuna.tsinghua.edu.cn/simple
-.\scripts\windows\start-console.cmd
+launch.cmd
 ```
 
-访问 <http://127.0.0.1:8000>，`Ctrl+C` 停止。改端口：
-`./scripts/linux/launch.sh --port 10010` 或
-`.\scripts\windows\start-console.cmd --port 10010`。
+访问 <http://127.0.0.1:8000>，`Ctrl+C` 停止。改端口：`./launch.sh --port 10010` 或 `launch.cmd --port 10010`。
 
 **Windows 原生桌面版（SaltUI）**
 
@@ -215,7 +212,8 @@ py -3 -m venv .venv
 开发运行：
 
 ```powershell
-$env:JAVA_HOME = 'C:\Program Files\Microsoft\jdk-21.0.12.101-hotspot'
+# 需要 JDK 21（desktop/build.gradle.kts 里是 jvmToolchain(21)）
+$env:JAVA_HOME = '<你的 JDK 21 安装目录>'
 .\desktop\gradlew.bat -p .\desktop run
 ```
 
@@ -236,15 +234,14 @@ python scripts/bootstrap.py --fix      # 一键补齐（清华 → 阿里 → �
 python scripts/bootstrap.py --json     # 给脚本/GUI 消费
 ```
 
-**本机默认不强制登录**：未配置管理员时控制台直接进入。
-`scripts/windows/start-console.cmd` / `scripts/linux/launch.sh`
+**本机默认不强制登录**：未配置管理员时控制台直接进入。`launch.cmd` / `launch.sh`
 不会逼你设密码（它们不碰管理员账号），库里以前留下的账号也不会把界面重新锁上；
-双击入口（`Start-SpiritScout.cmd` → `scripts/windows/start-web.ps1`）首次启动会问一次，回车两次
+仓库根那套本机启动器（`启动服务.cmd` → `start-local.ps1`）首次启动会问一次，回车两次
 跳过即可，不设也能直接进。想开登录：
 
 ```bat
 .venv\Scripts\python.exe -m spiritscout --set-admin-password
-.\scripts\windows\start-console.cmd --auth password
+launch.cmd --auth password
 ```
 
 想彻底清掉凭据：`.venv\Scripts\python.exe -m spiritscout --clear-admin-password`。
@@ -259,13 +256,21 @@ python scripts/bootstrap.py --json     # 给脚本/GUI 消费
 `[状态] 已运行 01:00 · 会话 2（运行中 0） · 内存 244 MB`，不开任务管理器也能知道它活着。
 
 ```
-灵枢 Web 控制台 v1.3.0: http://127.0.0.1:8010  (本机回环访问，Ctrl+C 停止)
+  SPIRITSCOUT
+  灵枢 · 多智能体安全测试控制台
+  v1.3.1
+
+  启动  读取配置…
+  启动  装配控制台…
+  启动  启动 HTTP 服务…
 
 [就绪] 浏览器可以打开了: http://127.0.0.1:8010
        每 60 秒报一次状态；Ctrl+C 停止
 
 [状态] 已运行 01:00 · 会话 2（运行中 0） · 内存 244 MB
 ```
+
+（终端够宽且不是 `TERM=dumb` 时，品牌头会展开成四行 ASCII 字标；上面是窄窗口的简写。）
 
 shell / Python 沙箱需要 Linux + bubblewrap；Windows 与 macOS 原生控制台降级为 host 后端，
 拿不到这一整套隔离，需要完整工具链时请用 Docker。三者的虚拟环境不要混用。
@@ -295,6 +300,17 @@ powershell -ExecutionPolicy Bypass -File packaging\windows\build-desktop.ps1
 `SpiritScout.exe`。目标机器不需要安装 Java、Python 或 WebView2；模型和外部工具仍需按
 各自文档配置。旧的单文件尾载荷和 `desktop.json` 兼容流程不再维护。
 
+桌面端覆盖全部 Web 导航域：任务创建与会话工作区、项目、资产收集与情报、模型与供应商、
+MCP、Skill 文件编辑、本地工具、自动任务、代理池、浏览器账号、经验、流量/PCAP 和设置。
+正式业务操作均使用原生 Compose/SaltUI 控件，高级 API 只作为诊断入口。
+
+发布前可自动检查打包结果：
+
+```powershell
+.\packaging\windows\smoke-desktop.ps1 `
+  -AppDir .\build\windows-desktop\package\SpiritScout
+```
+
 
 ### 发行包（Release 附件）
 
@@ -303,15 +319,15 @@ powershell -ExecutionPolicy Bypass -File packaging\windows\build-desktop.ps1
 
 | 附件 | 带什么 |
 | --- | --- |
-| `spiritscout-1.3.0-py3-none-any.whl` | `pip install` 用：前端静态页面、知识库种子、报告模板、内置安全技能与经验摘要 |
-| `spiritscout-1.3.0.tar.gz` | sdist：源码、前端、桌面端、测试、脚本、配置模板与经验 |
-| `SpiritScout-1.3.0-source.zip` | 整仓源码：代码、`configs/`、`tools/experience-export/`、`docs/workspace/EXPERIENCE.md` |
-| `SpiritScout-1.3.0-windows-x64.zip` | **Windows 原生桌面完整版**：SaltUI/Compose Desktop，内嵌 JRE 与 Python 运行时 |
-| `SpiritScout-1.3.0-windows-x64-backend.zip` | 可选的后端兼容包；只在本地显式构建，不进入正式桌面发布链 |
+| `spiritscout-1.3.1-py3-none-any.whl` | `pip install` 用：前端静态页面、知识库种子、报告模板、内置安全技能与经验摘要 |
+| `spiritscout-1.3.1.tar.gz` | sdist：整份源码 + 技能文本素材 + 配置模板 + 经验 |
+| `SpiritScout-1.3.1-source.zip` | 整仓源码：代码、`skills/`、`configs/`、`tools/experience-export/`、`docs/workspace/EXPERIENCE.md` |
+| `SpiritScout-1.3.1-windows-x64.zip` | **Windows 原生桌面完整版**：SaltUI/Compose Desktop，内嵌 JRE 与 Python 运行时 |
+| `SpiritScout-1.3.1-windows-x64-backend.zip` | 纯 Python/Web 后端兼容包 |
 | `SHA256SUMS` | 上面几个包的校验和，装前先对一遍 |
 
 ```bash
-pip install spiritscout-1.3.0-py3-none-any.whl
+pip install spiritscout-1.3.1-py3-none-any.whl
 spiritscout --help
 ```
 
@@ -323,9 +339,9 @@ python -m spiritscout.resources.skill_sync import skills   # 从解开的 zip / 
 
 **怎么出的包**：推一个 `v*` tag，仓库根 `.github/workflows/package.yml` 会自动
 核对 tag 与 `__version__` 是否一致（不一致直接失败）、用
-`python -m spiritscout.knowledge.digest` 现算一份经验摘要、`python -m build` 出
+`python -m spiritscout.knowledge.digest` 现算一份经验摘要、`uv build` 出
 wheel 与 sdist、`git archive` 打整仓 zip 并把摘要塞进去、再装进干净 venv 验证
-`web/static/js/count.js` 和 `knowledge/data/experience.json` 真在包里。完整桌面版
+`web/static/js/core.js` 和 `knowledge/data/experience.json` 真在包里。完整桌面版
 在 Windows 任务里通过 Compose/jpackage 打包，两边产物汇到
 最后一并算 `SHA256SUMS` 再附到同名 Release。没打 tag 也能出包：Actions 页面选
 「打包并发布」→ Run workflow，填一个已存在的 tag 即可。
@@ -540,16 +556,16 @@ Docker 用 `python deploy.py migrate`；手工迁移时停服 → 拷 `.spiritsc
 
 ## 文档与贡献
 
-当前代码版本 **v1.3.0**。版本唯一来源、递增规则与历史说明见 [版本管理](CONTRIBUTING.md#版本管理)。
+当前代码版本 **v1.3.1**。版本唯一来源、递增规则与历史说明见 [版本管理](.github/CONTRIBUTING.md#版本管理)。
 
 | 我想了解 | 阅读入口 |
 | --- | --- |
 | 安装、模型、浏览器、迁移与备份 | [部署与配置](docs/部署与配置.md) |
 | 架构、执行流程和代码位置 | [项目文档索引](docs/README.md) |
 | 核心算法与技术实现 | [核心算法与技术实现](docs/05-核心算法与技术实现.md) |
-| 修复问题或提交新功能 | [贡献指南](CONTRIBUTING.md) · [Agent 工作约定](AGENTS.md) |
+| 修复问题或提交新功能 | [贡献指南](.github/CONTRIBUTING.md) · [Agent 工作约定](AGENTS.md) |
 | 版本变化与兼容修复 | [更新日志](CHANGELOG.md) |
-| 私密报告项目自身漏洞 | [安全策略](SECURITY.md) |
+| 私密报告项目自身漏洞 | [安全策略](.github/SECURITY.md) |
 
 ## 许可与使用约定
 
@@ -617,7 +633,7 @@ Docker 用 `python deploy.py migrate`；手工迁移时停服 → 拷 `.spiritsc
 ## 致谢
 
 <details>
-<summary>知识库、参考项目、MCP、SKILL 源及用户</summary>
+<summary>知识库、参考项目、MCP 与 SKILL 来源</summary>
 
 ### 知识库数据来源
 
@@ -651,20 +667,15 @@ Docker 用 `python deploy.py migrate`；手工迁移时停服 → 拷 `.spiritsc
 - [anthropics/skills](https://github.com/anthropics/skills)
 - [VoltAgent/awesome-agent-skills](https://github.com/VoltAgent/awesome-agent-skills)
 
-### 用户
-
-- [@BProbie](https://github.com/BProbie)：修正文档格式
-- [@k1ne](https://github.com/k1ne7)：多平台兼容功能
-- [@neko](https://github.com/neko-11451)：对登录页的前端美化
 
 </details>
 
 ## Star History
 
-<a href="https://www.star-history.com/?repos=fliaz%2Fspiritscout&type=date&legend=top-left">
+<a href="https://www.star-history.com/?repos=qzuser%2Fauto-target-range-v2&type=date&legend=top-left">
  <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=fliaz/spiritscout&type=date&theme=dark&legend=top-left" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=fliaz/spiritscout&type=date&theme=light&legend=top-left" />
-   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=fliaz/spiritscout&type=date&legend=top-left" />
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=qzuser/auto-target-range-v2&type=date&theme=dark&legend=top-left" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=qzuser/auto-target-range-v2&type=date&theme=light&legend=top-left" />
+   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=qzuser/auto-target-range-v2&type=date&legend=top-left" />
  </picture>
 </a>

@@ -71,7 +71,7 @@ def observe(state: dict[str, Any], name: str, arguments: dict[str, Any], outcome
         message["_light_observation"] = {"tool": name, "ok": outcome.ok,
             "invocation_id": outcome.metadata.get("invocation_id", "")}
     if (message is not None and name in {'history_read', 'evidence_memory', 'record_answer'}
-            and (not outcome.ok or name == 'evidence_memory' and outcome.metadata.get('memory_changed') is False)):
+            and (not outcome.ok or (name == 'evidence_memory' and outcome.metadata.get('memory_changed') is False))):
         # 这些回执不是新的执行证据，但相同请求/相同失败也要折叠，避免错误提交变成上下文示范。
         # 只标记已经发生的往返；最新回执保留，原始历史不删，也不阻止重新调用。
         message['_context_repeat_key'] = hashlib.sha256(json.dumps(

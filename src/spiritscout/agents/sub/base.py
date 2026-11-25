@@ -544,7 +544,7 @@ class SubAgent(abc.ABC):
                 task=task,
             )
             data = extract_json(resp.content)
-        except Exception as exc:  # noqa: BLE001 —— 增广失败保持模板路线
+        except Exception as exc:
             self.ctx.audit.log("llm.step_fallback", self.agent_id,
                                {"role": "route_planner/extend",
                                 "error": str(exc)[:200]})
@@ -690,7 +690,7 @@ class SubAgent(abc.ABC):
                 tool_name=str(step.get("action") or "")))
             try:
                 result = await self.execute_step(task, route, plan, step)
-            except Exception as exc:  # noqa: BLE001 —— 单步失败如实记录
+            except Exception as exc:
                 result = StepResult(ok=False, note=f"step exception: {exc}")
                 self.ctx.audit.log("agent.error", self.agent_id, {
                     "task_id": task.task_id, "route_id": route.route_id,
@@ -760,7 +760,7 @@ class SubAgent(abc.ABC):
                 updated_by=self.agent_id,
                 dedup_key=f"task|{task.task_id}",
             )
-        except Exception:  # noqa: BLE001, S110 —— 实时面可滞后，不阻断执行
+        except Exception:
             pass
 
     def _update_route(self, route: RouteState, result: StepResult, total_steps: int) -> None:
@@ -1095,7 +1095,7 @@ class SubAgent(abc.ABC):
             if not isinstance(name, str) or name not in TRAFFIC_NAMES | evidence_names:
                 return None
             if not isinstance(arguments, dict) or not (
-                    traffic_allowed and name in TRAFFIC_NAMES or evidence_allowed and name in evidence_names):
+                    (traffic_allowed and name in TRAFFIC_NAMES) or (evidence_allowed and name in evidence_names)):
                 return {"ok": False, "error": "当前角色不可调用该流量工具或参数不是对象"}
             result = await self.ctx.tools.call(name, arguments, **self.ctx.builtin_ctx)
             return {"ok": result.ok, "note": result.stdout or result.failure_reason(),
@@ -1232,7 +1232,7 @@ class SubAgent(abc.ABC):
                 timeout_seconds=timeout_seconds,
                 reasoning_effort=reasoning_effort, task=task,
                 allow_ask=_allow_ask)
-        except Exception as exc:  # noqa: BLE001 —— 降级为规则骨架，不阻断（留痕可见）
+        except Exception as exc:
             self.ctx.audit.log("llm.step_fallback", self.agent_id,
                                {"role": role, "error": str(exc)[:200]})
             return None

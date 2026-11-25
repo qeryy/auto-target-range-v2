@@ -11,6 +11,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
+from _platform import CAN_SYMLINK
+
 from spiritscout.agents.scanner import (
     _discovery_outcome,
     _discovery_summary,
@@ -143,6 +145,7 @@ class ScannerTests(unittest.IsolatedAsyncioTestCase):
                 self.assertFalse(result.ok)
             backend.assert_not_awaited()
 
+    @unittest.skipUnless(CAN_SYMLINK, "本机无法创建符号链接（Windows 需管理员或开发者模式）")
     async def test_malformed_and_symlink_output_cannot_be_success(self):
         secret = self.root / "private"
         secret.write_text(json.dumps(self.rows[0]))

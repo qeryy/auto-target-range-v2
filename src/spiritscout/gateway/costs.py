@@ -19,7 +19,7 @@ def configured_usd(entry: ModelEntry, usage: dict[str, Any]) -> dict[str, Any]:
     read, write = usage.get("cached_input_tokens"), usage.get("cache_write_tokens")
     if read is None or (entry.prompt_caching == "anthropic_ephemeral" and write is None):
         return {**result, "usd_pricing_status": "unknown_cache_usage"}
-    if read and rates["cached_input"] is None or write and rates["cache_write"] is None:
+    if (read and rates["cached_input"] is None) or (write and rates["cache_write"] is None):
         return {**result, "usd_pricing_status": "unknown_cache_price"}
     inputs, outputs = usage["prompt_tokens"], usage["completion_tokens"]
     read = min(read, inputs)

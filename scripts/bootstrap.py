@@ -38,8 +38,9 @@ import socket
 import subprocess
 import tempfile
 import time
+from collections.abc import Callable, Iterable, Sequence
 from pathlib import Path
-from typing import Any, Callable, Iterable, Sequence
+from typing import Any
 
 # 装依赖的源，按顺序试。国内机器上官方站常常见底速甚至超时，
 # 所以镜像在前、官方兜底；要锁定某一个源就传 --mirror。

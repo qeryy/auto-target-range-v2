@@ -1,4 +1,4 @@
-"""本地 LLM 的 MCP 服务器：协议走通、工具真的能拿到模型输出。
+﻿"""本地 LLM 的 MCP 服务器：协议走通、工具真的能拿到模型输出。
 
 这条链路最容易坏在两个地方：一是 stdio 上的 JSON-RPC 说错话，客户端的握手直接
 挂住；二是端点连不上时只抛一个 URLError，使用者看不出「后端没起」还是「地址配
@@ -44,13 +44,13 @@ class _StubModel(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler 的约定
+    def do_GET(self) -> None:
         if self.path.rstrip("/").endswith("/models"):
             self._send({"object": "list", "data": [{"id": "gemma-4-12b"}, {"id": "bonsai-27b"}]})
         else:
             self._send({"error": "not found"}, 404)
 
-    def do_POST(self) -> None:  # noqa: N802
+    def do_POST(self) -> None:
         length = int(self.headers.get("Content-Length", "0"))
         request = json.loads(self.rfile.read(length) or b"{}")
         type(self).last_payload = request

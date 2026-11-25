@@ -72,7 +72,7 @@ class McpPreflight:
         except asyncio.CancelledError:
             entry.status = 'closed'
             raise
-        except Exception as exc:  # noqa: BLE001 —— 可选 MCP 故障不影响工作台开工
+        except Exception as exc:
             causes = [exc]
             while any(isinstance(cause, BaseExceptionGroup) for cause in causes):
                 causes = [leaf for cause in causes for leaf in (cause.exceptions if isinstance(cause, BaseExceptionGroup) else [cause])]

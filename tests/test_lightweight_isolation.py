@@ -10,6 +10,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
+from _platform import CAN_SYMLINK
+
 from spiritscout.config.settings import ModelEntry
 from spiritscout.core.audit import NullAuditLogger
 from spiritscout.core.models import AgentType, RunMode
@@ -142,6 +144,7 @@ class SandboxIsolationTests(unittest.IsolatedAsyncioTestCase):
             result = await self.call("test ! -e /tmp/not_persistent", scope=scope, mode=mode, light=flag)
             self.assertFalse(result.parsed["tmp_persistent"])
 
+    @unittest.skipUnless(CAN_SYMLINK, "本机无法创建符号链接（Windows 需管理员或开发者模式）")
     async def test_scoped_and_private_parent_symlinks_are_rejected(self):
         outside = self.root / "outside"
         outside.mkdir()
@@ -158,6 +161,7 @@ class SandboxIsolationTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(result.ok)
         self.assertEqual(list(outside.iterdir()), [])
 
+    @unittest.skipUnless(CAN_SYMLINK, "本机无法创建符号链接（Windows 需管理员或开发者模式）")
     async def test_directory_descriptor_survives_path_replacement(self):
         directory = self.root / "sandbox/one"
         directory.mkdir(parents=True)

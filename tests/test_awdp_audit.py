@@ -15,6 +15,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from _platform import CAN_SYMLINK
 from test_single_executor import context
 
 from spiritscout.awdp.builder import build_patch
@@ -208,6 +209,7 @@ class PatchBuilderTests(unittest.TestCase):
             self.build(name, attachment)
 
     @unittest.skipIf(os.name == "nt", "AWDP 提交脚本在 Linux 竞赛宿主执行")
+    @unittest.skipUnless(CAN_SYMLINK, "本机无法创建符号链接（Windows 需管理员或开发者模式）")
     def test_unchanged_traversal_cross_topic_and_symlink_are_rejected(self):
         name, attachment = self.original('file')
         with self.assertRaisesRegex(ValueError, '相同'):
@@ -282,6 +284,7 @@ class ScannerContractTests(unittest.TestCase):
             self.assertTrue(result['errors'])
             self.assertTrue((Path(tmp) / 'report.json').exists())
 
+    @unittest.skipUnless(CAN_SYMLINK, "本机无法创建符号链接（Windows 需管理员或开发者模式）")
     def test_inventory_records_skips_and_does_not_follow_links(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

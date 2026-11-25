@@ -132,7 +132,7 @@ def mount_browser_accounts(app: FastAPI, cfg: Any, store: Any) -> AccountBrowser
                 raise failure(exc) from None
             except HTTPException:
                 raise
-            except Exception as exc:  # noqa: BLE001 —— 不向客户端泄露浏览器原始错误
+            except Exception as exc:
                 raise failure(exc) from None
 
     return browsers

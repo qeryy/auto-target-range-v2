@@ -60,7 +60,7 @@ def estimate(entry: ModelEntry, quote: dict[str, Any], ts: float, usage: dict[st
             result['pricing_status'] = 'model_price_unknown' if quote.get('status') == 'fresh' else quote.get('status', 'unavailable')
         return result
     read, write = usage.get('cached_input_tokens'), usage.get('cache_write_tokens')
-    if read is None or entry.prompt_caching == 'anthropic_ephemeral' and write is None:
+    if read is None or (entry.prompt_caching == 'anthropic_ephemeral' and write is None):
         result['pricing_status'] = 'unknown_cache_usage'
         return result
     inputs, outputs = usage['prompt_tokens'], usage['completion_tokens']
@@ -76,7 +76,7 @@ def estimate(entry: ModelEntry, quote: dict[str, Any], ts: float, usage: dict[st
         result['pricing_period'] = 'peak_or_public_holiday' if peak else 'off_peak'
     costs = []
     for rate in rates:
-        if (read and rate.get('cached_input') is None or write and rate.get('cache_write') is None
+        if ((read and rate.get('cached_input') is None) or (write and rate.get('cache_write') is None)
                 or rate.get('cache_storage_per_mtok_hour', 0)):
             result['pricing_status'] = 'unknown_cache_price'
             return result

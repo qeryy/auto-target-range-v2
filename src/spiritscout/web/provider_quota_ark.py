@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from urllib.parse import urlencode, urlsplit
 
 import httpx
@@ -15,7 +15,7 @@ from spiritscout.web import vault
 
 def sign_headers(access_key: str, secret: str, host: str, query: str, body: bytes,
                  now: datetime | None = None) -> dict[str, str]:
-    now = now or datetime.now(timezone.utc)
+    now = now or datetime.now(UTC)
     date = now.strftime('%Y%m%dT%H%M%SZ')
     digest = hashlib.sha256(body).hexdigest()
     scope = f'{date[:8]}/cn-beijing/ark/request'
