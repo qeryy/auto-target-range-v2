@@ -43,7 +43,7 @@ python tools/experience-export/export_experience.py --self-test # 自检：脱�
 - **运行库读不到就放行**：没跑过灵枢、或 db 正被控制台占用读不了时，钩子只往 stderr
   提示一句、保留上次快照，不会卡住提交。
 - 要临时跳过：`git commit --no-verify`。
-- 钩子与导出脚本在 [`.gitattributes`](../.gitattributes) 里固定为 LF——`core.autocrlf=true`
+- 钩子与导出脚本在 [`.gitattributes`](../../.gitattributes) 里固定为 LF——`core.autocrlf=true`
   的机器若把 `#!/bin/sh` 转成 CRLF，钩子会直接 bad interpreter 跑不起来。
 
 ## 来源

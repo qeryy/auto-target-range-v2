@@ -137,9 +137,9 @@ class QuestionBroker:
 
         scope = current_execution_scope.get()
         owner = scope.task_id if scope else ""
-        if (not isinstance(block_all_tasks, bool) or blocking_task_ids is not None
+        if (not isinstance(block_all_tasks, bool) or (blocking_task_ids is not None
                 and (not isinstance(blocking_task_ids, list)
-                     or not all(isinstance(task, str) and task.strip() for task in blocking_task_ids))):
+                     or not all(isinstance(task, str) and task.strip() for task in blocking_task_ids)))):
             raise ValueError("问题依赖需要任务 ID 列表和布尔值 block_all_tasks")
         # 验证码属于单次挑战；即使两个账号同名，也不能合并后共用一次答复。
         fingerprint = f"{agent}|{question}" + ('|' + new_id('verification') if secret else '')

@@ -6,7 +6,7 @@ import copy
 import hashlib
 import math
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -67,7 +67,7 @@ def query_kind(provider: ProviderEntry) -> str:
     if supported == 'opencode_plan' and not url.path.startswith(('/zen/go', '/inference/go')):
         return 'unsupported'
     if url.hostname == 'open.bigmodel.cn' and (provider.quota_query == 'glm_balance'
-                                              or provider.quota_query == 'auto' and provider.billing_scheme == 'glm_api'):
+                                              or (provider.quota_query == 'auto' and provider.billing_scheme == 'glm_api')):
         return 'glm_balance'
     if provider.quota_query != 'auto':
         return supported if supported == provider.quota_query else 'unsupported'
@@ -94,7 +94,7 @@ def _reset(value: Any) -> str | None:
             return datetime.fromisoformat(value.replace('Z', '+00:00')).isoformat()
         number = _number(value)
         if number is not None and number > 0:
-            return datetime.fromtimestamp(number / 1000 if number > 1e11 else number, timezone.utc).isoformat()
+            return datetime.fromtimestamp(number / 1000 if number > 1e11 else number, UTC).isoformat()
     except (ValueError, OverflowError, OSError):
         pass
     return None

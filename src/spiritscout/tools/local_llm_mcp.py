@@ -98,7 +98,7 @@ def server_status() -> dict[str, Any]:
     started = time.monotonic()
     try:
         models = list_models()
-    except Exception as exc:  # noqa: BLE001 - 把底层异常翻成人话，不吞栈
+    except Exception as exc:
         return {"online": False, "endpoint": base_url(), "error": _fail(exc), "models": []}
     return {
         "online": True,
@@ -127,7 +127,7 @@ def _resolve_model(model: str) -> tuple[str, str]:
         return picked, ""
     try:
         available = list_models()
-    except Exception as exc:  # noqa: BLE001 - 同上，报错要能指导下一步
+    except Exception as exc:
         return "", _fail(exc)
     if not available:
         return "", f"端点 {base_url()} 上没有可用模型，先在 LM Studio 里加载一个"
@@ -180,7 +180,7 @@ def chat(prompt: str, system: str = "", model: str = "",
     started = time.monotonic()
     try:
         data = _post_chat(payload)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         return {"ok": False, "error": _fail(exc)}
     content, reasoning, finish = _extract(data)
     usage = data.get("usage") if isinstance(data, dict) else None
@@ -259,7 +259,7 @@ def call_tool(name: str, arguments: dict[str, Any]) -> Any:
     if name == "local_llm_models":
         try:
             return {"ok": True, "models": list_models(), "endpoint": base_url()}
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             return {"ok": False, "error": _fail(exc)}
     if name == "local_llm_chat":
         args = arguments or {}
@@ -295,7 +295,7 @@ def _call(request_id: Any, params: dict[str, Any]) -> None:
     except ValueError as exc:
         _error(request_id, -32602, str(exc))
         return
-    except Exception as exc:  # noqa: BLE001 - 工具崩了也要给客户端一个交代
+    except Exception as exc:
         _result(request_id, {"content": [{"type": "text", "text": f"工具执行失败：{exc}"}],
                              "isError": True})
         return

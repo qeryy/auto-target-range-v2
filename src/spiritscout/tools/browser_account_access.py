@@ -80,7 +80,7 @@ def register_account_access(registry: Any, catalog: dict, spec: Any,
                 tools = await activate(account['id'], site, account['version'])
             except (KeyError, ValueError):
                 return result('changed', error='账号已变更或不可用，本次未加载')
-            except Exception:  # noqa: BLE001 —— 浏览器错误可能含登录态，不回显原文。
+            except Exception:
                 return result('failed', error='账号浏览器未能准备就绪；未确认登录成功，请检查连接')
             return result('approved', origin=site, account_id=account['id'], tools=tools,
                           next='仅在批准的站点使用本次账号浏览器，核对实际身份后再继续')

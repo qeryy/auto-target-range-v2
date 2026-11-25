@@ -7,7 +7,7 @@ import contextlib
 import tempfile
 import time
 import unittest
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -61,7 +61,7 @@ class SchedulerTests(unittest.IsolatedAsyncioTestCase):
                 session_id="fixture",
                 name="检查",
                 message="检查已授权的服务",
-                run_at=datetime.fromtimestamp(self.now - 100, tz=timezone.utc),
+                run_at=datetime.fromtimestamp(self.now - 100, tz=UTC),
                 interval_seconds=interval,
             )
         )
@@ -232,7 +232,7 @@ class StandaloneAutomationTests(unittest.IsolatedAsyncioTestCase):
                 mode="ctf",
                 model="fixture-model",
                 project_id="fixture-project",
-                run_at=datetime.fromtimestamp(self.now - 1, tz=timezone.utc),
+                run_at=datetime.fromtimestamp(self.now - 1, tz=UTC),
                 interval_seconds=interval,
             )
         )

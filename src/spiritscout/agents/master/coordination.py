@@ -7,7 +7,7 @@ import copy
 import json
 import math
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from spiritscout.agents.master.contracts import MasterState
@@ -115,11 +115,11 @@ class MasterCoordination:
             try:
                 accepted = {str(f.challenge_id)
                             for f in flag_manager.accepted_flags()}
-            except Exception:  # noqa: BLE001 —— 统计失败不阻断回收
+            except Exception:
                 accepted = set()
         try:
             released = await platform.release_completed(accepted)
-        except Exception as exc:  # noqa: BLE001 —— 回收失败不连坐主链路
+        except Exception as exc:
             self.ctx.audit.log("platform.fact", self.agent_id, {
                 "action": "release_failed", "error": str(exc)[:200]})
             return
@@ -158,7 +158,7 @@ class MasterCoordination:
         """普通会话也向模型提供既有路线引用；状态/派发查询不承担数据库扫描。"""
         bb = getattr(self.ctx, "blackboard", None)
         platform = self.ctx.extra.get("platform")
-        if bb is None or platform is not None and getattr(platform, "continuous", False):
+        if bb is None or (platform is not None and getattr(platform, "continuous", False)):
             return []  # 连续比赛的路线引用已包含在 competition_status 各题节点内。
         refs = []
         for node in dag.all_nodes():
@@ -209,7 +209,7 @@ class MasterCoordination:
                 for n in dag.all_nodes() if n.meta.get("retain_instance") is True
                 and not n.meta.get("deferred")}),
             "spending": self._spending_observation(progress),
-            "observed_at": datetime.now(timezone.utc).isoformat(),
+            "observed_at": datetime.now(UTC).isoformat(),
         }
 
     def _spending_observation(self, progress: dict[str, Any]) -> dict[str, Any]:
@@ -261,7 +261,7 @@ class MasterCoordination:
             return False
         try:
             progress = platform.progress()
-        except Exception:  # noqa: BLE001 —— 进度读取失败回退模型复盘
+        except Exception:
             return False
         unsolved = {str(cid) for cid in progress.get("unsolved_ids") or []}
         if not unsolved:
@@ -341,7 +341,7 @@ class MasterCoordination:
                     if await platform.close_instance(
                             item["id"], reason=f"赛题暂缓: {item['reason']}"):
                         released.append(item["id"])
-                except Exception as exc:  # noqa: BLE001 —— 回收失败不连坐主链路
+                except Exception as exc:
                     self.ctx.audit.log("platform.fact", self.agent_id, {
                         "action": "defer_close_failed", "challenge": item["id"],
                         "error": str(exc)[:200]})
@@ -434,7 +434,7 @@ class MasterCoordination:
                 reasoning_effort="low",
             )
             data = extract_json(resp.content)
-        except Exception as exc:  # noqa: BLE001 —— 决策失败不阻断任务下发
+        except Exception as exc:
             ctx.audit.log("decision.change", self.agent_id, {
                 "action": "dispatch_plan_fallback",
                 "reason": f"LLM 下发决策不可用: {str(exc)[:160]}"})
@@ -550,7 +550,7 @@ class MasterCoordination:
                                  dedup_key=f"task|{task.task_id}")
                 ctx.audit.log("task.cancelled", self.agent_id, {"task_id": task.task_id})
                 raise
-            except Exception as exc:  # noqa: BLE001 —— 单子 Agent 故障不影响全局（2.1-3）
+            except Exception as exc:
                 assert ctx.audit is not None
                 ctx.audit.log("task.failed", self.agent_id,
                               {"task_id": task.task_id, "error": str(exc)[:300]})
@@ -695,7 +695,7 @@ class MasterCoordination:
                             cleanup.remove(job)
                             try:
                                 job.result()
-                            except Exception as exc:  # noqa: BLE001 —— 清理故障留痕供后续重试
+                            except Exception as exc:
                                 ctx.audit.log("platform.fact", self.agent_id, {
                                     "action": "release_failed", "error": str(exc)[:200]})
                         if adjudicated in done:

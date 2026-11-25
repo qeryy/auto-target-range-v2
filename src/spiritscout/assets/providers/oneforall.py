@@ -82,7 +82,7 @@ class OneForAllProvider:
                 return stdout, stderr
 
             stdout, stderr = await asyncio.wait_for(communicate(), timeout=self.timeout_seconds)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             return ProviderResult(self.name, "failed", error="timeout")
         except (OSError, ValueError) as exc:
             return ProviderResult(self.name, "failed", error=type(exc).__name__)

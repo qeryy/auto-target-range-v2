@@ -11,8 +11,9 @@ import signal
 import sqlite3
 import time
 import uuid
+from collections.abc import AsyncIterator
 from pathlib import Path
-from typing import Any, AsyncIterator
+from typing import Any
 
 from spiritscout.platform_support import kill_process_tree, process_options
 from spiritscout.traffic import packets

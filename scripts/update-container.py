@@ -17,7 +17,7 @@ from pathlib import Path
 
 # 助手在已有源码仓库运行，只依赖 Python 标准库和宿主 Docker/Git。
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-from spiritscout.updates.source import (  # noqa: E402
+from spiritscout.updates.source import (
     GIT_URL,
     git,
     official_remote,

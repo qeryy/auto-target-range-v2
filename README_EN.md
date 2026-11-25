@@ -9,13 +9,13 @@ and progress, evidence, and artifacts stay in the same session.
 
 **English · [简体中文](README.md)**
 
-[![Version](https://img.shields.io/badge/version-v1.3.0-2563eb?style=flat-square)](CHANGELOG.md) [![Python](https://img.shields.io/badge/Python-3.11%2B-3776ab?style=flat-square)](pyproject.toml) [![CI](https://github.com/FLIAZ/SpiritScout/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/FLIAZ/SpiritScout/actions/workflows/ci.yml) [![License](https://img.shields.io/badge/license-Apache--2.0-16a34a?style=flat-square)](LICENSE)
+[![Version](https://img.shields.io/badge/version-v1.3.0-2563eb?style=flat-square)](CHANGELOG.md) [![Python](https://img.shields.io/badge/Python-3.11%2B-3776ab?style=flat-square)](pyproject.toml) [![CI](https://github.com/qzuser/auto-target-range-v2/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/qzuser/auto-target-range-v2/actions/workflows/ci.yml) [![License](https://img.shields.io/badge/license-Apache--2.0-16a34a?style=flat-square)](LICENSE)
 
 [Quick start](#quick-start) · [Three modes](#three-modes) · [Interface](#interface) · [How it works](#how-it-works) · [Configuration](#configuration) · [FAQ](#faq) · [Deployment guide (中文)](docs/部署与配置.md)
 
 </div>
 
-> For authorized targets and competitions only. How scope is maintained, how approvals work, and where data lives: see [Data and boundaries](#data-and-boundaries) and the [security policy (中文)](SECURITY.md).
+> For authorized targets and competitions only. How scope is maintained, how approvals work, and where data lives: see [Data and boundaries](#data-and-boundaries) and the [security policy (中文)](.github/SECURITY.md).
 
 ## What it is
 
@@ -108,8 +108,8 @@ Recorded with DeepSeek v4.1 Flash; kept for reference
 Requires **Linux container mode** and **Docker Compose 2.20+**. Docker Desktop on Windows, Docker Engine on Linux; macOS / ARM64 compatibility is pending.
 
 ```bash
-git clone https://github.com/FLIAZ/SpiritScout.git
-cd SpiritScout
+git clone https://github.com/qzuser/auto-target-range-v2.git
+cd auto-target-range-v2
 python deploy.py up
 ```
 
@@ -393,16 +393,16 @@ Use `python deploy.py migrate` for Docker. Manually: stop the service, copy `.sp
 
 ## Docs and contributing
 
-Current code version: **v1.3.0**. The single source of the version, the bump rules, and the history: see [version management (中文)](CONTRIBUTING.md#版本管理).
+Current code version: **v1.3.0**. The single source of the version, the bump rules, and the history: see [version management (中文)](.github/CONTRIBUTING.md#版本管理).
 
 | I want to | Read |
 | --- | --- |
 | Install, configure models and browsers, migrate, back up | [Deployment and configuration (中文)](docs/部署与配置.md) |
 | Understand the architecture and code layout | [Documentation index (中文)](docs/README.md) |
 | Understand the core algorithms | [Core algorithms and implementation (中文)](docs/05-核心算法与技术实现.md) |
-| Fix a bug or add a feature | [Contributing (中文)](CONTRIBUTING.md) · [Agent conventions (中文)](AGENTS.md) |
+| Fix a bug or add a feature | [Contributing (中文)](.github/CONTRIBUTING.md) · [Agent conventions (中文)](AGENTS.md) |
 | Track version changes | [Changelog](CHANGELOG.md) |
-| Report a vulnerability privately | [Security policy (中文)](SECURITY.md) |
+| Report a vulnerability privately | [Security policy (中文)](.github/SECURITY.md) |
 
 ## License and usage terms
 
@@ -470,7 +470,7 @@ Project code is licensed under the [Apache License 2.0](LICENSE). Bundled knowle
 ## Acknowledgements
 
 <details>
-<summary>Knowledge bases, reference projects, MCP servers, skill sources, and users</summary>
+<summary>Knowledge bases, reference projects, MCP servers, skill sources, </summary>
 
 ### Knowledge base sources
 
@@ -504,20 +504,15 @@ Whether each server is enabled depends on your local configuration:
 - [anthropics/skills](https://github.com/anthropics/skills)
 - [VoltAgent/awesome-agent-skills](https://github.com/VoltAgent/awesome-agent-skills)
 
-### Users
-
-- [@BProbie](https://github.com/BProbie)：documentation formatting fixes
-- [@k1ne](https://github.com/k1ne7)：multi-platform compatibility
-- [@neko](https://github.com/neko-11451)：login page front-end polish
 
 </details>
 
 ## Star History
 
-<a href="https://www.star-history.com/?repos=fliaz%2Fspiritscout&type=date&legend=top-left">
+<a href="https://www.star-history.com/?repos=qzuser%2Fauto-target-range-v2&type=date&legend=top-left">
  <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=fliaz/spiritscout&type=date&theme=dark&legend=top-left" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=fliaz/spiritscout&type=date&theme=light&legend=top-left" />
-   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=fliaz/spiritscout&type=date&legend=top-left" />
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=qzuser/auto-target-range-v2&type=date&theme=dark&legend=top-left" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=qzuser/auto-target-range-v2&type=date&theme=light&legend=top-left" />
+   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=qzuser/auto-target-range-v2&type=date&legend=top-left" />
  </picture>
 </a>

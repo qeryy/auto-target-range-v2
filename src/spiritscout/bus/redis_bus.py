@@ -59,7 +59,7 @@ class RedisBus(EventBus):
         except asyncio.CancelledError:
             await self.stop()
             raise
-        except Exception:  # noqa: BLE001
+        except Exception:
             await self.stop()
             # 不附底层异常，避免 URL 中的认证信息进入状态与审计。
             raise ConfigurationError("Redis 连接或订阅失败，请检查服务、凭据与网络；未切换后端") from None
@@ -91,7 +91,7 @@ class RedisBus(EventBus):
             await self._redis.publish(self._channel(event.topic), notification.model_dump_json())
         except asyncio.CancelledError:
             raise
-        except Exception:  # noqa: BLE001
+        except Exception:
             self._connected = False
             self._connection_errors += 1
             raise ConfigurationError("Redis 发布失败，通知须从持久化状态补送") from None
@@ -123,7 +123,7 @@ class RedisBus(EventBus):
                 wait_ms = int(await self._redis.eval(script, 1, key, interval))
             except asyncio.CancelledError:
                 raise
-            except Exception:  # noqa: BLE001
+            except Exception:
                 raise ConfigurationError("Redis 共享限速失败，未绕过限速执行") from None
             if wait_ms <= 0:
                 return
@@ -153,7 +153,7 @@ class RedisBus(EventBus):
                 )
             except asyncio.CancelledError:
                 raise
-            except Exception:  # noqa: BLE001
+            except Exception:
                 self._connected = False
                 self._connection_errors += 1
                 await asyncio.sleep(0.5)
@@ -163,7 +163,7 @@ class RedisBus(EventBus):
                 continue
             try:
                 event = Event.model_validate(json.loads(msg["data"]))
-            except Exception:  # noqa: BLE001, S112
+            except Exception:
                 continue
             for sub in list(self._subs.values()):
                 if not sub.matches(event.topic):
@@ -175,5 +175,5 @@ class RedisBus(EventBus):
                 try:
                     await sub.handler(event)
                     self._delivered += 1
-                except Exception:  # noqa: BLE001
+                except Exception:
                     self._handler_errors += 1

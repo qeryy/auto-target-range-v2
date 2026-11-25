@@ -58,7 +58,7 @@ class ReconAgent(SubAgent):
                 steps=[{"action": "asset_discovery_required"}],
             )]
         contract = task.payload.get("investigation_contract")
-        if (isinstance(contract, dict) and contract
+        if ((isinstance(contract, dict) and contract)
                 or getattr(getattr(getattr(self, "ctx", None), "policy", None), "mode", None) == RunMode.SRC):
             return [RoutePlan(
                 name="contract_investigation",

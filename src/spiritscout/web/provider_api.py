@@ -233,7 +233,7 @@ async def fetch_model_list(spec: dict[str, Any]) -> dict[str, Any]:
         for url in urls:
             try:
                 resp = await client.get(url, headers=headers)
-            except Exception as exc:  # noqa: BLE001 —— 逐个候选地址试，失败如实上报
+            except Exception as exc:
                 errors.append(f"{url}: {type(exc).__name__}: {exc}"[:200])
                 continue
             if resp.status_code >= 400:

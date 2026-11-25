@@ -5,6 +5,7 @@ import asyncio
 import tempfile
 import time
 import unittest
+from datetime import UTC
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
@@ -1061,7 +1062,7 @@ class GatewayRetryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(chunks, [("text", "失败片段"), ("reset", ""), ("text", "成功正文")])
 
     async def test_retry_after_and_backoff_do_not_retry_billing_failures(self):
-        from datetime import datetime, timezone
+        from datetime import datetime
         from email.utils import format_datetime
 
         from spiritscout.gateway.retry import recoverable, retry_delay
@@ -1071,7 +1072,7 @@ class GatewayRetryTests(unittest.IsolatedAsyncioTestCase):
         self.assertAlmostEqual(retry_delay(self.unavailable(), 30, gateway.config), .002)
         self.assertEqual(retry_delay(self.unavailable(headers={"Retry-After": "90"}), 0, gateway.config), 90)
         self.assertEqual(retry_delay(self.unavailable(headers={"retry-after-ms": "250"}), 0, gateway.config), .25)
-        date = format_datetime(datetime.fromtimestamp(1_700_000_030, timezone.utc), usegmt=True)
+        date = format_datetime(datetime.fromtimestamp(1_700_000_030, UTC), usegmt=True)
         with patch("spiritscout.gateway.retry.time.time", return_value=1_700_000_000):
             self.assertEqual(retry_delay(self.unavailable(headers={"Retry-After": date}), 0, gateway.config), 30)
         error = self.unavailable(429, body={"error": {"code": "insufficient_quota"}})

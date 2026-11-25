@@ -196,7 +196,7 @@ def handle(server: LocalServer, msg: dict[str, Any]) -> dict[str, Any] | None:
         args = params.get("arguments") or {}
         try:
             payload = server.call(name, args if isinstance(args, dict) else {})
-        except Exception as exc:  # noqa: BLE001 —— 工具失败作为结果返回，不崩连接
+        except Exception as exc:
             return _reply(msg_id, {
                 "isError": True,
                 "content": [{"type": "text", "text": f"{type(exc).__name__}: {exc}"}],

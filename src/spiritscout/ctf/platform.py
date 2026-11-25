@@ -359,7 +359,7 @@ class PlatformAdapter:
             resp = await client.request(method, url,
                                         params=query or None,
                                         json=body if body else None)
-        except Exception as exc:  # noqa: BLE001 —— 传输失败交调用方定性
+        except Exception as exc:
             return _Resp(False, 0, None, "",
                          f"{type(exc).__name__}: {str(exc)[:200]}")
         # 重定向手动跟随（httpx 自动跟随会把平台凭据头带往任意目标站，
@@ -381,12 +381,12 @@ class PlatformAdapter:
             try:
                 resp = await client.request(method, target,
                                             json=body if body else None)
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 return _Resp(False, 0, None, "",
                              f"{type(exc).__name__}: {str(exc)[:200]}")
         try:
             data = resp.json()
-        except Exception:  # noqa: BLE001 —— 非 JSON 应答保留原文
+        except Exception:
             data = None
         return _Resp(True, int(resp.status_code), data, resp.text or "")
 
@@ -491,7 +491,7 @@ class PlatformAdapter:
     def _max_active(self) -> int:
         try:
             return max(0, int(self.profile.limits.get("max_active", 0) or 0))
-        except _SIZE_ERRORS:  # noqa: BLE001 —— 档案里给了非法值就当不限
+        except _SIZE_ERRORS:
             return 0
 
     def active_instance_ids(self) -> set[str]:

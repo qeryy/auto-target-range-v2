@@ -265,7 +265,7 @@ async def _chat_decision_once(
             retried = await chat(retry_kwargs)
             if not output_lost(retried):
                 resp = retried
-        except Exception:  # noqa: BLE001, S110 —— 重试失败沿用原响应，解析端兜底
+        except Exception:
             pass
     parsed: Any = None
     if (kwargs.get("response_format") == "json" or memory is not None) and not output_lost(resp):
@@ -286,7 +286,7 @@ async def _chat_decision_once(
                     candidate = None
                 if isinstance(candidate, dict):
                     resp, parsed = retried, candidate
-            except Exception:  # noqa: BLE001, S110 —— 重试失败沿用原响应，解析端兜底
+            except Exception:
                 pass
             if audit is not None and not isinstance(parsed, dict):
                 audit.log("llm.json_miss", actor, {
@@ -520,7 +520,7 @@ class ModelGateway:
                         {"from": entry.model, "to": candidate.model, "reason": str(last_exc)},
                     )
                 return resp
-            except Exception as exc:  # noqa: BLE001 —— 主备切换语义（4.9.3-5）
+            except Exception as exc:
                 last_exc = exc
                 continue
         raise SpiritScoutError(f"模型调用全链失败（主备均不可用）: {last_exc}")
@@ -682,8 +682,8 @@ class ModelGateway:
                         )
                         break
                     except Exception as exc:
-                        if (not recoverable(exc) or self.config.max_retries is not None
-                                and retry_index >= self.config.max_retries):
+                        if (not recoverable(exc) or (self.config.max_retries is not None
+                                and retry_index >= self.config.max_retries)):
                             raise
                         attempts.finish("failed")
                         delay = retry_delay(exc, retry_index, self.config)

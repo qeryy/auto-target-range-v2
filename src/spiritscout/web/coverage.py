@@ -37,7 +37,7 @@ def _evidence(conn: sqlite3.Connection, workspace: Path, ref: str, *, detail: bo
         row = conn.execute('SELECT data,version FROM bb_records WHERE layer=? AND record_id=?',
                            (source['layer'], source['record_id'])).fetchone()
         version = ref.rsplit('@', 1)[-1] if '@' in ref else ''
-        if not row or row['version'] != source['version'] or version and not version.isdigit():
+        if not row or row['version'] != source['version'] or (version and not version.isdigit()):
             return {**result, 'resolved': False, 'state': 'changed'}
         data = evidence_view(conn, unpack_json(row['data']))
         result.update(evidence_state=data.get('evidence_state', 'unverified'),
@@ -82,7 +82,7 @@ def read_coverage(workspace: Path, *, query: str = '', status: str = '', identit
                               (_LIMIT + 1,)).fetchall()
         records = {f"{r['layer']}:{r['record_id']}": {**dict(r), 'data': unpack_json(r['data'])} for r in source[:_LIMIT]}
         assets = {key: row for key, row in records.items() if row['layer'] == 'asset' or
-                  row['data'].get('kind') == 'finding' and row['data'].get('type') == 'asset'}
+                  (row['data'].get('kind') == 'finding' and row['data'].get('type') == 'asset')}
         findings: dict[str, list[str]] = {}
         for key, row in records.items():
             for ref in _refs(row['data'], 'exploration_refs'):

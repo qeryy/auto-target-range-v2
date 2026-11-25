@@ -295,7 +295,7 @@ class VerifierAgent:
                                        "result": text[:12000], "parsed": result.parsed})
                     except asyncio.CancelledError:
                         raise
-                    except Exception as exc:  # noqa: BLE001 —— 失败如实回灌，不能当成无危害
+                    except Exception as exc:
                         text = encode({"ok": False, "error": f"{type(exc).__name__}: {exc}"[:500]})
                 self.ctx.audit.log("agent.tool_result", self.agent_id, {"id": call["id"],
                     "name": name, "ok": tool_ok, "note": result_meta.get("skill", {}).get("note") or text[:1500], **result_meta})
@@ -475,7 +475,7 @@ class VerificationQueue:
                 raise
             except VersionConflict:
                 retry = True
-            except Exception as exc:  # noqa: BLE001 —— 队列不中断；未完成结果不得变为收录
+            except Exception as exc:
                 self.ctx.audit.log("verification.error", "verifier", {"vuln_id": key, "error": str(exc)[:500]})
             finally:
                 current_execution_scope.reset(token)
@@ -514,7 +514,7 @@ class VerificationQueue:
             with contextlib.suppress(VersionConflict):
                 self.save(key, candidate, version)
             raise
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             result = {"verdict": "inconclusive", "reason": f"复测失败：{type(exc).__name__}: {exc}"[:500]}
         if self._fingerprint(self._rules()) != rules_hash:
             result = {"verdict": "inconclusive", "reason": "复测期间用户规则发生变化，需要按新规则复测"}

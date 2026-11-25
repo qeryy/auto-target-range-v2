@@ -51,7 +51,7 @@
 推之前跑这三步（半分钟）：
 
 ```powershell
-cd D:\Projects\spiritscout
+cd <仓库根>
 git status --short                      # 1. 看有没有意外文件混进来
 git diff --cached --stat                # 2. 看改动规模对不对得上这轮干的活
 git add -A --dry-run | Select-String 'flag\{|api[_-]?key|sk-[A-Za-z0-9]{20}'
@@ -84,5 +84,5 @@ git rev-parse HEAD; (git ls-remote origin main) -split '\s+' | Select-Object -Fi
 
 - 校园网对 GitHub 不稳：`curl https://github.com` 可能返回 `000`，但 `git push` 往往仍能通
   （走的是不同的解析与端口）。推送失败时先重试一次，再考虑换网络。
-- 本仓库的 Git 根是 `D:\Projects\spiritscout`，源码、桌面端和打包目录都直接位于这个根下。
+- 本仓库采用单根布局：源码、桌面端和打包目录都直接在 Git 根下，没有 `SpiritScout\` 子目录。
 - `.gitignore` 也只有根目录这一份，不再维护产品子目录规则。

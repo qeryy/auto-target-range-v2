@@ -352,7 +352,7 @@ class ShellJobs:
                     except (OSError, sqlite3.Error) as exc:
                         self.archive_failed(job, exc)
                 raise
-            except Exception as exc:  # noqa: BLE001 — 后台异常必须唤醒等待者
+            except Exception as exc:
                 job.status, job.error = "failed", type(exc).__name__
                 self.archive_failed(job, exc)
             finally:

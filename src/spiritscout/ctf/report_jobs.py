@@ -113,7 +113,7 @@ async def _run(snapshot: Path, job: dict, gateway: Any, audit: Any) -> None:
         job['status'] = 'queued'
         _update(snapshot, job)
         raise
-    except Exception as exc:  # noqa: BLE001 —— 后台失败不得改变已完成会话
+    except Exception as exc:
         job.update(status='failed', error=str(exc)[:500])
         _update(snapshot, job)
         audit.log('report.failed', 'report', {'error': job['error']})

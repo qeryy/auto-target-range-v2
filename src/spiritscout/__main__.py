@@ -1,4 +1,4 @@
-"""灵枢（SpiritScout）Web 控制台启动入口。
+﻿"""灵枢（SpiritScout）Web 控制台启动入口。
 
 用法::
 
@@ -27,7 +27,7 @@ redirect()
 # litellm 导入前设置。
 os.environ.setdefault("LITELLM_LOCAL_MODEL_COST_MAP", "True")
 
-from spiritscout import __version__  # noqa: E402 — 更新环境切换必须先于服务依赖导入。
+from spiritscout import __version__  # noqa: E402
 from spiritscout.config import load_model_config, load_system_config  # noqa: E402
 from spiritscout.core.exceptions import SpiritScoutError  # noqa: E402
 

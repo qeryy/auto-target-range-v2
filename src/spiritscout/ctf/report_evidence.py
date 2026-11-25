@@ -91,7 +91,7 @@ def collect_evidence(journal: Any = None, workspace: Path | None = None,
             referenced = any(ref in references for ref in aliases)
             important = any(ref in important_refs for ref in aliases)
             from_challenge = (any(ref in challenge_refs for ref in aliases[:-1])
-                              or relative.name in challenge_refs and len(relative.parts) == shallowest[relative.name])
+                              or (relative.name in challenge_refs and len(relative.parts) == shallowest[relative.name]))
             try:
                 modified = (workspace / relative).stat().st_mtime if relative.suffix.lower() == '.md' else 0
             except OSError:

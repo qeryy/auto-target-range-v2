@@ -225,7 +225,7 @@ def read_deliverables(workspace: Path, *, kind: str = "all", query: str = "",
     counts = {category: sum(item["kind"] == category for item in items) for category in sorted(_KINDS)}
     needle = query.strip().casefold()
     filtered = [item for item in items if (kind == "all" or item["kind"] == kind
-                or kind == "sources" and item["kind"] in {"evidence", "file"})
+                or (kind == "sources" and item["kind"] in {"evidence", "file"}))
                 and (not needle or needle in json.dumps(item, ensure_ascii=False).casefold())]
     return {"items": filtered[offset:offset + limit], "total": len(filtered), "counts": counts,
             "offset": offset, "limit": limit, "has_more": offset + limit < len(filtered)}

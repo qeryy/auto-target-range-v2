@@ -261,7 +261,7 @@ class Scheduler:
                 )
             except asyncio.CancelledError:
                 raise
-            except Exception as exc:  # noqa: BLE001 — 单个计划失败不能终止调度器
+            except Exception as exc:
                 await asyncio.to_thread(
                     self.patch,
                     row["id"],
@@ -337,7 +337,7 @@ class Scheduler:
             )
         except asyncio.CancelledError:
             raise
-        except Exception as exc:  # noqa: BLE001 — 一次启动失败不停止其他自动任务
+        except Exception as exc:
             reason = str(getattr(exc, "detail", ""))[:300] or type(exc).__name__
             with self.connect() as db:
                 db.execute(

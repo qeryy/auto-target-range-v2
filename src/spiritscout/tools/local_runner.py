@@ -257,7 +257,7 @@ def run_local_tool(tool: dict[str, Any], args: list[str] | None, *,
                 "unrestored": sorted(set(final) - set(after)) if not clean else [],
                 "diff": {"added": added, "changed": changed, "missing": missing},
             })
-        except Exception as exc:                    # noqa: BLE001 —— 对账失败也要把副本删掉
+        except Exception as exc:
             outcome.setdefault("clean", False)
             outcome["verify_error"] = f"{type(exc).__name__}: {exc}"
         finally:

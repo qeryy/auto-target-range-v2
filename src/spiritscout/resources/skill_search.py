@@ -37,8 +37,7 @@ SYNONYMS = (
 _CORE = frozenset({'web-idor', 'web-sqli', 'web-xss', 'web-ssrf', 'web-authentication',
                    'web-business-logic', 'awdp-source-audit', 'awdp-patch-delivery',
                    'ai-offline-environment'})
-_STOP = frozenset('the a an and or to of in for with when this that is are testing test security '
-                  'please help how can use using 用于 测试 安全 请问 帮我 如何 进行 一个 这个'.split())
+_STOP = frozenset(['the', 'a', 'an', 'and', 'or', 'to', 'of', 'in', 'for', 'with', 'when', 'this', 'that', 'is', 'are', 'testing', 'test', 'security', 'please', 'help', 'how', 'can', 'use', 'using', '用于', '测试', '安全', '请问', '帮我', '如何', '进行', '一个', '这个'])
 
 
 def normalize(value: str) -> str:

@@ -1,10 +1,9 @@
 """Regression checks for the Windows desktop packaging boundary."""
 from __future__ import annotations
 
-import unittest
 import tomllib
+import unittest
 from pathlib import Path
-
 
 PACKAGE = Path(__file__).resolve().parents[1]
 

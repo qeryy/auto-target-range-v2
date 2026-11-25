@@ -163,7 +163,7 @@ class MCPRuntime:
             tools = warmed[1] if warmed is not None else await client.start()
             # 这里只确认 MCP 目录可用；浏览器连接由首次实际调用验证。
             return spec, client, tools, ""
-        except Exception as exc:  # noqa: BLE001 —— 不可达：留痕后继续
+        except Exception as exc:
             if client is not None:
                 with contextlib.suppress(Exception):
                     await client.close()
@@ -346,7 +346,7 @@ class MCPRuntime:
                 self._register_mcp(await fut, late=True)
             except asyncio.CancelledError:
                 raise
-            except BaseException:  # noqa: BLE001 —— 单台异常不拖累其余
+            except BaseException:
                 continue
 
     def _call_handler(
@@ -401,7 +401,7 @@ class MCPRuntime:
                         result = await _client.call(_tool, arguments, timeout=_timeout)
                 else:
                     result = await _client.call(_tool, arguments, timeout=_timeout)
-            except Exception as exc:  # noqa: BLE001 —— 归一为工具失败
+            except Exception as exc:
                 return ToolResult(
                     tool=_name,
                     ok=False,

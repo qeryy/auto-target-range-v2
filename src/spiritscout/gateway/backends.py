@@ -47,7 +47,7 @@ async def emit_delta(on_delta: DeltaCallback | None, kind: str, text: str) -> No
         out = on_delta(kind, text)
         if inspect.isawaitable(out):
             await out
-    except Exception:  # noqa: BLE001, S110 —— 前端断连等不应中断模型调用
+    except Exception:
         pass
 
 
@@ -673,7 +673,7 @@ class LiteLLMBackend(ChatBackend):
 
             params = litellm.get_supported_openai_params(
                 model=model, custom_llm_provider="anthropic") or []
-        except Exception:  # noqa: BLE001 —— 探测失败不阻断调用，按透传处理
+        except Exception:
             return False
         return "reasoning_effort" in params
 

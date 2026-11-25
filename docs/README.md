@@ -20,8 +20,8 @@
 - 本批原生桌面迁移见 [v1.3.0 更新日志](../CHANGELOG.md#130---2026-11-24)。
 
 安装与使用见 [中文 README](../README.md) / [English README](../README_EN.md)，模型依赖、浏览器、MCP 与备份见 [部署与配置](部署与配置.md)。
-提交与版本规则见 [贡献指南](../CONTRIBUTING.md)，AI 编码约定见 [AGENTS.md](../AGENTS.md)，
-项目自身漏洞按 [安全策略](../SECURITY.md) 私密报告；各专题中的旧行号以代码搜索结果为准。
+提交与版本规则见 [贡献指南](../.github/CONTRIBUTING.md)，AI 编码约定见 [AGENTS.md](../AGENTS.md)，
+项目自身漏洞按 [安全策略](../.github/SECURITY.md) 私密报告；各专题中的旧行号以代码搜索结果为准。
 
 定时计划、后台 Shell 条件等待与会话控制见 [定时任务与后台 Shell](定时任务与后台Shell.md)。
 

@@ -220,7 +220,7 @@ async def run_collection(manager: Any, campaign: dict[str, Any], running: Any) -
             observed_target = observation.get("arguments", {}).get("url", "")
             item_host = urlsplit(item.value if "://" in item.value else "//" + item.value).hostname
             observed_host = urlsplit(observed_target).hostname
-            http_evidence_matches = report or observation.get("tool") == "http_probe" and item_host == observed_host
+            http_evidence_matches = report or (observation.get("tool") == "http_probe" and item_host == observed_host)
             observed_status = item.http_status if report else parsed.get("status_code")
             # 只对结构化命令报告/HTTP 工具证据标注存活，不从 stdout 正则猜状态码。
             source = item.response_source if report else parsed.get("response_source", "")
@@ -491,7 +491,7 @@ async def run_collection(manager: Any, campaign: dict[str, Any], running: Any) -
             if name == "http_probe" and isinstance(arguments.get("url"), str):
                 parsed = result.parsed
                 status = parsed.get("status_code")
-                if parsed.get("http_failure") or isinstance(status, int) and 200 <= status <= 599:
+                if parsed.get("http_failure") or (isinstance(status, int) and 200 <= status <= 599):
                     register_item(CollectedAsset(value=arguments["url"], asset_type="url", evidence_ref=ref,
                         source="HTTP 实测", title=str(parsed.get("title") or ""), url=arguments["url"]), ref)
             elif name == "dns_resolve" and result.ok and not result.parsed.get("proxy_virtual"):

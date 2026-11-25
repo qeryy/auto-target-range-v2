@@ -149,7 +149,7 @@ class CompetitionEngine:
         """赛况实时监控骨架：排名/分数/解题状态 → 事件。"""
         try:
             board = await fetcher()
-        except Exception as exc:  # noqa: BLE001 —— 榜单故障不阻断比赛
+        except Exception as exc:
             self.audit.log("competition.scoreboard_error", "competition_engine",
                            {"error": str(exc)[:200]})
             return {}

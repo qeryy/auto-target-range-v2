@@ -183,7 +183,7 @@ class MasterPlanning:
                     provisioned = (await platform.ensure_instance(challenge)
                                    if platform.owns(str(challenge.get("id") or ""))
                                    else challenge)
-                except Exception as exc:  # noqa: BLE001 —— 平台故障不连坐其他节点
+                except Exception as exc:
                     ctx.audit.log("platform.fact", self.agent_id, {
                         "action": "ensure_error",
                         "challenge": str(challenge.get("id") or ""),
@@ -262,7 +262,7 @@ class MasterPlanning:
             facts = extra.get("platform_facts") or []
             try:
                 summary = platform.summary()
-            except Exception:  # noqa: BLE001 —— 摘要失败不阻断复盘
+            except Exception:
                 summary = {}
             view["platform"] = {"summary": summary,
                                 "recent": [dict(f) for f in facts][-8:]}
@@ -648,7 +648,7 @@ class MasterPlanning:
                 return None            # 全部不可调度：视为规划失败，回退规则
             data["dag_nodes"] = nodes
             return data
-        except Exception as exc:  # noqa: BLE001 —— 规划失败回退规则规划（留痕备查）
+        except Exception as exc:
             assert self.ctx.audit is not None
             self.ctx.audit.log("llm.plan_failed", self.agent_id, {
                 "round": state["round_no"], "error": str(exc)[:300]})
@@ -969,7 +969,7 @@ class MasterPlanning:
                                       record, updated_by=self.agent_id)
             self.ctx.audit.log("secretary.decided", self.agent_id, record)
             return final
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             self.ctx.audit.log("secretary.failed", "secretary", {"error": str(exc)[:300]})
             return data
 
@@ -1106,7 +1106,7 @@ class MasterPlanning:
             if isinstance(data, dict):
                 data = await self._consult_secretary(data, payload)
             return data
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             # 复盘失败必须留痕：静默回退会让「规则收敛」冒充模型决策，
             # 审计里只剩 llm_reason 为空，无从追查复盘为何未应答
             assert self.ctx.audit is not None

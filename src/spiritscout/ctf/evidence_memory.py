@@ -133,7 +133,7 @@ def execute(state: dict[str, Any], args: dict[str, Any], *, memory_key: str = 'n
                 qualifiers['recorded_in'] = dict(recorded_in)
         sources = item.get('sources', [])
         if (not isinstance(sources, list) or len(sources) > 4
-                or kind in ('fact', 'rejected') and not sources):
+                or (kind in ('fact', 'rejected') and not sources)):
             return fail('fact/rejected 需要 1–4 个原始工具来源；hypothesis 可暂不引用')
         checked = []
         for source in sources:
@@ -147,7 +147,7 @@ def execute(state: dict[str, Any], args: dict[str, Any], *, memory_key: str = 'n
             observation = message.get(observation_key) or {}
             if (message.get('role') != 'tool' or not observation
                     or observation.get('tool') in {'evidence_memory', 'note', 'blackboard_write'}
-                    or normal and observation.get('tool') in {'blackboard_read', 'graph_read', 'report_discovery'}):
+                    or (normal and observation.get('tool') in {'blackboard_read', 'graph_read', 'report_discovery'})):
                 return fail('只能引用当前路线的原始工具观察，不能引用助手或笔记')
             if kind == 'fact' and not observation.get('ok'):
                 return fail('失败的工具观察可用于假设或排除路径，不能标作成功事实')

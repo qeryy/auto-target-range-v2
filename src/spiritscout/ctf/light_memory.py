@@ -138,9 +138,9 @@ def validate_history_args(args: dict[str, Any]) -> str | None:
     if (view not in ('index', 'message', 'content', 'output') or type(offset) is not int or offset < 0
             or type(length) is not int or not 1 <= length <= 4000
             or type(limit) is not int or not 1 <= limit <= 20
-            or query is not None and (not isinstance(query, str) or not 1 <= len(query) <= 200)
-            or digest is not None and (not isinstance(digest, str) or len(digest) != 64
-                                      or any(c not in '0123456789abcdef' for c in digest))):
+            or (query is not None and (not isinstance(query, str) or not 1 <= len(query) <= 200))
+            or (digest is not None and (not isinstance(digest, str) or len(digest) != 64
+                                      or any(c not in '0123456789abcdef' for c in digest)))):
         return '需要合法 view、非负 offset、1–4000 的 length、1–20 的 limit、1–200 字的 find 和有效来源指纹'
     return None
 
@@ -329,7 +329,7 @@ def working_snapshot(state: dict[str, Any]) -> dict[str, Any]:
             # 分页来自真实工具结果，不从助手“准备续读”的文字生成下一步。
             pagination = {key: data[key] for key in ('offset', 'next_offset', 'next_address', 'has_more')
                           if type(data.get(key)) in (int, bool) or
-                          isinstance(data.get(key), str) and len(data[key]) <= 80}
+                          (isinstance(data.get(key), str) and len(data[key]) <= 80)}
             if pagination:
                 item['pagination'] = pagination
         rows.append(item)

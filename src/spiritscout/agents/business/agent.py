@@ -305,7 +305,7 @@ class BusinessContextAgent(SubAgent):
                 tools=self._tool_schemas(deferred=True), tool_choice="auto",
                 preserve_context=True, on_delta=emitter,
                 reasoning_effort=self.task_effort(task))
-        except Exception as exc:  # noqa: BLE001 —— 决策不可用如实报给路线
+        except Exception as exc:
             emitter.flush()
             self.ctx.audit.log("llm.step_fallback", self.agent_id, {
                 "role": "business_explorer", "error": str(exc)[:200]})
@@ -457,7 +457,7 @@ class BusinessContextAgent(SubAgent):
                                     if key in res.parsed and not res.ok})
                 if res.ok and name.endswith("browser_navigate"):
                     self._track_page(task, str((args or {}).get("url") or ""))
-        except Exception as exc:  # noqa: BLE001 —— 工具异常转结果回灌自纠
+        except Exception as exc:
             ok, text = False, f"工具调用异常: {type(exc).__name__}: {exc}"
         self.ctx.audit.log("agent.tool_result", self.agent_id, {
             "id": call.get("id") or "", "name": name, **event_scope, "ok": ok, "note": result_meta.get("skill", {}).get("note") or text[:300], **result_meta})
@@ -473,7 +473,7 @@ class BusinessContextAgent(SubAgent):
             missing = []
             for key in parameters.get("required") or []:
                 value = args.get(key)
-                if key not in args or value is None or isinstance(value, str) and not value.strip():
+                if key not in args or value is None or (isinstance(value, str) and not value.strip()):
                     missing.append(str(key))
             return missing
         return []

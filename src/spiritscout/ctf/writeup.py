@@ -115,7 +115,7 @@ def build_digest(
         if "dag_snapshot" in data:
             continue
         t = data.get("task", {})
-        if not t or current_ids and t.get("task_id") not in current_ids:
+        if not t or (current_ids and t.get("task_id") not in current_ids):
             continue
         tasks.append({
             "task_id": t.get("task_id"),
@@ -190,7 +190,7 @@ async def writeup_body(
                 # 100 秒+，占收尾等待的大头）
                 reasoning_effort="low",
             )
-        except Exception as exc:  # noqa: BLE001 —— 写作失败不影响已完成的解题任务
+        except Exception as exc:
             audit.log("report.writeup", "master",
                       {"result": "failed", "error": str(exc)[:200]})
             return None

@@ -67,10 +67,10 @@ def resolve_ref(bb: Any, ref: str, *, asset: bool = False, exploration: bool = F
         raise ValueError('图引用必须为 layer:record_id，可附 @version')
     layer = BlackboardLayer(layer_name)
     row = bb.read_versioned(layer, key)
-    if not row or sep and (not version.isdigit() or int(version) != row[1]):
+    if not row or (sep and (not version.isdigit() or int(version) != row[1])):
         raise ValueError('图引用不存在或版本已变化，请重新查询')
-    if asset and not (layer == BlackboardLayer.ASSET or layer == BlackboardLayer.TOPOLOGY
-                      and row[0].get('kind') == 'finding' and row[0].get('type') == 'asset'):
+    if asset and not (layer == BlackboardLayer.ASSET or (layer == BlackboardLayer.TOPOLOGY
+                      and row[0].get('kind') == 'finding' and row[0].get('type') == 'asset')):
         raise ValueError('asset_refs 只能引用资产记录')
     if exploration and (layer != BlackboardLayer.TOPOLOGY or row[0].get('kind') != 'exploration'):
         raise ValueError('parent_refs 只能引用探索节点')
@@ -180,7 +180,7 @@ def execute(bb: Any, name: str, args: dict[str, Any], *, actor: str,
     if node_type not in KINDS or state not in STATES or not isinstance(text, str) or not text.strip():
         raise ValueError('探索节点需要合法 node_type、state 和非空 text')
     reason = args.get('reason', '')
-    if not isinstance(reason, str) or state in {'blocked', 'refuted', 'exhausted'} and not reason.strip():
+    if not isinstance(reason, str) or (state in {'blocked', 'refuted', 'exhausted'} and not reason.strip()):
         raise ValueError('阻塞、反驳和走不通的分支必须保留原因')
     key = args.get('record_id')
     if key is not None and (not isinstance(key, str) or not key.strip()):

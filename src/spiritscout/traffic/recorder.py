@@ -11,9 +11,10 @@ import sqlite3
 import threading
 import time
 import weakref
+from collections.abc import Iterator
 from contextlib import contextmanager, nullcontext
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any
 from urllib.parse import parse_qsl, unquote, urlencode, urlsplit, urlunsplit
 
 import httpx

@@ -9,13 +9,13 @@
 
 **简体中文 · [English](README_EN.md)**
 
-[![Version](https://img.shields.io/badge/version-v1.3.0-2563eb?style=flat-square)](CHANGELOG.md) [![Python](https://img.shields.io/badge/Python-3.11%2B-3776ab?style=flat-square)](pyproject.toml) [![CI](https://github.com/FLIAZ/SpiritScout/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/FLIAZ/SpiritScout/actions/workflows/ci.yml) [![License](https://img.shields.io/badge/license-Apache--2.0-16a34a?style=flat-square)](LICENSE)
+[![Version](https://img.shields.io/badge/version-v1.3.0-2563eb?style=flat-square)](CHANGELOG.md) [![Python](https://img.shields.io/badge/Python-3.11%2B-3776ab?style=flat-square)](pyproject.toml) [![CI](https://github.com/qzuser/auto-target-range-v2/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/qzuser/auto-target-range-v2/actions/workflows/ci.yml) [![License](https://img.shields.io/badge/license-Apache--2.0-16a34a?style=flat-square)](LICENSE)
 
 [快速开始](#快速开始) · [三种模式](#三种模式) · [界面](#界面) · [工作原理](#工作原理) · [配置参考](#配置参考) · [常见问题](#常见问题) · [部署指南](docs/部署与配置.md)
 
 </div>
 
-> 仅用于已获授权的测试目标与赛事。任务范围的界定方式、审批策略与数据落点见 [数据与使用边界](#数据与使用边界) 与 [安全策略](SECURITY.md)。
+> 仅用于已获授权的测试目标与赛事。任务范围的界定方式、审批策略与数据落点见 [数据与使用边界](#数据与使用边界) 与 [安全策略](.github/SECURITY.md)。
 
 > **1.3.0 架构迁移**：产品核心已合并官方 `v0.22.0` 的资产情报、假设驱动扫描、
 > 后台任务、会话工作台和阅读组件；Windows 端已切换为 SaltUI/Compose 原生桌面，
@@ -23,7 +23,7 @@
 
 ## 项目结构与根目录
 
-仓库根固定为 `D:\Projects\spiritscout`。不再保留 `SpiritScout\` 子目录。
+采用**单根布局**：源码、桌面端和打包目录都直接在仓库根下，不再有 `SpiritScout\` 子目录。
 
 | 路径 | 作用 |
 | --- | --- |
@@ -42,8 +42,9 @@
 根目录其余文件都是标准入口或构建元数据：`pyproject.toml` / `uv.lock` 管 Python，
 `frontend/package.json` / `frontend/vite.config.mts` 管前端构建，`deploy.py`、Dockerfile 和 Compose
 文件负责容器部署，`launch.*`、`install.sh`、`start-local.ps1`、`启动服务.cmd`
-是本机启动入口。`LICENSE`、`CHANGELOG.md`、`CONTRIBUTING.md`、`SECURITY.md`、
-`CODE_OF_CONDUCT.md` 保持根目录标准位置。
+是本机启动入口。`LICENSE`、`CHANGELOG.md` 保持根目录标准位置；
+社区文件（`CONTRIBUTING.md`、`SECURITY.md`、`CODE_OF_CONDUCT.md`、`CONTRIBUTORS.md`）
+统一放在 `.github/`，GitHub 会从那里读取。
 
 ## 它是什么
 
@@ -133,8 +134,8 @@
 需要 **Linux 容器模式**和 **Docker Compose 2.20+**。Windows 用 Docker Desktop，Linux 用 Docker Engine；macOS / ARM64 的兼容待开发。
 
 ```bash
-git clone https://github.com/FLIAZ/SpiritScout.git
-cd SpiritScout
+git clone https://github.com/qzuser/auto-target-range-v2.git
+cd auto-target-range-v2
 python deploy.py up
 ```
 
@@ -211,7 +212,8 @@ launch.cmd
 开发运行：
 
 ```powershell
-$env:JAVA_HOME = 'C:\Program Files\Microsoft\jdk-21.0.12.101-hotspot'
+# 需要 JDK 21（desktop/build.gradle.kts 里是 jvmToolchain(21)）
+$env:JAVA_HOME = '<你的 JDK 21 安装目录>'
 .\desktop\gradlew.bat -p .\desktop run
 ```
 
@@ -535,16 +537,16 @@ Docker 用 `python deploy.py migrate`；手工迁移时停服 → 拷 `.spiritsc
 
 ## 文档与贡献
 
-当前代码版本 **v1.3.0**。版本唯一来源、递增规则与历史说明见 [版本管理](CONTRIBUTING.md#版本管理)。
+当前代码版本 **v1.3.0**。版本唯一来源、递增规则与历史说明见 [版本管理](.github/CONTRIBUTING.md#版本管理)。
 
 | 我想了解 | 阅读入口 |
 | --- | --- |
 | 安装、模型、浏览器、迁移与备份 | [部署与配置](docs/部署与配置.md) |
 | 架构、执行流程和代码位置 | [项目文档索引](docs/README.md) |
 | 核心算法与技术实现 | [核心算法与技术实现](docs/05-核心算法与技术实现.md) |
-| 修复问题或提交新功能 | [贡献指南](CONTRIBUTING.md) · [Agent 工作约定](AGENTS.md) |
+| 修复问题或提交新功能 | [贡献指南](.github/CONTRIBUTING.md) · [Agent 工作约定](AGENTS.md) |
 | 版本变化与兼容修复 | [更新日志](CHANGELOG.md) |
-| 私密报告项目自身漏洞 | [安全策略](SECURITY.md) |
+| 私密报告项目自身漏洞 | [安全策略](.github/SECURITY.md) |
 
 ## 许可与使用约定
 
@@ -612,7 +614,7 @@ Docker 用 `python deploy.py migrate`；手工迁移时停服 → 拷 `.spiritsc
 ## 致谢
 
 <details>
-<summary>知识库、参考项目、MCP、SKILL 源及用户</summary>
+<summary>知识库、参考项目、MCP 与 SKILL 来源</summary>
 
 ### 知识库数据来源
 
@@ -646,20 +648,15 @@ Docker 用 `python deploy.py migrate`；手工迁移时停服 → 拷 `.spiritsc
 - [anthropics/skills](https://github.com/anthropics/skills)
 - [VoltAgent/awesome-agent-skills](https://github.com/VoltAgent/awesome-agent-skills)
 
-### 用户
-
-- [@BProbie](https://github.com/BProbie)：修正文档格式
-- [@k1ne](https://github.com/k1ne7)：多平台兼容功能
-- [@neko](https://github.com/neko-11451)：对登录页的前端美化
 
 </details>
 
 ## Star History
 
-<a href="https://www.star-history.com/?repos=fliaz%2Fspiritscout&type=date&legend=top-left">
+<a href="https://www.star-history.com/?repos=qzuser%2Fauto-target-range-v2&type=date&legend=top-left">
  <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=fliaz/spiritscout&type=date&theme=dark&legend=top-left" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=fliaz/spiritscout&type=date&theme=light&legend=top-left" />
-   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=fliaz/spiritscout&type=date&legend=top-left" />
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=qzuser/auto-target-range-v2&type=date&theme=dark&legend=top-left" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=qzuser/auto-target-range-v2&type=date&theme=light&legend=top-left" />
+   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=qzuser/auto-target-range-v2&type=date&legend=top-left" />
  </picture>
 </a>

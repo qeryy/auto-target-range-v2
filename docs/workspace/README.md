@@ -58,9 +58,9 @@ py -3.11 -m venv .venv
 不要再拿 `copy system.example.yaml system.yaml` 覆盖它——example 是带注释的最小模板，
 覆盖会冲掉本机 MCP 名单和沙箱后端设置，两份的差异见下一节。
 
-模型注册表 `configs/models.yaml` 不在仓库里，缺了服务照样起（[`src/spiritscout/web/modelcfg.py:81`](src/spiritscout/web/modelcfg.py#L81)
+模型注册表 `configs/models.yaml` 不在仓库里，缺了服务照样起（[`src/spiritscout/web/modelcfg.py:81`](../../src/spiritscout/web/modelcfg.py#L81)
 对不存在的文件直接返回空列表），但开工会被拦：注册表为空时会话不启动并提示「请先配置至少一个模型」
-（[`src/spiritscout/web/sessions.py:811`](src/spiritscout/web/sessions.py#L811)）。
+（[`src/spiritscout/web/sessions.py:811`](../../src/spiritscout/web/sessions.py#L811)）。
 在 Web「模型」页加供应商即可，程序会自己把这个文件写出来。
 同目录的 `agent_models.yaml`（按 Agent 指派模型）**没有 `.example` 模板**，别被「从 example 复制」的习惯带偏：
 它由 Web「编队」页维护，手工写 `assignments: {}` 与 `naming:` 即可，缺了只是全跟随档位路由。
@@ -155,7 +155,7 @@ lms server start; lms load qwen3.5-9b --context-length 16384 --parallel 1
 开发运行：
 
 ```powershell
-$env:JAVA_HOME = 'C:\Program Files\Microsoft\jdk-21.0.12.101-hotspot'
+$env:JAVA_HOME = '<你的 JDK 21 安装目录>'   # 需要 JDK 21
 .\desktop\gradlew.bat -p .\desktop run
 ```
 
@@ -173,20 +173,20 @@ Windows SmartScreen 对未签名程序仍可能显示“发布者未知”，这
 
 ## 两份 system 配置：为什么不是简单地「照 example 覆盖」
 
-仓库同时提交 [`configs/system.yaml`](configs/system.yaml)（本机现行）
-和 [`system.example.yaml`](configs/system.example.yaml)（上游最小模板）。
+仓库同时提交 [`configs/system.yaml`](../../configs/system.yaml)（本机现行）
+和 [`system.example.yaml`](../../configs/system.example.yaml)（上游最小模板）。
 把两份按 `段.键` 摊平到叶子（列表按下标展开）分别是 108 与 98 个键。
 两者有意保留差异，diff 一遍的结果记在这里：
 
 | 只在哪份里写出 | 键 | 影响 |
 | --- | --- | --- |
-| 只有 `system.yaml` | `executor.sandbox_backend: auto` | 代码默认也是 `auto`（[`settings.py:129`](src/spiritscout/config/settings.py#L129)），写出来是为了看得见；不写不会变行为 |
-| 只有 `system.yaml` | `ida`、`yakit` 两个 MCP 服务，以及每个服务的 `transport`/`timeout` | example 里没有这两项，覆盖即失去逆向与 Yakit 工具；就算手工搬过去，`timeout` 不写会退回 180 秒默认（[`settings.py:190`](src/spiritscout/config/settings.py#L190)），`ida` 分析大型二进制要 600 秒 |
-| 只有 `example` | `bus.connect_timeout_seconds`、`bus.namespace`、`bus.redis_url_env`、`bus.shared_request_rps` | 四个都有同名代码默认且数值与 example 一致（[`settings.py:82-85`](src/spiritscout/config/settings.py#L82)），现行配置不缺功能 |
-| 只有 `example` | `web.admin_username_env`、`web.admin_password_env` | 同上，[`settings.py:165-168`](src/spiritscout/config/settings.py#L165) 的默认就是这两个环境变量名 |
+| 只有 `system.yaml` | `executor.sandbox_backend: auto` | 代码默认也是 `auto`（[`settings.py:129`](../../src/spiritscout/config/settings.py#L129)），写出来是为了看得见；不写不会变行为 |
+| 只有 `system.yaml` | `ida`、`yakit` 两个 MCP 服务，以及每个服务的 `transport`/`timeout` | example 里没有这两项，覆盖即失去逆向与 Yakit 工具；就算手工搬过去，`timeout` 不写会退回 180 秒默认（[`settings.py:190`](../../src/spiritscout/config/settings.py#L190)），`ida` 分析大型二进制要 600 秒 |
+| 只有 `example` | `bus.connect_timeout_seconds`、`bus.namespace`、`bus.redis_url_env`、`bus.shared_request_rps` | 四个都有同名代码默认且数值与 example 一致（[`settings.py:82-85`](../../src/spiritscout/config/settings.py#L82)），现行配置不缺功能 |
+| 只有 `example` | `web.admin_username_env`、`web.admin_password_env` | 同上，[`settings.py:165-168`](../../src/spiritscout/config/settings.py#L165) 的默认就是这两个环境变量名 |
 
 一个容易踩的默认值差异：`mcp_servers[].risk_by_action` 的**代码默认是 `False`**
-（[`settings.py:192`](src/spiritscout/config/settings.py#L192)），example 却给 playwright/chrome 显式写了 `true`。
+（[`settings.py:192`](../../src/spiritscout/config/settings.py#L192)），example 却给 playwright/chrome 显式写了 `true`。
 `system.yaml` 里 playwright/chrome 同样写了 `true`，所以两者一致；但 `ida`/`yakit` 没写，走 `False`。
 `yakit` 靠 `default_risk: intrusive` 兜住危险审批，`ida` 是只读工具，均无需改。
 要在别的 MCP 服务上拿到「逐次声明本次行为」的审批，必须显式写 `risk_by_action: true`，不能指望默认。
@@ -208,7 +208,7 @@ Release 上按需取：
 `build-desktop.ps1` 再调用 `build-backend-runtime.ps1` 生成 `py\` 与 `configs\`，
 用 Gradle staging 和 JDK 21 `jpackage` 生成 `SpiritScout.exe`，最后压成
 `dist\windows\desktop\SpiritScout-<版本>-windows-x64.zip`。细节见
-[`docs/原生桌面端.md`](docs/原生桌面端.md)。
+[`docs/原生桌面端.md`](../原生桌面端.md)。
 
 直接运行后端时用 `python -m spiritscout --port 8010`；`--config` 与模型注册表按当前工作目录
 解析，从仓库外安装时需要显式传 `--config` 指向你自己的 `system.yaml`。
@@ -220,10 +220,10 @@ Release 上按需取：
 - 管理员密码只保存 scrypt 加盐哈希（工作区 `admin.db`），明文不进命令行、不进日志；
   `admin.db` / `auth.key` 连同 `vault.*` 都在打包时被清掉，出厂包不含任何凭据。
 - Web 控制台默认只绑 `127.0.0.1`；非回环绑定且未启用管理员认证时拒绝启动，
-  判据见 [`src/spiritscout/web/app.py:61`](src/spiritscout/web/app.py#L61)。
-- 只在你自己有授权的靶标上使用。完整条款见 [SECURITY.md](SECURITY.md)
+  判据见 [`src/spiritscout/web/app.py:61`](../../src/spiritscout/web/app.py#L61)。
+- 只在你自己有授权的靶标上使用。完整条款见 [SECURITY.md](../../.github/SECURITY.md)
   与上游 README 的「许可与使用约定」。
 
 ## 许可
 
-Apache-2.0，版权归上游项目所有，见 [LICENSE](LICENSE)。
+Apache-2.0，版权归上游项目所有，见 [LICENSE](../../LICENSE)。
