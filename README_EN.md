@@ -272,7 +272,7 @@ python -m spiritscout.resources.skill_sync import skills
 `__version__` (and fails loudly on a mismatch), renders a fresh experience digest with
 `python -m spiritscout.knowledge.digest`, builds the wheel and sdist with
 `python -m build`, creates the repository zip with `git archive` and appends the digest
-to it, installs the wheel into a clean venv to verify `web/static/js/count.js` and
+to it, installs the wheel into a clean venv to verify `web/static/js/core.js` and
 `knowledge/data/experience.json` really shipped, then attaches all three plus
 `SHA256SUMS` to the same-named release. You can also run it by hand:
 *Actions → 打包并发布 → Run workflow* with an existing tag.

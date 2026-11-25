@@ -330,7 +330,7 @@ python -m spiritscout.resources.skill_sync import skills   # 从解开的 zip / 
 核对 tag 与 `__version__` 是否一致（不一致直接失败）、用
 `python -m spiritscout.knowledge.digest` 现算一份经验摘要、`python -m build` 出
 wheel 与 sdist、`git archive` 打整仓 zip 并把摘要塞进去、再装进干净 venv 验证
-`web/static/js/count.js` 和 `knowledge/data/experience.json` 真在包里。完整桌面版
+`web/static/js/core.js` 和 `knowledge/data/experience.json` 真在包里。完整桌面版
 在 Windows 任务里通过 Compose/jpackage 打包，两边产物汇到
 最后一并算 `SHA256SUMS` 再附到同名 Release。没打 tag 也能出包：Actions 页面选
 「打包并发布」→ Run workflow，填一个已存在的 tag 即可。
