@@ -5,6 +5,8 @@ import io
 import tarfile
 import tempfile
 import unittest
+
+from _platform import CAN_SYMLINK
 import zipfile
 from pathlib import Path
 from types import SimpleNamespace
@@ -164,6 +166,7 @@ class PatchTests(unittest.TestCase):
             with self.subTest(raw=raw), self.assertRaises(ValueError):
                 self.validate(raw)
 
+    @unittest.skipUnless(CAN_SYMLINK, "本机无法创建符号链接（Windows 需管理员或开发者模式）")
     def test_archive_symlinks_and_artifact_directory_symlinks_are_rejected(self) -> None:
         real = self.archive.with_name("real.tar.gz")
         self.archive.rename(real)

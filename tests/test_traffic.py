@@ -7,6 +7,8 @@ import sqlite3
 import tempfile
 import time
 import unittest
+
+from _platform import CAN_SYMLINK
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -238,6 +240,7 @@ class TrafficTests(unittest.IsolatedAsyncioTestCase):
 
 
 class TrafficAPITests(unittest.TestCase):
+    @unittest.skipUnless(CAN_SYMLINK, "本机无法创建符号链接（Windows 需管理员或开发者模式）")
     def test_project_classification_validation_isolation_and_no_store(self):
         with tempfile.TemporaryDirectory() as temp:
             sessions = []

@@ -1005,9 +1005,9 @@ class ResourceStore:
                 in (
                     row["skill_id"]
                     + " "
-                    + row.get("description", "")
+                    + (row.get("description") or "")
                     + " "
-                    + row.get("domain", "")
+                    + (row.get("domain") or "")
                 ).casefold()
                 for word in words
             )

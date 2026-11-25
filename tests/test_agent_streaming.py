@@ -5,6 +5,8 @@ import asyncio
 import tempfile
 import time
 import unittest
+
+from _platform import CAN_SYMLINK
 from datetime import UTC
 from pathlib import Path
 from types import SimpleNamespace
@@ -568,6 +570,7 @@ class AgentStreamingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(transition.call_args.kwargs["state"], "blocked")
         self.assertEqual(transition.call_args.kwargs["outcome"], "prerequisite_missing")
 
+    @unittest.skipUnless(CAN_SYMLINK, "本机无法创建符号链接（Windows 需管理员或开发者模式）")
     def test_recon_html_publishes_exact_cross_origin_scripts_as_readonly_assets(self) -> None:
         from spiritscout.agents.recon.agent import ReconAgent
         from spiritscout.core.models import Scope

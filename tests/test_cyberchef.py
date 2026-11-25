@@ -9,6 +9,8 @@ import json
 import os
 import tempfile
 import unittest
+
+from _platform import CAN_SYMLINK
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
@@ -44,6 +46,7 @@ class _NoCLI(ToolExecutor):
 
 
 class CyberChefInputTests(unittest.TestCase):
+    @unittest.skipUnless(CAN_SYMLINK, "本机无法创建符号链接（Windows 需管理员或开发者模式）")
     def test_file_ranges_and_scope_do_not_normalise_input(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

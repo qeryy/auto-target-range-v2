@@ -31,7 +31,7 @@ class PickerError(RuntimeError):
 def available() -> bool:
     """本机能不能弹原生对话框（tkinter 可导入即可，不真的开窗口）。"""
     try:
-        pass
+        import tkinter  # noqa: F401 —— 只探测可导入性，不实际使用
     except Exception:
         return False
     return True

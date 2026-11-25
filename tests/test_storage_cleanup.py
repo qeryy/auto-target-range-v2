@@ -7,6 +7,8 @@ import sqlite3
 import tempfile
 import threading
 import unittest
+
+from _platform import CAN_SYMLINK
 from contextlib import closing
 from pathlib import Path
 from types import SimpleNamespace
@@ -123,6 +125,7 @@ class DatabaseCleanupTests(unittest.TestCase):
             self.assertLessEqual(conn.execute("SELECT COUNT(*) FROM runtime_checkpoints").fetchone()[0], 32)
         self.assertEqual(self.journal.latest_checkpoint("ctf_conversation", "a")["state"]["messages"], list(range(90)))
 
+    @unittest.skipUnless(CAN_SYMLINK, "本机无法创建符号链接（Windows 需管理员或开发者模式）")
     def test_symlink_cache_and_database_are_not_followed(self) -> None:
         outside = self.root / "outside"
         outside.mkdir()

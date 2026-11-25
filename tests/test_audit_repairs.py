@@ -9,6 +9,8 @@ import os
 import sys
 import tempfile
 import unittest
+
+from _platform import CAN_SYMLINK
 import zlib
 from pathlib import Path
 from types import SimpleNamespace
@@ -408,6 +410,7 @@ class AuditOwnershipTests(unittest.TestCase):
             finally:
                 bb.close()
 
+    @unittest.skipUnless(CAN_SYMLINK, "本机无法创建符号链接（Windows 需管理员或开发者模式）")
     def test_same_database_aliases_cannot_take_second_lock(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

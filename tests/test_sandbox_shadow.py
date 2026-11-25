@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+
+from _platform import CAN_SYMLINK
 from pathlib import Path
 from unittest.mock import patch
 
@@ -22,6 +24,7 @@ class ShadowRootArgvTests(unittest.TestCase):
             bindings = [argv[i + 1:i + 3] for i, arg in enumerate(argv) if arg == '--dev-bind']
             self.assertEqual(bindings, [['/dev/nvidia0', '/dev/nvidia0'], ['/dev/nvidiactl', '/dev/nvidiactl']])
 
+    @unittest.skipUnless(CAN_SYMLINK, "本机无法创建符号链接（Windows 需管理员或开发者模式）")
     def test_cuda_discovery_rejects_regular_files_and_symlinks(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

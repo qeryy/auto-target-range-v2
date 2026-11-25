@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+
+from _platform import CAN_SYMLINK
 from pathlib import Path
 from unittest.mock import patch
 
@@ -69,6 +71,7 @@ class CoverageTests(unittest.TestCase):
         self.explore(evidence_refs=['vuln:claim'])
         self.assertEqual(read_coverage(self.root, status='confirmed')['total'], 0)
 
+    @unittest.skipUnless(CAN_SYMLINK, "本机无法创建符号链接（Windows 需管理员或开发者模式）")
     def test_evidence_file_boundary_and_credential_private(self) -> None:
         self.bb.write(BlackboardLayer.CREDENTIAL, 'private', {'password': 'not-public'}, updated_by='master')
         self.assertEqual(read_evidence(self.root, 'credential:private')['state'], 'restricted')

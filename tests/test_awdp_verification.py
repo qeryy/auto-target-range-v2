@@ -8,6 +8,8 @@ import socket
 import tarfile
 import tempfile
 import unittest
+
+from _platform import CAN_SYMLINK
 import zipfile
 from pathlib import Path
 from types import SimpleNamespace
@@ -50,6 +52,7 @@ class Normal(unittest.TestCase):
 from pathlib import Path
 from app import handle
 class Boundary(unittest.TestCase):
+    @unittest.skipUnless(CAN_SYMLINK, "本机无法创建符号链接（Windows 需管理员或开发者模式）")
     def test_boundaries(self):
         root = Path.cwd()
         (root/'public/link.txt').symlink_to('../secret.txt')
