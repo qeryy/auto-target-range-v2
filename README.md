@@ -9,7 +9,7 @@
 
 **简体中文 · [English](README_EN.md)**
 
-[![Version](https://img.shields.io/badge/version-v1.3.0-2563eb?style=flat-square)](CHANGELOG.md) [![Python](https://img.shields.io/badge/Python-3.11%2B-3776ab?style=flat-square)](pyproject.toml) [![CI](https://github.com/qzuser/auto-target-range-v2/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/qzuser/auto-target-range-v2/actions/workflows/ci.yml) [![License](https://img.shields.io/badge/license-Apache--2.0-16a34a?style=flat-square)](LICENSE)
+[![Version](https://img.shields.io/badge/version-v1.3.1-2563eb?style=flat-square)](CHANGELOG.md) [![Python](https://img.shields.io/badge/Python-3.11%2B-3776ab?style=flat-square)](pyproject.toml) [![CI](https://github.com/qzuser/auto-target-range-v2/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/qzuser/auto-target-range-v2/actions/workflows/ci.yml) [![License](https://img.shields.io/badge/license-Apache--2.0-16a34a?style=flat-square)](LICENSE)
 
 [快速开始](#快速开始) · [三种模式](#三种模式) · [界面](#界面) · [工作原理](#工作原理) · [配置参考](#配置参考) · [常见问题](#常见问题) · [部署指南](docs/部署与配置.md)
 
@@ -258,7 +258,7 @@ launch.cmd --auth password
 ```
   SPIRITSCOUT
   灵枢 · 多智能体安全测试控制台
-  v1.3.0
+  v1.3.1
 
   启动  读取配置…
   启动  装配控制台…
@@ -308,15 +308,15 @@ powershell -ExecutionPolicy Bypass -File packaging\windows\build-desktop.ps1
 
 | 附件 | 带什么 |
 | --- | --- |
-| `spiritscout-1.3.0-py3-none-any.whl` | `pip install` 用：前端静态页面、知识库种子、报告模板、内置安全技能与经验摘要 |
-| `spiritscout-1.3.0.tar.gz` | sdist：整份源码 + 技能文本素材 + 配置模板 + 经验 |
-| `SpiritScout-1.3.0-source.zip` | 整仓源码：代码、`skills/`、`configs/`、`tools/experience-export/`、`docs/workspace/EXPERIENCE.md` |
-| `SpiritScout-1.3.0-windows-x64.zip` | **Windows 原生桌面完整版**：SaltUI/Compose Desktop，内嵌 JRE 与 Python 运行时 |
-| `SpiritScout-1.3.0-windows-x64-backend.zip` | 纯 Python/Web 后端兼容包 |
+| `spiritscout-1.3.1-py3-none-any.whl` | `pip install` 用：前端静态页面、知识库种子、报告模板、内置安全技能与经验摘要 |
+| `spiritscout-1.3.1.tar.gz` | sdist：整份源码 + 技能文本素材 + 配置模板 + 经验 |
+| `SpiritScout-1.3.1-source.zip` | 整仓源码：代码、`skills/`、`configs/`、`tools/experience-export/`、`docs/workspace/EXPERIENCE.md` |
+| `SpiritScout-1.3.1-windows-x64.zip` | **Windows 原生桌面完整版**：SaltUI/Compose Desktop，内嵌 JRE 与 Python 运行时 |
+| `SpiritScout-1.3.1-windows-x64-backend.zip` | 纯 Python/Web 后端兼容包 |
 | `SHA256SUMS` | 上面几个包的校验和，装前先对一遍 |
 
 ```bash
-pip install spiritscout-1.3.0-py3-none-any.whl
+pip install spiritscout-1.3.1-py3-none-any.whl
 spiritscout --help
 ```
 
@@ -545,7 +545,7 @@ Docker 用 `python deploy.py migrate`；手工迁移时停服 → 拷 `.spiritsc
 
 ## 文档与贡献
 
-当前代码版本 **v1.3.0**。版本唯一来源、递增规则与历史说明见 [版本管理](.github/CONTRIBUTING.md#版本管理)。
+当前代码版本 **v1.3.1**。版本唯一来源、递增规则与历史说明见 [版本管理](.github/CONTRIBUTING.md#版本管理)。
 
 | 我想了解 | 阅读入口 |
 | --- | --- |

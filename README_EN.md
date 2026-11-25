@@ -9,7 +9,7 @@ and progress, evidence, and artifacts stay in the same session.
 
 **English · [简体中文](README.md)**
 
-[![Version](https://img.shields.io/badge/version-v1.3.0-2563eb?style=flat-square)](CHANGELOG.md) [![Python](https://img.shields.io/badge/Python-3.11%2B-3776ab?style=flat-square)](pyproject.toml) [![CI](https://github.com/qzuser/auto-target-range-v2/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/qzuser/auto-target-range-v2/actions/workflows/ci.yml) [![License](https://img.shields.io/badge/license-Apache--2.0-16a34a?style=flat-square)](LICENSE)
+[![Version](https://img.shields.io/badge/version-v1.3.1-2563eb?style=flat-square)](CHANGELOG.md) [![Python](https://img.shields.io/badge/Python-3.11%2B-3776ab?style=flat-square)](pyproject.toml) [![CI](https://github.com/qzuser/auto-target-range-v2/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/qzuser/auto-target-range-v2/actions/workflows/ci.yml) [![License](https://img.shields.io/badge/license-Apache--2.0-16a34a?style=flat-square)](LICENSE)
 
 [Quick start](#quick-start) · [Three modes](#three-modes) · [Interface](#interface) · [How it works](#how-it-works) · [Configuration](#configuration) · [FAQ](#faq) · [Deployment guide (中文)](docs/部署与配置.md)
 
@@ -195,7 +195,9 @@ up models, so a fixed delay would either lie or waste time. After that it report
 line every 60 seconds, so you do not need a task manager to know it is alive.
 
 ```
-SpiritScout Web console v1.3.0: http://127.0.0.1:8010  (loopback access, Ctrl+C to stop)
+  SPIRITSCOUT
+  灵枢 · 多智能体安全测试控制台
+  v1.3.1
 
 [就绪] 浏览器可以打开了: http://127.0.0.1:8010
        每 60 秒报一次状态；Ctrl+C 停止
@@ -246,15 +248,15 @@ Prefer a ready-made package over a source checkout? All three artifacts carry th
 
 | Asset | What it ships |
 | --- | --- |
-| `spiritscout-1.3.0-py3-none-any.whl` | installable console, bundled skills and experience digest |
-| `spiritscout-1.3.0.tar.gz` | source distribution with skill text, config templates and experience |
-| `SpiritScout-1.3.0-source.zip` | full repository source |
-| `SpiritScout-1.3.0-windows-x64.zip` | native Windows desktop client with embedded JRE and Python |
-| `SpiritScout-1.3.0-windows-x64-backend.zip` | Python/Web backend portable runtime for compatibility use |
+| `spiritscout-1.3.1-py3-none-any.whl` | installable console, bundled skills and experience digest |
+| `spiritscout-1.3.1.tar.gz` | source distribution with skill text, config templates and experience |
+| `SpiritScout-1.3.1-source.zip` | full repository source |
+| `SpiritScout-1.3.1-windows-x64.zip` | native Windows desktop client with embedded JRE and Python |
+| `SpiritScout-1.3.1-windows-x64-backend.zip` | Python/Web backend portable runtime for compatibility use |
 | `SHA256SUMS` | checksums for the release files above |
 
 ```bash
-pip install spiritscout-1.3.0-py3-none-any.whl
+pip install spiritscout-1.3.1-py3-none-any.whl
 spiritscout --help
 ```
 
@@ -282,7 +284,7 @@ to it, installs the wheel into a clean venv to verify `web/static/js/count.js` a
 ```
   SPIRITSCOUT
   灵枢 · 多智能体安全测试控制台
-  v1.3.0
+  v1.3.1
 
   启动  读取配置…
   启动  装配控制台…
@@ -407,7 +409,7 @@ Use `python deploy.py migrate` for Docker. Manually: stop the service, copy `.sp
 
 ## Docs and contributing
 
-Current code version: **v1.3.0**. The single source of the version, the bump rules, and the history: see [version management (中文)](.github/CONTRIBUTING.md#版本管理).
+Current code version: **v1.3.1**. The single source of the version, the bump rules, and the history: see [version management (中文)](.github/CONTRIBUTING.md#版本管理).
 
 | I want to | Read |
 | --- | --- |
