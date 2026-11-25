@@ -119,9 +119,9 @@ Copy-Item -LiteralPath (Join-Path $repoRoot 'docs\原生桌面端.md') -Destinat
 New-Item -ItemType Directory -Force -Path (Join-Path $appDir 'tools') | Out-Null
 Copy-Item -LiteralPath (Join-Path $repoRoot 'tools\experience-export') -Destination (Join-Path $appDir 'tools\experience-export') -Recurse -Force
 Copy-Item -LiteralPath $TrafficProxy -Destination (Join-Path $appDir 'tools\spiritscout-traffic-proxy.exe') -Force
-Get-ChildItem -LiteralPath (Join-Path $appDir 'tools') -Recurse -Directory -Filter '__pycache__' -ErrorAction SilentlyContinue |
+Get-ChildItem -LiteralPath $appDir -Recurse -Force -Directory -Filter '__pycache__' -ErrorAction SilentlyContinue |
     Remove-Item -Recurse -Force
-Get-ChildItem -LiteralPath (Join-Path $appDir 'tools') -Recurse -File -Filter '*.pyc' -ErrorAction SilentlyContinue |
+Get-ChildItem -LiteralPath $appDir -Recurse -Force -File -Filter '*.pyc' -ErrorAction SilentlyContinue |
     Remove-Item -Force
 Copy-Item -LiteralPath (Join-Path $repoRoot 'desktop\THIRD_PARTY_NOTICES.md') -Destination (Join-Path $appDir 'THIRD_PARTY_NOTICES.md') -Force
 Copy-Item -LiteralPath (Join-Path $repoRoot 'desktop\THIRD_PARTY\SaltUI-LICENSE.txt') -Destination (Join-Path $appDir 'SaltUI-LICENSE.txt') -Force

@@ -124,6 +124,10 @@ def build_parser() -> argparse.ArgumentParser:
                         help="绑定地址（默认取配置 web.host=127.0.0.1）")
     parser.add_argument("--port", type=int, default=None,
                         help="端口（默认取配置 web.port=8000）")
+    parser.add_argument("--desktop-parent-pid", type=int, default=0,
+                        help=argparse.SUPPRESS)
+    parser.add_argument("--desktop-parent-start-ms", type=int, default=None,
+                        help=argparse.SUPPRESS)
     parser.add_argument("--auth", choices=("none", "password"), default=None,
                         help="控制台登录：none=不启用（默认），password=启用管理员登录")
     parser.add_argument("--set-admin-password", action="store_true",
@@ -228,6 +232,12 @@ def main(argv: list[str] | None = None) -> int:
         if hasattr(stream, "reconfigure"):
             stream.reconfigure(encoding="utf-8", errors="backslashreplace")
     args = build_parser().parse_args(args_list)
+    from spiritscout.desktop_lifecycle import install_parent_watchdog
+
+    install_parent_watchdog(
+        parent_pid_override=args.desktop_parent_pid or None,
+        parent_start_ms_override=args.desktop_parent_start_ms,
+    )
     if args.set_admin_password or args.clear_admin_password:
         try:
             _prepare_frozen_runtime()
