@@ -213,6 +213,7 @@ class TrafficTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(self.requests), 1)
         self.assertEqual(recorder.summary(self.root)["total"], 1)
 
+    @unittest.skipUnless(CAN_SYMLINK, "本机无法创建符号链接（Windows 需管理员或开发者模式）")
     async def test_empty_isolation_readonly_and_symlinks(self):
         empty = self.root / "other"
         empty.mkdir()

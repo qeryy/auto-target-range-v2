@@ -12,6 +12,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import httpx
+from _platform import CAN_SYMLINK
 from fastapi import FastAPI
 
 from spiritscout.config.settings import GatewayConfig, ModelEntry
@@ -47,6 +48,7 @@ class ImageTests(unittest.IsolatedAsyncioTestCase):
         (self.root / 'attachments' / '像素.png').write_bytes(b'changed')
         self.assertEqual((self.root / image['path']).read_bytes(), PNG)
 
+    @unittest.skipUnless(CAN_SYMLINK, "本机无法创建符号链接（Windows 需管理员或开发者模式）")
     async def test_symlinks_traversal_text_and_cross_session_paths_are_rejected(self):
         (self.root / 'attachments' / 'link.png').symlink_to(self.root / 'attachments' / '像素.png')
         (self.root / 'attachments' / 'text.png').write_text('<svg onload="evil"/>')

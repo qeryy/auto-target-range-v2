@@ -13,6 +13,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import httpx
+from _platform import CAN_SYMLINK
 
 from spiritscout.core.models import RunMode, Scope
 from spiritscout.ctf.agents import _http_observation, _obs_text
@@ -227,6 +228,7 @@ class HTTPResponseTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(''.join(parts), self.short)
         self.assertEqual(self.requests, 1)
 
+    @unittest.skipUnless(CAN_SYMLINK, "本机无法创建符号链接（Windows 需管理员或开发者模式）")
     async def test_references_are_session_local_and_cannot_traverse(self):
         result = await self.fetch('/short')
         ref = result.parsed['body_ref']

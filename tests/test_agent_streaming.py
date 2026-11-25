@@ -732,6 +732,7 @@ class AgentStreamingTests(unittest.IsolatedAsyncioTestCase):
             await SubAgent._report(agent, task, [route], summary)
             self.assertEqual(len(list_task_reports(workspace)), 1)
 
+    @unittest.skipUnless(CAN_SYMLINK, "本机无法创建符号链接（Windows 需管理员或开发者模式）")
     async def test_src_report_write_failure_does_not_publish_success_or_follow_links(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             workspace = Path(tmp) / "session"

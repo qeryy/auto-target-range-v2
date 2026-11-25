@@ -266,6 +266,7 @@ print('isolated')
             self.assertEqual(followup.stdout, "savedartifact")
             self.assertEqual((root / "bb.db").read_text(), "host-control")
 
+    @unittest.skipUnless(CAN_SYMLINK, "本机无法创建符号链接（Windows 需管理员或开发者模式）")
     async def test_sandbox_rejects_symlink_shared_directory(self) -> None:
         if not sandbox_available():
             self.skipTest("需要 bubblewrap")

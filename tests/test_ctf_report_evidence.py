@@ -8,6 +8,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
+from _platform import CAN_SYMLINK
+
 from spiritscout.blackboard import Blackboard
 from spiritscout.core.audit import NullAuditLogger
 from spiritscout.ctf import report_jobs
@@ -64,6 +66,7 @@ class ReportEvidenceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(json.loads(messages[1]['content'])['technical_evidence'], evidence)
         self.assertEqual(collect_evidence(journal, None, {'other-task'})['executions'], [])
 
+    @unittest.skipUnless(CAN_SYMLINK, "本机无法创建符号链接（Windows 需管理员或开发者模式）")
     async def test_source_symlinks_do_not_read_external_files(self):
         (self.root / 'artifacts').mkdir()
         external = self.root / 'private.py'
