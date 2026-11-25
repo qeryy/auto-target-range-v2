@@ -10,13 +10,12 @@ import sys
 import tarfile
 import tempfile
 import unittest
-
-from _platform import CAN_SYMLINK
 import zipfile
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from _platform import CAN_SYMLINK
 from test_single_executor import context
 
 from spiritscout.awdp.builder import build_patch

@@ -5,12 +5,12 @@ import io
 import tarfile
 import tempfile
 import unittest
-
-from _platform import CAN_SYMLINK
 import zipfile
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
+
+from _platform import CAN_SYMLINK
 
 from spiritscout.awdp.patches import validate_patch
 from spiritscout.core.audit import NullAuditLogger

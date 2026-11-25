@@ -9,11 +9,11 @@ import json
 import os
 import tempfile
 import unittest
-
-from _platform import CAN_SYMLINK
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
+
+from _platform import CAN_SYMLINK
 
 from spiritscout.agents.business.agent import BusinessContextAgent
 from spiritscout.agents.profiles import get_profile

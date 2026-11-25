@@ -9,14 +9,13 @@ import os
 import sys
 import tempfile
 import unittest
-
-from _platform import CAN_SYMLINK
 import zlib
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
 import httpx
+from _platform import CAN_SYMLINK
 from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
 

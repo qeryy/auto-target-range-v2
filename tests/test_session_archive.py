@@ -5,10 +5,9 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest
-
-from _platform import CAN_SYMLINK
 from pathlib import Path
 
+from _platform import CAN_SYMLINK
 from fastapi.testclient import TestClient
 
 from spiritscout.blackboard import Blackboard

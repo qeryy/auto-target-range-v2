@@ -7,13 +7,12 @@ import sqlite3
 import tempfile
 import threading
 import unittest
-
-from _platform import CAN_SYMLINK
 from contextlib import closing
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
+from _platform import CAN_SYMLINK
 from fastapi.testclient import TestClient
 
 from spiritscout.blackboard import Blackboard

@@ -8,8 +8,6 @@ import socket
 import tarfile
 import tempfile
 import unittest
-
-from _platform import CAN_SYMLINK
 import zipfile
 from pathlib import Path
 from types import SimpleNamespace

@@ -7,10 +7,10 @@ from __future__ import annotations
 
 import tempfile
 import unittest
-
-from _platform import CAN_SYMLINK
 from pathlib import Path
 from unittest.mock import patch
+
+from _platform import CAN_SYMLINK
 
 from spiritscout.tools.sandbox import _build_argv, _cuda_devices
 

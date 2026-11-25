@@ -6,10 +6,10 @@ import asyncio
 import os
 import tempfile
 import unittest
-
-from _platform import CAN_SYMLINK
 from pathlib import Path
 from types import SimpleNamespace
+
+from _platform import CAN_SYMLINK
 
 from spiritscout.core.audit import NullAuditLogger
 from spiritscout.core.pause import PauseGate

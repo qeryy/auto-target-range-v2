@@ -7,13 +7,12 @@ import sqlite3
 import tempfile
 import time
 import unittest
-
-from _platform import CAN_SYMLINK
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
 import httpx
+from _platform import CAN_SYMLINK
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 

@@ -5,14 +5,13 @@ import asyncio
 import tempfile
 import time
 import unittest
-
-from _platform import CAN_SYMLINK
 from datetime import UTC
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
 import httpx
+from _platform import CAN_SYMLINK
 
 from spiritscout.agents.sub.base import StepResult, SubAgent
 from spiritscout.blackboard import Blackboard
