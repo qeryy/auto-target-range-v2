@@ -123,7 +123,43 @@ def build_parser() -> argparse.ArgumentParser:
                         help="绑定地址（默认取配置 web.host=127.0.0.1）")
     parser.add_argument("--port", type=int, default=None,
                         help="端口（默认取配置 web.port=8000）")
+    parser.add_argument("--set-admin-password", action="store_true",
+                        help="交互式设置管理员密码（标准输入读两次），设完退出")
+    parser.add_argument("--if-missing", action="store_true",
+                        help="配合 --set-admin-password：已有管理员账号时跳过")
     return parser
+
+
+def _set_admin_password(cfg, *, if_missing: bool = False) -> int:
+    """交互式设管理员密码：明文不落盘，库里只存 scrypt 哈希。
+
+    start-local.ps1 首次启动时调这个。非交互终端（脚本 / CI）直接跳过 ——
+    无人值守的启动绝不能卡在等输入上。
+    """
+    import getpass
+
+    from spiritscout.web.auth import AdminStore
+
+    store = AdminStore(cfg.workspace.root)
+    if if_missing and store.has_admins():
+        print("[设置密码] 已有管理员账号，跳过（--if-missing）")
+        return 0
+    if not sys.stdin.isatty():
+        print("[设置密码] 当前不是交互终端，跳过（无人值守启动不能卡在等输入）")
+        return 1
+    username = (os.environ.get(cfg.web.admin_username_env, "").strip()
+                or "spiritscout")
+    while True:
+        first = getpass.getpass("管理员密码（长度不限，回车跳过）：")
+        if not first:
+            print("[设置密码] 未设置（空密码等于不设密码）")
+            return 1
+        if first != getpass.getpass("再输一次："):
+            print("[设置密码] 两次不一致，重新输入")
+            continue
+        store.upsert(username, first)
+        print("[设置密码] 已保存（只存 scrypt 哈希）；明文不再显示。")
+        return 0
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -161,6 +197,9 @@ def main(argv: list[str] | None = None) -> int:
     except SpiritScoutError as exc:
         display.failed(str(exc))
         return 2
+
+    if args.set_admin_password:
+        return _set_admin_password(cfg, if_missing=args.if_missing)
 
     display.phase("装配控制台")
     from spiritscout.web import create_app

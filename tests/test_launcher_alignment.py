@@ -14,10 +14,10 @@ import unittest
 from pathlib import Path
 
 from spiritscout import __version__
-from spiritscout.__main__ import _banner, build_parser
+from spiritscout.__main__ import build_parser
 
-ROOT = Path(__file__).resolve().parents[1]        # repository root
-REPO = ROOT.parent                                # 仓库根：启动脚本与 README 在这层
+ROOT = Path(__file__).resolve().parents[1]        # 仓库根（单根布局：tests/ 的上一级就是根）
+REPO = ROOT                                       # 启动脚本与 README 也在这一层
 
 
 def read(path: Path) -> str:
@@ -93,11 +93,16 @@ class LauncherAlignmentTests(unittest.TestCase):
                          "probe_deps.TOOLKIT 与 pyproject toolkit 不一致")
 
     def test_banner_prints_source_version(self) -> None:
-        """启动横幅带版本：一眼确认接的是当前源码，而不是旧 venv 或旧包。"""
-        text = _banner("127.0.0.1", 8010, "登录已关闭，本机直接进入（auth_mode=none）", 4)
+        """启动面板带版本：一眼确认接的是当前源码，而不是旧 venv 或旧包。"""
+        import io
+
+        from spiritscout.startup import StartupDisplay
+
+        buffer = io.StringIO()
+        StartupDisplay(stream=buffer).start()
+        text = buffer.getvalue()
         self.assertIn(f"v{__version__}", text)
-        self.assertIn("http://127.0.0.1:8010", text)
-        self.assertIn("并发上限 4", text)
+        self.assertIn("多智能体安全测试控制台", text)
 
     def test_local_launcher_reports_source_version(self) -> None:
         """启动器要把源码版本打出来（探针读 __init__.py，与 --version 同源）。"""
@@ -106,10 +111,12 @@ class LauncherAlignmentTests(unittest.TestCase):
         self.assertIn("源码版本", text)
 
     def test_readme_banner_sample_follows_version(self) -> None:
-        """文档里贴的横幅示例也得跟着版本走，别再留一份旧号的输出。"""
+        """文档里贴的启动样例也得跟着版本走，别再留一份旧号的输出。"""
         for name in ("README.md", "README_EN.md"):
             with self.subTest(file=name):
-                self.assertIn(f"灵枢 Web 控制台 v{__version__}:", read(ROOT / name))
+                text = read(ROOT / name)
+                self.assertIn("SPIRITSCOUT", text, "启动样例缺少品牌头")
+                self.assertIn(f"v{__version__}", text, "启动样例版本号与源码不一致")
 
 
 if __name__ == "__main__":       # pragma: no cover

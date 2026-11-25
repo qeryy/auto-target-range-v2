@@ -278,6 +278,20 @@ to it, installs the wheel into a clean venv to verify `web/static/js/count.js` a
 > Packaging only includes git-tracked files: `.venv/`, the `.spiritscout/` workspace
 > data, and real keys in `configs/models.yaml` never end up in an artifact.
 
+
+```
+  SPIRITSCOUT
+  灵枢 · 多智能体安全测试控制台
+  v1.3.0
+
+  启动  读取配置…
+  启动  装配控制台…
+  启动  启动 HTTP 服务…
+
+[就绪] 浏览器可以打开了: http://127.0.0.1:8010
+       每 60 秒报一次状态；Ctrl+C 停止
+```
+
 ## How it works
 
 ![SpiritScout architecture: task scheduling, sub-agents, and shared modules](docs/images/architecture.svg)
